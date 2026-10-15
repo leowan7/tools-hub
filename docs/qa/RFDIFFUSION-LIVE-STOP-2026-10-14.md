@@ -270,7 +270,7 @@ The page and the email both read one predicate, `stopped_for_balance`
 | --- | --- | --- |
 | Run page | Predicted yes | `templates/job_detail.html:250-251` renders "Stopped: your wallet balance reached $0" plus an "Add funds" link under `stopped_for_balance`, passed in at `blueprints/jobs.py:790` |
 | Email | Predicted yes | subject `shared/email.py:73`, headline `:214`, top-up link `:229`, all three gated on the same predicate |
-| CSV | Predicted **no** | `candidates_to_csv` takes `candidates`, `fetch_bytes` and `default_job_id` only (`shared/exports.py:704-707`) — no job and no result dict reach it, so it has no field that could carry a stop reason |
+| CSV | Predicted **no** | `candidates_to_csv` takes `candidates`, `fetch_bytes` and `default_job_id` only (`shared/exports.py:704-707`) — no job and no result dict reach it, so it has no field that could carry a stop reason. Its `fieldnames` are `leading + metrics + sequence_columns(rows)` (`:729-731`), every one of them per-candidate |
 
 The CSV prediction is structural rather than an omission: the export is built
 per candidate row, so there is nowhere for a run-level notice to go.
@@ -547,17 +547,41 @@ first action on a standing tab was a read rather than a navigation.
 | `04:45` | `RUNNING` / `Waiting for pipeline to start...` | `$0.73` | 4 | `charged as it runs; $0.46 so far` |
 | `04:47` | `SUCCEEDED` / `Completed in 816 GPU-seconds.` | `$0.20` | 5 | `charged as it ran; it closed at $0.99` / `3 charges while it ran` |
 
-**Finding 1: the per-tick debits are not ledger rows on this page.** The brief
-asks for "each wallet ledger row (kind, amount, time)". The transactions page
-cannot supply them. After the first metered charge the entry count was still
-`4`; the charge appeared only as prose inside the opening row's detail cell
-(`$0.13 so far`, `1 charge while it ran`). `find` resolved that text to
-`ref_118`, role `generic` -- static text, not a disclosure control, so there is
-nothing to expand. The individual `run_debit` rows exist in
-`wallet_transactions` with `parent_tx_id` pointing at the anchor
-(`0045_live_run_debits.sql`); they are simply not rendered. Per-tick amounts and
-times for this test therefore have to come from the read-only query prepared
-for Leo, not from the UI.
+**Finding 1 (as written in flight, and WRONG -- the correction follows):
+the per-tick debits are not ledger rows on this page.** What was observed is
+that after the first metered charge the entry count was still `4`, and the
+charge appeared as prose inside the opening row's detail cell (`$0.13 so far`,
+`1 charge while it ran`). From that I concluded the individual `run_debit` rows
+were not rendered at all and could only come from the read-only query.
+
+**That conclusion was false. The rows are rendered.** `1 charge while it ran`
+is the `<summary>` of a `<details class="wallet-tx-debits">`
+(`templates/wallet/transactions.html:159-169`), whose list is built from the
+anchor's `run_debit` children at `blueprints/wallet.py:143-147` and passed to
+the template at `:200`. It is a disclosure control, collapsed by default, and
+expanding it yields exactly what the brief asked for:
+
+| Tick (UTC) | Amount |
+| --- | --- |
+| `2026-10-15 04:35` | `-$0.13` |
+| `2026-10-15 04:40` | `-$0.34` |
+| `2026-10-15 04:45` | `-$0.34` |
+
+Three ticks, `$0.81` in total, landing on the `*/5` cron boundaries -- the
+first direct confirmation in this test that the cadence is five minutes rather
+than the `~60-90s` of the stale comments catalogued earlier in this document.
+
+How the error happened is worth recording, because the mechanism is a repeat.
+`find` resolved the summary text to one node with role `generic`, and I read
+that role label as a statement about the DOM -- "static text, nothing to
+expand" -- without ever trying to expand it. That is asserting a structural
+property from evidence narrower than the claim, the same mechanism as
+`qc-count-from-a-filtered-grep`. The data I called unobtainable took one
+`details[open]` toggle to read.
+
+What survives is a real but much smaller defect: the disclosure is **collapsed
+by default**, so what a customer sees first for a running job is the prose
+roll-up -- and the roll-up is the figure that is a cent off (Finding 4).
 
 **Finding 2: the opening row's own AMOUNT and BALANCE AFTER columns go stale.**
 At `04:39` that row still read `$0.00` in AMOUNT and `$1.20` in BALANCE AFTER
@@ -568,17 +592,17 @@ is the only place this job appears, so a reader scanning the AMOUNT column sees
 `$0.00` for a job that has by then taken 13 cents. The true figure is carried
 in free text one cell to the left.
 
-**Finding 4: the balance and the "so far" figure do not reconcile to the
-cent.** At `04:42` the page showed `$0.46 so far` against a CURRENT BALANCE of
-`$0.73`. Those cannot both be exact: $1.20 - $0.46 = $0.74. One cent is
-unaccounted for on screen. The likely cause is benign -- a cumulative spend of
-something like $0.4650 to $0.4699 truncates to `$0.46` in the detail cell while
-the balance carries the unrounded remainder -- but this test did not read the
-underlying numbers, so that is a hypothesis and not a finding. What is a
-finding is that the only two money figures a customer can see for a running job
-disagree by a cent, and the page offers nothing to reconcile them. Leo's
-read-only query returns `amount_usd` and `balance_after_usd` per row and will
-settle it.
+**Finding 4: the roll-up figure is a cent below the rows it summarizes.** At
+`04:42` the page showed `$0.46 so far` against a CURRENT BALANCE of `$0.73`.
+Those cannot both be exact: $1.20 - $0.46 = $0.74.
+
+The debit rows recovered afterwards localize the cent, which the in-flight
+reading could not. By `04:42` two ticks had fired, `$0.13` and `$0.34`, summing
+to `$0.47` -- and $1.20 - $0.47 = $0.73, exactly the balance shown. So the
+balance and the individual rows agree to the cent; it is the `so far` roll-up
+that reads low. The same discrepancy recurs at settlement, in the same
+direction, which is what makes this a finding rather than a one-off rounding
+wobble -- see the sharpened version below.
 
 **Rate check, which does hold.** Cumulative went `$0.13` -> `$0.46` between
 about `04:36` and `04:42`, so roughly `$0.33` across one tick interval. The
@@ -586,47 +610,56 @@ derived rate is `$0.0728` a minute, which over a 5-minute tick predicts
 `$0.364`. Close enough to confirm the meter is billing A100-40GB time at about
 the expected rate rather than drifting.
 
-**Finding 3: the progress line reverted to "not started" after showing real
-progress, and stayed there while the wallet billed.** The sequence, all from
-the table above: at ~`04:34` the page read `Running RFdiffusion 0 of 4 designs
-complete`; from `04:36` through `04:40` it read `Waiting for pipeline to
-start...`; and across that same span the wallet took `$0.13`. So the line did
-not merely lag behind a slow start -- it showed a populated progress state and
-then went back to the empty one.
+**Finding 3 (as written in flight, and largely a measurement artifact -- the
+correction follows): the progress line reverted to "not started" after showing
+real progress, and stayed there while the wallet billed.** The readings
+themselves, from the table above: at ~`04:34` the page read `Running
+RFdiffusion 0 of 4 designs complete`; from `04:36` through `04:45` it read
+`Waiting for pipeline to start...`; and across that span the wallet took
+`$0.13` and then `$0.34`.
 
-That ordering matters because the two surfaces are supposed to share a
-precondition. Metering starts only once `inputs._progress` exists and the first
-heartbeat has stamped `started_at`, and the progress line renders from
-`_progress`. A populated-then-empty line means either the page reads a key or a
-nested shape that stops resolving once the pipeline moves past dispatch, or
-`_progress` is itself being rewritten mid-run. This test cannot tell those
-apart from the outside, and does not claim to. It is the same family as
-`esmfold2-design-metering-invisible-mid-run`, where `gpu_seconds_used` went
-null mid-run and `started_at` was rewritten underneath a running job -- fields
-on this platform are known to be rewritten rather than only appended to.
+I recorded two readings I could not then distinguish -- a benign render that
+stops resolving `_progress`, or a container that crashed and restarted while
+heartbeats kept the meter running -- and wrote down the discriminator: a stuck
+container yields nothing, while a working run that was merely invisible still
+produces designs for the GPU time paid for. The 4-of-4 result excluded the
+crash reading.
 
-The user-visible effect is the part worth fixing: for twelve minutes and
-counting, the only page a customer watches said nothing had started while their
-balance fell from $1.20 to $0.73.
+**The render reading was wrong too, and the template says why.** `Waiting for
+pipeline to start...` is not a state the server computed. It is the hard-coded
+initial content of the span, emitted for any job in `('pending', 'running')` at
+`templates/job_detail.html:188`. The only code that ever overwrites it is
+`renderProgress`, from the poll response's `progress.stage` (`:756`), and the
+poll is kicked off by `setTimeout(poll, pollIntervalMs)` at `:803` with
+`pollIntervalMs = 5000` (`:579`). So the **first** fetch lands five seconds
+after load, and until it does the placeholder stands unmodified.
 
-**A worse reading this test cannot exclude.** A GPU container that started,
-reported progress once, then crashed and was restarted would look exactly like
-what was observed: `_progress` written at dispatch, then reset; heartbeats
-resuming on the new container so metering continues; and a progress line stuck
-at the empty state. On that reading the wallet is billing for wall-clock on a
-pipeline that is making no forward progress. The benign reading -- a render
-that stops resolving `_progress` while the work proceeds normally -- fits the
-same observations. From outside the box the two are indistinguishable, and this
-document does not pick one. `gpu_seconds_used`, `started_at` and whether
-`inputs ? '_progress'` is true are all in the read-only query, and the design
-count at the end discriminates them: a stuck container yields nothing, while a
-working run that was merely invisible should still have produced designs for
-the GPU time paid for.
+Every later reading followed the navigate-then-read rule from
+`reference-preopened-tab-reads-stale`, which means every one of them sampled
+the page within a second or two of load -- inside that five-second window. The
+confirming detail is the design count: `0 of 4 designs complete` comes from a
+*separate* span (`#progress-text`, `:189`) which the server renders **empty**,
+and in all the later readings it was absent rather than reading zero. Both
+spans were simply in their pre-poll state. The `04:34` reading, which showed
+both, is the one where a poll had already landed.
 
-This is not the billing defect the brief asks to be escalated. Money is moving
-in the right direction and at roughly the right rate: `$0.13` is about 107
-seconds at the derived `$0.0728`/minute, which fits a first tick that caught a
-run whose heartbeat had just landed.
+So there was no eleven-minute stall and no regression. A smaller real defect is
+left: nothing server-renders current progress, so **every** load of a running
+job shows `Waiting for pipeline to start...` for five seconds, however far
+along it is. A customer who reloads a job ten minutes in, while their balance
+is visibly falling, is told it has not started. `inputs._progress` already
+holds what the span needs. Severity is five seconds per load, not eleven
+minutes; the in-flight framing overstated it by two orders of magnitude.
+
+**Rate check, which does hold.** Cumulative went `$0.13` -> `$0.46` between
+about `04:36` and `04:42`, so roughly `$0.33` across one tick interval. The
+derived rate is `$0.0728` a minute, which over a 5-minute tick predicts
+`$0.364`. Close enough to confirm the meter is billing A100-40GB time at about
+the expected rate rather than drifting. The first tick is consistent too:
+`$0.13` is about 107 seconds at that rate, and the anchor row carries a
+minute-resolution timestamp of `04:33`, so the window to the `04:35` tick is
+between 60 and 120 seconds. 107 falls inside it. No finer claim is possible
+from the UI, which shows no figure to better than a cent or a minute.
 
 ### The result: the run finished before the money did
 
@@ -705,46 +738,65 @@ simply fails the gate, which step 1 already proved.
 `$0.0728`/minute is `$0.9901`, and the page charged `$0.99`. The pricing model
 used throughout this document is correct for A100-40GB rfdiffusion.
 
-### Finding 3 resolved: the pipeline was fine, the progress line was not
+### Finding 3 resolved: the pipeline was fine, and so was the page
 
-The 4-of-4 result discriminates the two readings written down while the run was
-in flight. A crashed-and-restarted container cannot produce four scored designs
-in 816 GPU-seconds. So the benign reading is the right one: the work proceeded
-normally throughout, and only the progress render was broken.
+Two readings were open while the run was in flight. The 4-of-4 result closed
+the first: a crashed-and-restarted container cannot produce four scored designs
+in 816 GPU-seconds, so the work proceeded normally throughout.
 
-That leaves a clean, narrow defect. For roughly eleven minutes -- `04:36`
-through at least `04:45` -- the job page told a paying customer `Waiting for
-pipeline to start...` while the GPU was running and the wallet was being
-debited every few minutes, having already shown correct progress
-(`Running RFdiffusion 0 of 4 designs complete`) at `04:34`. Wall-clock
-`04:33` to `04:47` is about 14 minutes against 816 GPU-seconds of 13.6, so
-there was almost no unbilled boot window for that message to have been
-describing. It is a display bug on the one surface a customer watches while
-being charged, and it is worth a ticket of its own.
+Reading the template afterwards closed the second, and against my own
+in-flight conclusion. `Waiting for pipeline to start...` is the span's
+hard-coded server-rendered default (`templates/job_detail.html:188`), the only
+writer is the poll callback (`:756`), and the first poll fires five seconds
+after load (`:803`, interval `:579`). My polling protocol -- navigate, then
+read immediately -- sampled inside that window every time, and the empty
+`#progress-text` span (`:189`) in each of those readings confirms it: both
+spans were pre-poll, not regressed. There was no stall.
 
-### Finding 4 sharpened: a cent does not close, at settlement
+The residual defect is narrow and still worth a ticket: a running job's page
+asserts "not started" for the first five seconds of every load, no matter how
+far along the run is, because current progress is never server-rendered even
+though `inputs._progress` holds it. Five seconds, not eleven minutes.
 
-The mid-run gap persisted into the final state, where it is easier to pin
-down. Summing only the `AMOUNT` column of the five visible rows gives `$1.01`
-(`+5.00 -3.87 +0.07 +0.00 -0.19`); the balance reads `$0.20`; so the three
-unrendered run debits account for `$0.81`. Against that:
+The more useful lesson is about the measurement. `reference-preopened-tab-reads-stale`
+says a pre-opened tab reads stale, so navigate first. Following that rule
+mechanically introduced the opposite error -- reading *before* the page had
+caught up -- and the artifact was indistinguishable from a server-side defect
+until I read the template. A page that hydrates after load needs both: navigate
+first, **then** wait past its own poll interval before quoting it.
 
-- `$1.20 - $0.20 = $1.00` actually left the wallet.
-- Both the `RUN` row and the `CHARGE` row state the cost as **`$0.99`**.
+### Finding 4 sharpened: the roll-up is a cent under, twice, in the same direction
 
-The page defines the settlement row as "the net for that job, which is what you
-paid for it", so the figure presented as what the customer paid is a cent below
-what the wallet lost. A cumulative true cost near `$0.995` would explain it
-through truncation in one place and rounding in another, and `$0.9901` from the
-rate check sits close to that. This document does not assert which figure is
-the rounded one, because the UI never shows the unrounded values. The read-only
-query returns `amount_usd` and `balance_after_usd` per row and closes it; the
-three missing `run_debit` rows are the ones to sum.
+The recovered debit rows turn this from an unexplained gap into a localized
+one. Every money figure the page showed now reconciles except the roll-ups:
 
-Two separate issues live in this one paragraph and should not be conflated: the
-cent, which is cosmetic unless it compounds, and **Finding 1**, that the
-per-tick debits are not rendered at all -- which is what made the cent
-un-auditable from the UI in the first place.
+| Figure | Source | Value |
+| --- | --- | --- |
+| Three run debits | expanded disclosure | `$0.13` + `$0.34` + `$0.34` = **`$0.81`** |
+| Settlement | `CHARGE` row AMOUNT | **`-$0.19`** |
+| Sum of rows that moved money | | **`$1.00`** |
+| Balance movement | `$1.20` -> `$0.20` | **`$1.00`** |
+| `so far` roll-up at `04:42` | vs `$0.47` of rows by then | **`$0.46`** |
+| Closing roll-up | `charged as it ran; it closed at` / `net for this job` | **`$0.99`** |
+
+The rows and the balance agree exactly, at both readings. The two roll-up
+figures are each one cent below the rows they summarize. One cent, twice, in
+the same direction, computed by the same code path.
+
+The rate check says which figure is the accurate one: 816 GPU-seconds at the
+derived `$0.0728`/minute is `$0.9901`, so the roll-up's `$0.99` is right and
+the per-row displays are each rounded up a fraction of a cent, summing to a
+cent of overstatement across four rows.
+
+That leaves one question the UI cannot answer, and it is the only part of this
+finding that could matter: whether the **stored** balance lost that cent or
+merely displays truncated. If `balance_usd` is decremented by rounded per-tick
+amounts, a customer really pays a fraction of a cent extra per tick, and a long
+run has many ticks -- a 10-hour run is 120 ticks. If the balance is stored
+unrounded and only displayed to two places, nothing is lost and this is
+cosmetic. Both fit every figure above, because nothing on screen resolves finer
+than a cent. The read-only query returns unrounded `amount_usd` and
+`balance_after_usd` per row and settles it in one look.
 
 ## Verdict
 
@@ -763,22 +815,38 @@ gate can also finish. Exercising the stop needs a job whose actual cost
 overruns that estimate -- more designs than the gate prices, a larger target,
 or a tool that under-quotes.
 
-Four defects were found along the way, none of which moves money in the wrong
-direction:
+Three defects survive scrutiny, none of which moves money in the wrong
+direction. Two more were written down in flight and then disproved by reading
+the code; both corrections are in the sections above, and the commit message of
+`4a96a2fa` still carries the false version of the first:
 
-1. **The per-tick run debits are never rendered.** They exist in
-   `wallet_transactions` under the anchor's `parent_tx_id`, but the
-   transactions page shows only a prose roll-up, so a customer cannot audit
-   what was taken while a job ran. This is the one worth fixing first.
+1. **The roll-up figures are a cent below the rows they summarize** -- twice,
+   in the same direction, from the same code path. The rows and the balance
+   agree exactly; `$0.46 so far` and the closing `$0.99` are each a cent under.
+   The rate check says `$0.99` is the accurate cost, so the row displays are
+   the ones rounding up. Whether the **stored** balance also loses that cent
+   per tick, or only its display truncates, is the one open question here, and
+   it decides whether this is cosmetic or compounds over a long run's ticks.
 2. **The anchor row's AMOUNT and BALANCE AFTER columns go stale**, reading
    `$0.00` and `$1.20` for a job that had taken 13 cents by then.
-3. **The job page showed `Waiting for pipeline to start...` for about eleven
-   minutes while the GPU ran and the wallet was debited**, after having shown
-   correct progress a minute earlier. The 4-of-4 result proves the pipeline was
-   healthy, so this is purely a display bug -- on the one surface a customer
-   watches while being charged.
-4. **A cent does not reconcile.** `$1.00` left the wallet; both rows call the
-   cost `$0.99`.
+3. **A running job's page asserts "not started" for five seconds after every
+   load**, because current progress is never server-rendered even though
+   `inputs._progress` holds it. A customer reloading a job that is ten minutes
+   in and visibly being charged is told it has not begun.
+
+**Withdrawn on review, recorded because the errors are instructive:**
+
+- *"The per-tick run debits are never rendered."* False. They are rendered,
+  with time and amount, in a `<details>` that is collapsed by default
+  (`templates/wallet/transactions.html:159-169`). I inferred a DOM property
+  from one node's role label without trying to expand it. What is left is that
+  the disclosure is collapsed, so the roll-up -- the figure that is wrong -- is
+  what a customer reads first.
+- *"The progress line showed `Waiting for pipeline to start...` for eleven
+  minutes."* A measurement artifact. That string is the server-rendered
+  placeholder and the first poll lands five seconds after load; my
+  navigate-then-read-immediately protocol sampled inside that window every
+  time. Overstated by two orders of magnitude.
 
 What the rate model got right: the derivation used throughout this document
 predicted `$0.9901` for 816 GPU-seconds, and the charge was `$0.99`.
