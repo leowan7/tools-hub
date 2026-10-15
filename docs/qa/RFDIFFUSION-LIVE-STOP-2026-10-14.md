@@ -270,11 +270,22 @@ pytest fixture -- three of them, at `tests/test_stripe_webhooks.py:127`,
 `tests/test_wallet.py:447` and `tests/test_wallet_funnel.py:129` -- and the
 name does not occur outside `tests/` at all.
 
-Searching `sent_email`, `email_sent`, `outbox`, `mail_log`, `emails_sent` and
-`email_events` outside `tests/` returns only `reengagement_email_sent_at`
-(`blueprints/admin.py:1199`, `cron/reengagement.py:301`), a per-user timestamp
-in `auth.users.user_metadata` recording when a re-engagement mail last went
-out; it stores no message body. The admin area holds five templates
+A `git grep` for `sent_email`, `email_sent`, `outbox`, `mail_log`,
+`emails_sent` and `email_events`, with no file filter, outside `tests/` and
+outside this document, returns hits in exactly two places. Neither is a mail
+log:
+
+- `reengagement_email_sent_at` (`blueprints/admin.py:1199-1200`, `:1284`;
+  `cron/reengagement.py:11`, `:217`, `:277`, `:301`), a per-user timestamp in
+  `auth.users.user_metadata` recording when a re-engagement mail last went out.
+  It stores no message body.
+- `email_sent = 2` (`supabase/config.toml:189`), the hourly email count under
+  `[auth.rate_limit]`. A rate-limit setting, unrelated to any log.
+
+An earlier draft of this section said the search returned only the first of
+those. That was written from a grep filtered to `*.py`, `*.html` and `*.sql`,
+which could not have seen a `.toml` file: the claim was broader than the
+search behind it. The admin area holds five templates
 (`templates/admin/`: `campaign_detail`, `campaigns_list`, `signups_rejected`,
 `user_detail`, `users_list`) and none of them is a mail log.
 
@@ -282,6 +293,62 @@ That is a bounded negative -- those six names and those five templates -- not a
 survey of every route. The completion mail goes to `leowan7+t1@gmail.com`, so
 answering the brief's email question needs Leo to open or forward that message.
 Everything else here is readable without his inbox.
+
+### Precondition: the live meter runs only if a Railway cron is scheduled
+
+This is the one thing that could make the whole test unobservable, so it is
+recorded before launch rather than discovered after.
+
+`meter_live_runs` is what debits a live run and stops it at $0. It has exactly
+one caller outside `tests/`: `cron/tick_campaigns.py:68`. That module runs only
+through the Flask CLI command `campaigns:tick` (`app.py:1114-1126`). The
+`Procfile` declares only two process types, `release` and `web` — no worker and
+no scheduler:
+
+```
+release: python -m cron.indexnow_ping || true
+web: gunicorn app:app --bind 0.0.0.0:$PORT --preload
+```
+
+So the schedule lives outside this repository, in Railway. The code says so
+itself, and files it: `blueprints/targets.py:1458-1468` notes that
+`campaigns:tick` "is a Flask CLI command with no in-repo caller" and that if it
+is not scheduled a funded campaign parks with "nothing to restart it"
+(filed as A46).
+
+**If that cron is not scheduled, an rfdiffusion run is never debited and never
+stopped.** It would run to completion and settle at the end, which from the
+outside looks like a total failure of live charging but would in fact be an
+unscheduled cron. Confirming the cron is live is therefore a precondition of
+step 2, not an observation of it.
+
+### The expected stop, computed before the run
+
+Two in-repo sources give the tick cadence as **~60-90 s**:
+`cron/tick_campaigns.py` ("Scheduled separately via Railway cron (~60-90s)")
+and `app.py:1121`. An earlier working note in this test put it at ~5 minutes;
+that was wrong, and it matters, because it sets how long "a couple of ticks
+past $0" is before the escalation rule fires.
+
+Measured against the deployed pricing code (`live_due_usd`, `live_start_usd`,
+`gpu_class_for_job`) for `rfdiffusion` at `preset=pilot`, `num_designs=4`:
+
+| Quantity | Value |
+| --- | --- |
+| GPU class | A100-40GB |
+| Start minimum | $1.1371 |
+| Cost of 60 s metered | $0.0728 |
+| Cost of 936 s metered | $1.1361 |
+| Balance $1.20 exhausted at | **989 s = 16.5 min** of metered GPU time |
+
+So with $1.20 the run should get about **16 and a half minutes** of metered
+time after its first heartbeat, then stop. At 60-90 s per tick that is roughly
+**11 to 16 debits** before the stop. Queue and boot are not metered, so this
+window starts at the first heartbeat, not at submit.
+
+Escalation threshold, made concrete: two ticks past $0 is about **2 to 3
+minutes**. A run still going more than ~3 minutes after the balance reads $0
+is the billing defect the brief asks to be reported immediately.
 
 ## Verdict
 
