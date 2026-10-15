@@ -161,8 +161,10 @@ rather than corrected, because this test read the submit form only.
 
 ## Step 2 — paid run at $1.20
 
-Approved by Leo in session on 2026-10-14. Not yet launched: the wallet still
-reads $1.13, so the balance precondition is unmet (see "Blocked" below).
+Commissioned by the test brief, which asks for exactly one paid run. Not yet
+launched. The balance precondition is now met ($1.20, verified below); what is
+outstanding is Leo's own per-job go-ahead for the GPU spend, which memory
+`feedback-gpu-spend-needs-approval` requires per job rather than per session.
 
 ### The target, fixed before launch
 
@@ -199,43 +201,48 @@ value, so the hotspots must be typed in; `binder_length_min` 55,
 real defaults, carried by `pre_value`, and the test's chosen parameters match
 them.
 
-### Blocked
+### The balance precondition, blocked then cleared
 
-Leo reported the balance set to $1.20. Three production page reads disagree,
-all taken on 2026-10-15 (UTC) through the browser session signed in as
-`leowan7+t1@gmail.com`. They are page reads, not repository facts, and nothing
-in this repo can reproduce them:
+Step 2 needs the wallet at $1.20. It sat at $1.13 for most of 2026-10-14/15 and
+is now at $1.20. The reads below are production page reads, not repository
+facts; nothing in this repo can reproduce them.
+
+First, at $1.13 (2026-10-15, browser session signed in as the test account):
+`/account/wallet` and `/account` both read $1.13, and
+`/account/wallet/transactions` read `2 entries` -- the original
+`SIGNUP CREDIT +$5.00` and the step-1 `ADJUSTMENT -$3.87` to $1.13. At $1.13
+the gate proven in step 1 would simply refuse again, so step 2 was void.
+
+Then the browser pane signed itself out: `/account/wallet` began redirecting to
+`/login?next=/account/wallet`, and the brief forbids this session from entering
+passwords. A hub-lead relay that Leo had re-run the balance script was recorded
+at the time as reported-not-verified, because a relay is not a production read.
+
+Cleared on 2026-10-15 at 04:06 UTC or earlier, verified in the browser where
+Leo was already signed in:
 
 | Page | Reads |
 | --- | --- |
-| `/account/wallet` | `CURRENT BALANCE $1.13`; signup credit $1.13 of $5.00 unspent |
-| `/account` | `WALLET BALANCE $1.13` |
-| `/account/wallet/transactions` | `2 entries` |
+| `/account` | `EMAIL leowan7+t1@gmail.com`, `WALLET BALANCE $1.20` |
+| `/account/wallet/transactions` | `CURRENT BALANCE $1.20`, `3 entries` |
 
-The two entries are the original `SIGNUP CREDIT +$5.00` and the step-1
-`ADJUSTMENT -$3.87` to $1.13. No third row exists, so the $1.20 adjustment was
-never committed against this wallet. Step 2 cannot run until the wallet reads
-$1.20: at $1.13 the gate proven in step 1 would simply refuse again, and the
-step-2 observations would be void.
+The third row is `ADJUSTMENT +$0.07` to $1.20, stamped `2026-10-15 04:06`, with
+the note from `t1-set-balance-1.20.sql`. The three amounts sum to the balance
+(`5.00 - 3.87 + 0.07 = 1.20`), the email is the test account and not the main
+one, and there is no `HOLD`, `RUN` or `CHARGE` row, so no run has ever billed
+this wallet. The relay was accurate.
 
-The test does not write to production, so the balance change is Leo's to make.
+**One method note, because it nearly produced a false report.** The first read
+of the transactions page in Leo's browser showed $1.13 and `2 entries`, which
+reads as a flat contradiction of the relay. It was a stale DOM: that tab was
+already open on that URL, and the first action against it was a text read, not
+a navigation, so what came back was the page as Leo had last loaded it --
+before the write. A re-navigation of the same URL returned $1.20 and
+`3 entries`. A page read is only evidence for the moment it was *loaded*, which
+is not the moment it was read. Navigate first, then read.
 
-**Second blocker, found later on 2026-10-15: the browser session expired.**
-`https://tools.ranomics.com/account/wallet` now redirects to
-`/login?next=/account/wallet`, and the page offers "Continue with Google" or an
-email/password form. The test brief forbids this session from entering
-passwords, so the wallet cannot be re-read until Leo signs in again. The three
-reads in the table above were taken before this, while the session was live.
-
-**A second run of the balance script was reported, and is not verified here.**
-The hub lead relayed on 2026-10-15 that Leo re-ran `t1-set-balance-1.20.sql`
-and that both columns of its final `SELECT` read 1.20. That is recorded as
-reported, not confirmed: the relay is not a production read, the hub lead
-states it did not read production either, and the sign-out above prevents this
-session from checking. Under the brief's GPU rule a hub-lead relay is also not
-spend approval, which must come from Leo in the test session directly. So two
-things gate the launch — a signed-in page read showing $1.20, and Leo's own
-go-ahead.
+What still gates the launch is Leo's own go-ahead for the GPU spend, given in
+the test session; under the brief a hub-lead relay is not spend approval.
 
 ### Predicted, from the code, before the run
 
@@ -438,4 +445,5 @@ balance covers.
 Step 1: **PASS.** The start gate refuses rfdiffusion at $1.13 in both layers,
 creates no job and no ledger row, and leaves the balance untouched.
 
-Step 2: not yet run. Blocked on the wallet balance, not on any defect.
+Step 2: not yet run. The wallet now reads $1.20 and the run is staged; it waits
+on Leo's per-job go-ahead, not on any defect.
