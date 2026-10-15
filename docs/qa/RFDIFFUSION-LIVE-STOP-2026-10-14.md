@@ -694,10 +694,10 @@ stamped at the cron boundary.
 
 More importantly the window is the wrong one. Metering bills from
 `started_at`, which the **first heartbeat** stamps: the handler calls
-`mark_running` (`webhooks/modal.py:314-320`), which writes
-`"started_at": _now_iso()` at `shared/jobs.py:1664`. The behaviour is also
-described in prose at `shared/jobs.py:1856`, which is a docstring and not the
-stamping code. That instant is strictly later than the anchor row. Until the stamp exists and
+`mark_running` (the comment at `webhooks/modal.py:314-318`, the gate at
+`:319-320`, the call at `:321`), which writes `"started_at": _now_iso()` at
+`shared/jobs.py:1664`. The behaviour is also described in prose at
+`shared/jobs.py:1856-1858`, which is a docstring and not the stamping code. That instant is strictly later than the anchor row. Until the stamp exists and
 `inputs._progress` has been written, the meter skips the job entirely
 (`shared/jobs.py:1904-1908`).
 
