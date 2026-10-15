@@ -556,7 +556,7 @@ were not rendered at all and could only come from the read-only query.
 
 **That conclusion was false. The rows are rendered.** `1 charge while it ran`
 is the `<summary>` of a `<details class="wallet-tx-debits">`
-(`templates/wallet/transactions.html:159-169`), whose list is built from the
+(`templates/wallet/transactions.html:159-168`), whose list is built from the
 anchor's `run_debit` children at `blueprints/wallet.py:143-147` and passed to
 the template at `:200`. It is a disclosure control, collapsed by default, and
 expanding it yields exactly what the brief asked for:
@@ -607,9 +607,12 @@ Those cannot both be exact: $1.20 - $0.46 = $0.74.
 The debit rows recovered afterwards localize the cent, which the in-flight
 reading could not. By `04:42` two ticks had fired, `$0.13` and `$0.34`, summing
 to `$0.47` -- and $1.20 - $0.47 = $0.73, exactly the balance shown. So the
-balance and the individual rows agree to the cent; it is the `so far` roll-up
-that reads low. The same discrepancy recurs at settlement, in the same
-direction.
+balance and the individual rows agree to the cent, and the `so far` roll-up
+sits a cent below both. The same gap recurs at settlement, in the same
+direction. Which of the two figures is the accurate one is not settled by this
+reading; the resolved section below reads the display helper and finds it is
+the roll-up, with the per-row displays rounding half-up above their exact
+values.
 
 No money is missing, and the mechanism is documented in the code. The resolved
 version is below; it took reading the display helper to get this right, and the
@@ -682,15 +685,31 @@ the expected rate rather than drifting.
 section claimed.** That draft said `$0.13` is about 107 seconds, that the
 window from the `04:33` anchor row to the `04:35` tick is "between 60 and 120
 seconds", and that 107 therefore fits. Two things are wrong with it. Both
-timestamps are minute-truncated, so the true gap is bounded at 60 to 180
-seconds, not 60 to 120 -- the tighter upper bound smuggled in an assumption
-that the tick row is stamped at the cron boundary. More importantly the window
-is the wrong one: metering bills from `started_at`, stamped by the first
-heartbeat (`shared/jobs.py:1856`, `:1904`), which is strictly later than the
-anchor row and is never shown in the UI. So the honest statement is only that
-107 seconds is consistent with the at-most-180-second gap between the anchor
-and the first tick, and that no tighter check is possible from the outside. The
-per-row `gpu_seconds` column in the read-only query is what would settle it.
+displayed timestamps are minute-truncated -- the anchor row at
+`templates/wallet/transactions.html:118` and the debit rows at `:164`, both
+sliced `[:16]` -- so the true gap is bounded at 60 to 180 seconds, not 60 to
+120; the tighter upper bound smuggled in an assumption that the tick row is
+stamped at the cron boundary.
+
+More importantly the window is the wrong one. Metering bills from
+`started_at`, which the **first heartbeat** stamps
+(`webhooks/modal.py:314-320`; the behaviour is documented at
+`shared/jobs.py:1856`, which is prose and not the stamping code), and that
+instant is strictly later than the anchor row. Until the stamp exists and
+`inputs._progress` has been written, the meter skips the job entirely
+(`shared/jobs.py:1904-1908`).
+
+`started_at` is also not checkable from the outside. No wallet template
+references it (grep of `templates/wallet/`), and the job page reads it only
+inside a script, to compute elapsed time for the ETA text
+(`templates/job_detail.html:732`); it is never printed as a timestamp. An
+earlier draft of this paragraph said it is "never shown in the UI", which
+overstates it -- the UI consumes it, it just never shows it.
+
+So the honest statement is only that 107 seconds is consistent with the
+at-most-180-second gap between the anchor and the first tick, and that no
+tighter check is possible from the outside. The per-row `gpu_seconds` column in
+the read-only query is what would settle it.
 
 ### The result: the run finished before the money did
 
@@ -840,15 +859,29 @@ already-rounded rows shown with a total, and its docstring gives the reason
 > either figure being a cent out, because the sum is the one part of it the
 > reader can check for themselves.
 
-That is exactly the shape of the wallet page: three debit rows each rendered
-half-up at `templates/wallet/transactions.html:166`, under a roll-up computed
-from the exact sum and rendered at `:153`, `:157` and `:174`. The rows add to
-`$1.00` and the roll-up says `$0.99`. The helper written to prevent this is
-wired into the target-launch consent panel (`blueprints/targets.py:1216`,
-`:1219`, `shared/target_launch.py:299`) and nowhere else -- the wallet roll-up
-does not call it. Feeding the roll-up the displayed row strings, as the consent
-panel does, makes the column add up to its own total, and the project has
-already decided that is the figure worth preserving.
+The wallet page has the same reader problem, though not the same arithmetic.
+Four rows moved money for this job: three per-tick debits, rendered inside the
+disclosure at `templates/wallet/transactions.html:164`, and the settlement,
+rendered in the ordinary AMOUNT cell at `:190`, which sits at the top level and
+not inside the disclosure. Those four add to `$1.00`. The roll-up over the same
+four, computed from the exact sum and rendered at `:153`, `:157` and `:174`,
+says `$0.99`. (The three debits inside the disclosure add to `$0.81` on their
+own; reaching `$1.00` needs the settlement row too. An earlier draft of this
+paragraph said "the rows" while naming only the disclosure, which was wrong --
+the table above has it right.)
+
+The parallel to `display_total_usd` is the principle, not the mechanism. That
+helper reasons about rows rounded **up**: its docstring derives
+`sum(ceil(row)) >= ceil(sum(row))` and keeps its own result a true ceiling, so
+that a consent gate can never understate a hold. The wallet rows round
+**half-up**, through `display_record_usd`, so their sum can fall either side of
+the exact total and that ceiling guarantee does not transfer. What does
+transfer is the sentence quoted above: the column is the one part of the page a
+reader can check against its own total, and here it does not add up. The helper
+is wired into the target-launch consent panel (`blueprints/targets.py:1216`,
+`:1219`, `shared/target_launch.py:299`) and nowhere else; whether the wallet
+should adopt it or reconcile the two figures another way is a fix decision this
+test does not settle.
 
 ## Verdict
 
@@ -873,14 +906,15 @@ rules are applied. Two defects survive scrutiny; three more were written down
 in flight and then disproved by reading the code they were about. The commit
 message of `4a96a2fa` still carries the false version of the first withdrawal.
 
-1. **The wallet roll-up does not use `display_total_usd`.** The per-tick debit
-   rows are each rendered half-up (`templates/wallet/transactions.html:166`)
-   under a roll-up taken from the exact sum (`:153`, `:157`, `:174`), so the
-   rows add to `$1.00` while the roll-up says `$0.99`. The helper written for
-   exactly this case is wired into the target-launch consent panel and not
-   here, and its docstring argues the rows-must-add-up side
-   (`shared/compute_campaigns.py:415-432`). Both figures are individually
-   correct; the inconsistency is the defect.
+1. **The wallet roll-up does not reconcile with the rows above it.** The four
+   rows that moved money for this job -- three per-tick debits at
+   `templates/wallet/transactions.html:164` and the settlement at `:190`, each
+   rendered half-up -- add to `$1.00`, while the roll-up over those same four,
+   taken from the exact sum (`:153`, `:157`, `:174`), says `$0.99`. Both
+   figures are individually correct; the inconsistency is the defect.
+   `display_total_usd` exists for this class of problem and argues the
+   rows-must-add-up side (`shared/compute_campaigns.py:415-432`), but it is
+   built for ceiled rows, so it is not a drop-in here.
 2. **A running job's page asserts "not started" for five seconds after every
    load**, because current progress is never server-rendered even though
    `inputs._progress` holds it (`templates/job_detail.html:188` vs the first
@@ -891,7 +925,7 @@ message of `4a96a2fa` still carries the false version of the first withdrawal.
 
 - *"The per-tick run debits are never rendered."* False. They are rendered,
   with time and amount, in a `<details>` collapsed by default
-  (`templates/wallet/transactions.html:159-169`). I inferred a DOM property
+  (`templates/wallet/transactions.html:159-168`). I inferred a DOM property
   from one node's accessibility role without ever trying to expand it. What
   survives is only that the disclosure is collapsed, so the roll-up is what a
   customer reads first.
