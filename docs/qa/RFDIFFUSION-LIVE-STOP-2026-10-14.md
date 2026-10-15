@@ -161,11 +161,58 @@ rather than corrected, because this test read the submit form only.
 
 ## Step 2 — paid run at $1.20
 
-Not yet run, and not yet approved in this session.
+Approved by Leo in session on 2026-10-14. Not yet launched: the wallet still
+reads $1.13, so the balance precondition is unmet (see "Blocked" below).
+
+### The target, fixed before launch
+
+**PDB 4ZQK, chain A** — PD-L1 from the PD-1/PD-L1 complex. Hotspots **54, 56,
+115**. Binder length 55-65, preset `pilot`, `num_designs` 4.
+
+Chain A was read straight from the downloaded coordinate file
+(`files.rcsb.org/download/4ZQK.pdb`, 309,744 bytes), counting CA atoms in ATOM
+records:
+
+| Property | Value | How read |
+| --- | --- | --- |
+| Molecule | Programmed cell death 1 ligand 1 (PD-L1) | `COMPND` MOL_ID 1, `CHAIN: A` |
+| CA count, chain A | 115 | `awk` over ATOM/` CA `/col 22 == `A` |
+| Residue numbering | 18 to 132 | first and last CA in chain A |
+| Gaps | none | 132 - 18 + 1 = 115, equal to the CA count |
+| Hotspot 54 | ILE, CA present | same `awk`, filtered to 54/56/115 |
+| Hotspot 56 | TYR, CA present | same |
+| Hotspot 115 | MET, CA present | same |
+| Heteroatoms in chain A | 1 NA, 9 HOH | `HETATM` with col 22 == `A` |
+
+115 residues is the closest available match to the 120-residue figure
+hard-coded in `live_start_usd` (`shared/wallet_guard.py:83`), so the start
+minimum derived in this document is the one that should apply at submit.
+Chain B (PD-1, 106 CA) is not used.
+
+The three hotspots came from the rfdiffusion form's own worked example; they
+are not an independent epitope choice by this test.
+
+### Blocked
+
+Leo reported the balance set to $1.20. Three reads on 2026-10-15 disagree:
+
+| Page | Reads |
+| --- | --- |
+| `/account/wallet` | `CURRENT BALANCE $1.13`; signup credit $1.13 of $5.00 unspent |
+| `/account` | `WALLET BALANCE $1.13` |
+| `/account/wallet/transactions` | `2 entries` |
+
+The two entries are the original `SIGNUP CREDIT +$5.00` and the step-1
+`ADJUSTMENT -$3.87` to $1.13. No third row exists, so the $1.20 adjustment was
+never committed against this wallet. Step 2 cannot run until the wallet reads
+$1.20: at $1.13 the gate proven in step 1 would simply refuse again, and the
+step-2 observations would be void.
+
+The test does not write to production, so the balance change is Leo's to make.
 
 ## Verdict
 
 Step 1: **PASS.** The start gate refuses rfdiffusion at $1.13 in both layers,
 creates no job and no ledger row, and leaves the balance untouched.
 
-Step 2: not yet run.
+Step 2: not yet run. Blocked on the wallet balance, not on any defect.
