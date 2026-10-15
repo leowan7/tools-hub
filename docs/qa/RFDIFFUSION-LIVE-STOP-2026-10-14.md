@@ -203,8 +203,8 @@ them.
 
 ### The balance precondition, blocked then cleared
 
-Step 2 needs the wallet at $1.20. It sat at $1.13 for most of 2026-10-14/15 and
-is now at $1.20. The reads below are production page reads, not repository
+Step 2 needs the wallet at $1.20. It read $1.13 on every read taken before
+2026-10-15 04:06 and $1.20 after. The reads below are production page reads, not repository
 facts; nothing in this repo can reproduce them.
 
 First, at $1.13 (2026-10-15, browser session signed in as the test account):
@@ -218,28 +218,36 @@ Then the browser pane signed itself out: `/account/wallet` began redirecting to
 passwords. A hub-lead relay that Leo had re-run the balance script was recorded
 at the time as reported-not-verified, because a relay is not a production read.
 
-Cleared on 2026-10-15 at 04:06 UTC or earlier, verified in the browser where
-Leo was already signed in:
+Cleared by the time of the reads below, taken in the browser where Leo was
+already signed in. The ledger stamps the clearing row `2026-10-15 04:06`; the
+page prints no time zone, so that stamp is reproduced as shown rather than
+converted:
 
 | Page | Reads |
 | --- | --- |
 | `/account` | `EMAIL leowan7+t1@gmail.com`, `WALLET BALANCE $1.20` |
 | `/account/wallet/transactions` | `CURRENT BALANCE $1.20`, `3 entries` |
 
-The third row is `ADJUSTMENT +$0.07` to $1.20, stamped `2026-10-15 04:06`, with
-the note from `t1-set-balance-1.20.sql`. The three amounts sum to the balance
+The third row is `ADJUSTMENT +$0.07` to $1.20, carrying the note
+`T1 rfdiffusion live-stop test 2026-10-14: set balance to $1.20 (just above
+start minimum)`. That wording comes from the balance script, which lives in this
+session's scratchpad outside the repository and so cannot be diffed against the
+note from here. The three amounts sum to the balance
 (`5.00 - 3.87 + 0.07 = 1.20`), the email is the test account and not the main
 one, and there is no `HOLD`, `RUN` or `CHARGE` row, so no run has ever billed
 this wallet. The relay was accurate.
 
 **One method note, because it nearly produced a false report.** The first read
 of the transactions page in Leo's browser showed $1.13 and `2 entries`, which
-reads as a flat contradiction of the relay. It was a stale DOM: that tab was
-already open on that URL, and the first action against it was a text read, not
-a navigation, so what came back was the page as Leo had last loaded it --
-before the write. A re-navigation of the same URL returned $1.20 and
-`3 entries`. A page read is only evidence for the moment it was *loaded*, which
-is not the moment it was read. Navigate first, then read.
+reads as a flat contradiction of the relay. What is observed: that tab was
+already open on that URL, the first action against it was a text read rather
+than a navigation, and re-navigating the same URL immediately after returned
+$1.20 and `3 entries`. The likeliest cause is that the read returned the page
+as Leo had last loaded it, before the write, but a cached or lagging response
+fits the same observation and this test cannot tell them apart. Either way the
+operational rule is the same, and it is the part worth keeping: a page read is
+evidence only for the moment the page was *loaded*, which need not be the
+moment it was read. Navigate first, then read.
 
 What still gates the launch is Leo's own go-ahead for the GPU spend, given in
 the test session; under the brief a hub-lead relay is not spend approval.
