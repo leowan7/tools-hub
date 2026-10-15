@@ -448,6 +448,65 @@ overshoot is expected and is not a defect: the stop can only ever fire on a
 tick, so the run can run up to 5 minutes past the moment it owes more than the
 balance covers.
 
+### The launch, as it happened
+
+Leo gave the per-job go-ahead in the test session on 2026-10-15. The run was
+submitted from the browser already signed in as `leowan7+t1@gmail.com`.
+
+**Job `cbaa3b67-8663-4b6d-8772-34cc5ef576b3`**, submitted `15 Oct 2026, 04:33
+UTC` as printed by the job page.
+
+Form as submitted, read back off the page before the click:
+
+| Field | Value |
+| --- | --- |
+| Target PDB | `4ZQK.pdb`, uploaded whole |
+| Target chain | `A` |
+| Hotspot residues | `54,56,115`, typed |
+| Binder length | 55 to 65 |
+| Number of designs | 4 |
+| Preset, as the job page labels it | `trial run` |
+
+The free `Check my settings` pass ran first and returned `Settings look good.
+Nothing was charged and no run was started.` Its readout agreed with the target
+notes recorded above launch: `chain A -- 115 residues`, `Hotspots 54, 56, 115
+-- all preserved`, `Size envelope: 115 aa target (cap 500 aa on A100-40GB)`,
+and cleanup dropping 10 residues (waters / HETATM / incomplete backbone) plus
+chain B as the non-target chain. The page offered to substitute the AlphaFold
+model `AF-Q9NZQ7`; that was declined, because the brief fixes the crystal
+structure and swapping it would change the target mid-test.
+
+**The hotspot field had to be typed twice.** The first attempt used a
+reference-targeted triple-click followed by a type, inside a batch issued right
+after the upload. Every action reported success, yet the field stayed empty:
+the summary chip still read `4ZQK.pdb, chain A, 0 hotspots` and the form showed
+the blocking message `This tool needs at least one hotspot residue.` A
+coordinate click on the field followed by the same typing took, and the chip
+moved to `3 hotspots`. The earlier read had also shown
+`textbox "54,56,115" ... placeholder="54,56,115"`, where the accessible name is
+the placeholder and not a value -- the field reads as populated when it is not.
+Anyone scripting this form should assert on the summary chip's hotspot count,
+not on the field.
+
+**Preset naming.** The job page prints `Preset trial run`. The cost derivation
+in this document was computed for the slug `pilot`. The tool page's own preset
+block is headed `TRIAL RUN: 8 BINDERS`, so `trial run` reads as the display
+name for that slug rather than a different preset, but this document has not
+proved that, and the figures below stand or fall with it.
+
+**First ledger row, at submission.** The transactions page gained one row
+within seconds of the submit:
+
+| When | Kind | Detail | Amount | Balance after |
+| --- | --- | --- | --- | --- |
+| `2026-10-15 04:33` | `RUN` | `rfdiffusion` / `charged as it runs; $0.00 so far` | `$0.00` | `$1.20` |
+
+That is the lineage anchor predicted from `0045_live_run_debits.sql`: an opening
+row of amount zero, not a reservation. The balance is untouched at submission,
+which is what "queue and boot are not billed" looks like from the ledger side.
+The status went `PENDING` -> `RUNNING` (`Running RFdiffusion 0 of 4 designs
+complete`) within about a minute of the click.
+
 ## Verdict
 
 Step 1: **PASS.** The start gate refuses rfdiffusion at $1.13 in both layers,
