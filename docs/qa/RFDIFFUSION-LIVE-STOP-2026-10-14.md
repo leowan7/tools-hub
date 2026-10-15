@@ -184,17 +184,27 @@ records:
 | Hotspot 115 | MET, CA present | same |
 | Heteroatoms in chain A | 1 NA, 9 HOH | `HETATM` with col 22 == `A` |
 
-115 residues is the closest available match to the 120-residue figure
-hard-coded in `live_start_usd` (`shared/wallet_guard.py:83`), so the start
-minimum derived in this document is the one that should apply at submit.
-Chain B (PD-1, 106 CA) is not used.
+Chain A's 115 residues sit just under the 120-residue figure hard-coded in
+`live_start_usd` (`shared/wallet_guard.py:83`), so the start minimum derived in
+this document should be close to the one that applies at submit. No other PDB
+entry was compared against that figure; chain B (PD-1, 106 CA) is the only
+other chain in this file and is not used.
 
-The three hotspots came from the rfdiffusion form's own worked example; they
-are not an independent epitope choice by this test.
+The three hotspots came from the rfdiffusion form itself, as the hotspot
+field's `placeholder="54,56,115"`
+(`templates/tools/rfdiffusion_form.html:202`). They are not an independent
+epitope choice by this test. A placeholder is grey hint text, not a submitted
+value, so the hotspots must be typed in; `binder_length_min` 55,
+`binder_length_max` 65 (lines 243, 246) and `num_designs` 4 (line 264) are
+real defaults, carried by `pre_value`, and the test's chosen parameters match
+them.
 
 ### Blocked
 
-Leo reported the balance set to $1.20. Three reads on 2026-10-15 disagree:
+Leo reported the balance set to $1.20. Three production page reads disagree,
+all taken on 2026-10-15 (UTC) through the browser session signed in as
+`leowan7+t1@gmail.com`. They are page reads, not repository facts, and nothing
+in this repo can reproduce them:
 
 | Page | Reads |
 | --- | --- |
