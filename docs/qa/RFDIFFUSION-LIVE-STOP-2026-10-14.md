@@ -220,6 +220,23 @@ step-2 observations would be void.
 
 The test does not write to production, so the balance change is Leo's to make.
 
+**Second blocker, found later on 2026-10-15: the browser session expired.**
+`https://tools.ranomics.com/account/wallet` now redirects to
+`/login?next=/account/wallet`, and the page offers "Continue with Google" or an
+email/password form. The test brief forbids this session from entering
+passwords, so the wallet cannot be re-read until Leo signs in again. The three
+reads in the table above were taken before this, while the session was live.
+
+**A second run of the balance script was reported, and is not verified here.**
+The hub lead relayed on 2026-10-15 that Leo re-ran `t1-set-balance-1.20.sql`
+and that both columns of its final `SELECT` read 1.20. That is recorded as
+reported, not confirmed: the relay is not a production read, the hub lead
+states it did not read production either, and the sign-out above prevents this
+session from checking. Under the brief's GPU rule a hub-lead relay is also not
+spend approval, which must come from Leo in the test session directly. So two
+things gate the launch — a signed-in page read showing $1.20, and Leo's own
+go-ahead.
+
 ### Predicted, from the code, before the run
 
 Written before launch so these are predictions, not readings. Each cites the
