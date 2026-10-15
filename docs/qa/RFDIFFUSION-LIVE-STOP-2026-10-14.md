@@ -611,8 +611,9 @@ balance and the individual rows agree to the cent, and the `so far` roll-up
 sits a cent below both. The same gap recurs at settlement, in the same
 direction. Which of the two figures is the accurate one is not settled by this
 reading; the resolved section below reads the display helper and finds it is
-the roll-up, with the per-row displays rounding half-up above their exact
-values.
+the roll-up. The per-row displays round half-up, which goes either way on any
+single row, so the statement that holds is only the aggregate one: the
+displayed rows sum above the exact total.
 
 No money is missing, and the mechanism is documented in the code. The resolved
 version is below; it took reading the display helper to get this right, and the
@@ -692,10 +693,11 @@ sliced `[:16]` -- so the true gap is bounded at 60 to 180 seconds, not 60 to
 stamped at the cron boundary.
 
 More importantly the window is the wrong one. Metering bills from
-`started_at`, which the **first heartbeat** stamps
-(`webhooks/modal.py:314-320`; the behaviour is documented at
-`shared/jobs.py:1856`, which is prose and not the stamping code), and that
-instant is strictly later than the anchor row. Until the stamp exists and
+`started_at`, which the **first heartbeat** stamps: the handler calls
+`mark_running` (`webhooks/modal.py:314-320`), which writes
+`"started_at": _now_iso()` at `shared/jobs.py:1664`. The behaviour is also
+described in prose at `shared/jobs.py:1856`, which is a docstring and not the
+stamping code. That instant is strictly later than the anchor row. Until the stamp exists and
 `inputs._progress` has been written, the meter skips the job entirely
 (`shared/jobs.py:1904-1908`).
 
