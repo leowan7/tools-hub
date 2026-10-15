@@ -1151,6 +1151,16 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
         re.I),
      "This run failed on our side, not because of your input.",
      _GENERIC_FIX),
+    # Ahead of "timeout": its detail is ColabFold's own log line, which can end
+    # "Read timed out." (tools/af2/run_pipeline.py::_msa_server_failure), and
+    # the timeout rule would tell the user to crop the target. Pinned by
+    # tests/test_msa_server_outage.py::TestAdviceAndBilling.
+    ("msa_server", re.compile(r"\btool-invocation:msa_server\b", re.I),
+     "The public sequence-search service we use did not respond, so the run "
+     "stopped before folding. Your input was fine.",
+     "Nothing in your input needs to change. Wait a few hours before you "
+     "run it again: a run sent while the service is still down stops the "
+     "same way. If it still fails after that, contact us with the job ID."),
     ("timeout", re.compile(r"timeout|timed out|time limit", re.I),
      "The run hit its time limit before it finished.",
      "Ask for fewer designs, or crop the target to the domain you want to "
