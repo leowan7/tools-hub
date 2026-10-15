@@ -13,6 +13,11 @@
     Window: {{ p.window_start[:19] }} → {{ p.window_end[:19] }}
     ({{ p.window_hours }}h)
   </p>
+  {% if not p.internal_filter_ok %}
+    <p style="margin:0 0 1.25rem 0;font-size:13px;color:#b35900;">
+      Could not list accounts: new signups are missing, and Leo's own accounts are counted in runs, activity and money below.
+    </p>
+  {% endif %}
 
   {# ------- Section 1: Headline ------- #}
   <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:1.5rem;">
@@ -54,10 +59,68 @@
       <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.active_users }}</td>
     </tr>
     <tr>
-      <td style="padding:6px 0;color:#666;">Pricing-page views</td>
-      <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.pricing_views }}</td>
+      <td style="padding:6px 0;color:#666;">People who viewed pricing</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.pricing_viewers }}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 0;color:#666;">Signups that read commercial</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.commercial_signups }}</td>
     </tr>
   </table>
+
+  {# ------- Section 1b: Money ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Money
+  </h2>
+  {% if not p.money_ok %}
+    <p style="font-size:13px;color:#b35900;margin:0;">The wallet ledger could not be read; no money figures this time.</p>
+  {% else %}
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:.75rem;">
+      <tr>
+        <td style="padding:6px 0;color:#666;width:55%;">Paid in (top-ups + auto-reloads)</td>
+        <td style="padding:6px 0;font-weight:600;text-align:right;">
+          ${{ '%.2f' % p.payments_usd }}
+          <span style="color:#888;font-weight:400;font-size:12px;">
+            ({{ p.payments_count }} payment{{ '' if p.payments_count == 1 else 's' }} from {{ p.payments_users }} user{{ '' if p.payments_users == 1 else 's' }}{% for k, v in p.payments_by_kind.items() %} · {{ v }} {{ k }}{% endfor %})
+          </span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:6px 0;color:#666;">Spent on runs</td>
+        <td style="padding:6px 0;font-weight:600;text-align:right;">
+          ${{ '%.2f' % p.spend_usd }}
+          <span style="color:#888;font-weight:400;font-size:12px;">
+            ({{ p.spend_users }} user{{ '' if p.spend_users == 1 else 's' }}, signup credit included)
+          </span>
+        </td>
+      </tr>
+    </table>
+    {% if p.paid_users %}
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="text-align:left;color:#888;">
+            <th style="padding:4px 8px 4px 0;font-weight:500;">Who paid</th>
+            <th style="padding:4px 0;font-weight:500;text-align:right;">Paid</th>
+            <th style="padding:4px 0;font-weight:500;text-align:right;">Spent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in p.paid_users %}
+            <tr style="border-top:1px solid #f0f0f0;">
+              <td style="padding:6px 8px 6px 0;">
+                <a href="{{ u.url }}" style="color:#2B9E7E;text-decoration:none;">{{ u.email }}</a>
+                {% if u.payments > 1 %}<span style="font-size:11px;color:#888;"> · {{ u.payments }} payments</span>{% endif %}
+              </td>
+              <td style="padding:6px 0;text-align:right;font-weight:600;">${{ '%.2f' % u.paid_usd }}</td>
+              <td style="padding:6px 0;text-align:right;color:#555;">${{ '%.2f' % u.spend_usd }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p style="font-size:13px;color:#888;margin:0;">Nobody paid in this window.</p>
+    {% endif %}
+  {% endif %}
 
   {# ------- Section 2: Who's hot ------- #}
   <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
@@ -114,6 +177,7 @@
           <tr style="border-top:1px solid #f0f0f0;">
             <td style="padding:6px 8px 6px 0;">
               <a href="{{ s.url }}" style="color:#2B9E7E;text-decoration:none;">{{ s.email }}</a>
+              {% if s.commercial %}<div style="font-size:11px;color:#b35900;">commercial? {{ s.commercial | join(' · ') }}</div>{% endif %}
             </td>
             <td style="padding:6px 8px 6px 0;">{{ s.signup_quality }}</td>
             <td style="padding:6px 8px 6px 0;color:#555;font-style:italic;">

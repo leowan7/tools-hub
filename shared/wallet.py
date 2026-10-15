@@ -1614,6 +1614,11 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
             "net_spend_usd lookup failed for %s", user_id, exc_info=True
         )
         return Decimal("0")
+    return net_spend_of_rows(rows)
+
+
+def net_spend_of_rows(rows) -> Decimal:
+    """The :func:`_net_spend_usd` formula over one user's ledger rows."""
     holds = releases = charges = Decimal("0")
     for r in rows:
         amount = Decimal(str(r.get("amount_usd") or 0)).copy_abs()

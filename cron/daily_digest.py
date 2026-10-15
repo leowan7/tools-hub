@@ -3,10 +3,13 @@
 A single structured email sent to ``STAFF_NOTIFY_EMAIL`` each morning
 covering the trailing 24 hours of activity:
 
-  Headline       counts of signups, rejections, runs, active users
+  Headline       counts of signups, rejections, runs, active users,
+                 people who viewed pricing
+  Money          top-ups + auto-reloads, run spend, and who paid
   Who's hot      high-intent users (≥3 runs, pricing view, paywall hit,
                  first-day-active business/academic signups)
-  New signups    each new signup with classification + purpose snippet
+  New signups    each new signup with classification + purpose snippet,
+                 flagged when the domain or purpose reads commercial
   Tool activity  per-tool run counts + status breakdown
   Rejections     breakdown by reason with sample emails
   Lapsed users   users active 7-14 days ago, silent in last 24h
@@ -15,6 +18,10 @@ The digest is intentionally noisier than a per-event ping — Leo reads
 this once with coffee, not throughout the day. The "Who's hot" section
 is the centerpiece: it surfaces the small number of users who deserve
 a manual reach-out.
+
+Leo's own accounts (``_is_internal``) are left out of every count and
+list when auth.users can be listed; when it cannot, runs, events and
+money include them and ``internal_filter_ok`` is False.
 
 CLI entry point::
 
@@ -26,14 +33,64 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from flask import render_template
 
 logger = logging.getLogger(__name__)
+
+_LEDGER_PAGE = 1000
+_PAYMENT_KINDS = ("topup", "auto_reload")
+_SPEND_KINDS = ("hold", "hold_release", "charge", "run_debit")
+
+_COMMERCIAL_WORDS = re.compile(
+    r"\b(?:drug|antigen|therapeutic|target|company)|药|抗原|治疗|靶|公司",
+    re.IGNORECASE,
+)
+
+
+def _is_internal(email: Optional[str]) -> bool:
+    """Leo's own accounts: anything @ranomics.com, and leowan7*@gmail.com."""
+    e = (email or "").strip().lower()
+    return e.endswith("@ranomics.com") or (
+        e.startswith("leowan7") and e.endswith("@gmail.com")
+    )
+
+
+def _commercial_signals(email: Optional[str], purpose: str) -> List[str]:
+    """Why a signup might be a buyer: a company domain, or a purpose word."""
+    from shared.email_domain import EmailClass, classify_email  # noqa: PLC0415
+
+    signals = ["company domain"] if classify_email(email) == EmailClass.BUSINESS else []
+    for word in _COMMERCIAL_WORDS.finditer(purpose or ""):
+        w = word.group(0).lower()
+        if w not in signals:
+            signals.append(w)
+    return signals
+
+
+def _ledger_rows(client, kinds, since_iso: str) -> List[dict]:
+    rows: List[dict] = []
+    while True:
+        page = (
+            client.table("wallet_transactions")
+            .select("id,user_id,kind,amount_usd,created_at")
+            .in_("kind", list(kinds))
+            .gte("created_at", since_iso)
+            .order("id")
+            .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < _LEDGER_PAGE:
+            return rows
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +118,22 @@ class DigestPayload:
     runs_total: int = 0
     runs_by_status: Dict[str, int] = field(default_factory=dict)
     active_users: int = 0
-    pricing_views: int = 0
+    # Distinct people: user_id when signed in, else session_id.
+    pricing_viewers: int = 0
+    commercial_signups: int = 0
+    # False when auth.users could not be listed: internal_ids stays empty,
+    # so runs, events and money include internal accounts.
+    internal_filter_ok: bool = True
+
+    # Money (public.wallet_transactions). money_ok False = ledger unreadable.
+    money_ok: bool = True
+    payments_count: int = 0
+    payments_users: int = 0
+    payments_usd: float = 0.0
+    payments_by_kind: Dict[str, int] = field(default_factory=dict)
+    spend_usd: float = 0.0
+    spend_users: int = 0
+    paid_users: List[Dict[str, Any]] = field(default_factory=list)
 
     # Sections
     hot_users: List[Dict[str, Any]] = field(default_factory=list)
@@ -124,8 +196,11 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         logger.warning("digest: user_profiles query failed", exc_info=True)
 
     # auth.users for legacy signups (no profile row): include them by
-    # listing all users created in the window, then merging.
+    # listing all users created in the window, then merging. The same
+    # listing labels rows by email and finds the internal accounts.
     auth_in_window: dict = {}
+    email_lookup: dict = {}
+    internal_ids: set = set()
     try:
         for u in list_all_auth_users(client):
             created = (
@@ -140,9 +215,15 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
                 getattr(u, "email", None)
                 or (u.get("email") if isinstance(u, dict) else None)
             )
-            if uid and created and str(created) >= window_start_iso:
+            if not uid:
+                continue
+            email_lookup[uid] = email
+            if _is_internal(email):
+                internal_ids.add(uid)
+            elif created and str(created) >= window_start_iso:
                 auth_in_window[uid] = {"email": email, "created_at": str(created)}
     except Exception:
+        payload.internal_filter_ok = False
         logger.warning("digest: auth admin.list_users failed", exc_info=True)
 
     profile_by_id = {p["user_id"]: p for p in profile_rows}
@@ -152,17 +233,20 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         prof = profile_by_id.get(uid, {})
         quality = prof.get("signup_quality") or "legacy"
         signups_by_quality[quality] += 1
+        purpose = prof.get("purpose") or ""
         new_signups.append({
             "user_id": uid,
             "email": info["email"] or uid[:8],
             "created_at": info["created_at"][:19],
             "signup_quality": quality,
             "domain_class": prof.get("domain_class") or "",
-            "purpose": (prof.get("purpose") or "")[:200],
+            "purpose": purpose[:200],
+            "commercial": _commercial_signals(info["email"], purpose),
             "url": f"{site_base}/admin/users/{uid}",
         })
     payload.signups_total = sum(signups_by_quality.values())
     payload.signups_by_quality = dict(signups_by_quality)
+    payload.commercial_signups = sum(1 for s in new_signups if s["commercial"])
     payload.new_signups = sorted(
         new_signups, key=lambda s: s["created_at"], reverse=True
     )
@@ -182,6 +266,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     except Exception:
         logger.warning("digest: signup_rejections query failed", exc_info=True)
 
+    rejection_rows = [r for r in rejection_rows if not _is_internal(r.get("email"))]
     reason_groups: dict = defaultdict(list)
     for r in rejection_rows:
         reason_groups[r.get("reason") or "unknown"].append(r)
@@ -221,7 +306,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
             if (props.get("reason") or "") != "existing_account":
                 continue
             em = (props.get("email") or "").lower().strip()
-            if not em:
+            if not em or _is_internal(em):
                 continue
             per_email[em].append(e)
         for em, hits in per_email.items():
@@ -254,6 +339,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         )
     except Exception:
         logger.warning("digest: tool_jobs query failed", exc_info=True)
+    run_rows = [r for r in run_rows if r.get("user_id") not in internal_ids]
 
     status_counter: Counter = Counter()
     tool_counter: Counter = Counter()
@@ -292,7 +378,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     try:
         event_rows = (
             client.table("user_events")
-            .select("user_id,event_type,path,created_at")
+            .select("user_id,session_id,event_type,path,created_at")
             .gte("created_at", window_start_iso)
             .execute()
             .data
@@ -301,9 +387,27 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     except Exception:
         logger.warning("digest: user_events query failed", exc_info=True)
 
+    # A browser session signed in as an internal account at some point in
+    # the window is internal for its logged-out events in the window too.
+    internal_sessions = {
+        e.get("session_id") for e in event_rows
+        if e.get("user_id") in internal_ids and e.get("session_id")
+    }
+    event_rows = [
+        e for e in event_rows
+        if e.get("user_id") not in internal_ids
+        and not (e.get("session_id") and e.get("session_id") in internal_sessions)
+    ]
+
+    # A logged-out view on a session that signs in during the window is
+    # that user's view, not a second person.
+    session_user = {
+        e["session_id"]: e["user_id"] for e in event_rows
+        if e.get("user_id") and e.get("session_id")
+    }
     events_by_user: dict = defaultdict(lambda: defaultdict(int))
     paths_by_user: dict = defaultdict(set)
-    pricing_views = 0
+    pricing_viewers: set = set()
     active_user_ids: set = set()
     for e in event_rows:
         uid = e.get("user_id")
@@ -315,32 +419,16 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
             if path:
                 paths_by_user[uid].add(path)
         if etype == "pricing_view":
-            pricing_views += 1
+            sid = e.get("session_id")
+            viewer = uid or session_user.get(sid) or (f"session:{sid}" if sid else None)
+            if viewer:
+                pricing_viewers.add(viewer)
     for uid in runs_by_user:
         active_user_ids.add(uid)
     payload.active_users = len(active_user_ids)
-    payload.pricing_views = pricing_views
+    payload.pricing_viewers = len(pricing_viewers)
 
     # --- 5. Who's hot ------------------------------------------------------
-    # Build a quick email lookup for the active users so we can label
-    # rows without hammering admin.get_user_by_id per uid.
-    email_by_id: dict = {info["email"]: info for info in auth_in_window.values()}
-    email_lookup: dict = {}
-    try:
-        for u in list_all_auth_users(client):
-            uid = (
-                getattr(u, "id", None)
-                or (u.get("id") if isinstance(u, dict) else None)
-            )
-            email = (
-                getattr(u, "email", None)
-                or (u.get("email") if isinstance(u, dict) else None)
-            )
-            if uid:
-                email_lookup[uid] = email
-    except Exception:
-        logger.warning("digest: email lookup failed", exc_info=True)
-
     # Pull profile data for active users not already loaded.
     if active_user_ids:
         try:
@@ -425,6 +513,8 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     for r in lapsed_run_rows + lapsed_event_rows:
         uid = r.get("user_id")
         ts = r.get("created_at") or ""
+        if uid in internal_ids:
+            continue
         if uid and ts > last_seen.get(uid, ""):
             last_seen[uid] = ts
     lapsed_users: List[dict] = []
@@ -439,6 +529,58 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         })
     lapsed_users.sort(key=lambda x: x["last_active"], reverse=True)
     payload.lapsed_users = lapsed_users[:20]
+
+    # --- 7. Money ------------------------------------------------------------
+    from shared.wallet import net_spend_of_rows  # noqa: PLC0415
+
+    payment_rows: List[dict] = []
+    spend_rows: List[dict] = []
+    try:
+        payment_rows = _ledger_rows(client, _PAYMENT_KINDS, window_start_iso)
+        spend_rows = _ledger_rows(client, _SPEND_KINDS, window_start_iso)
+    except Exception:
+        payload.money_ok = False
+        logger.warning("digest: wallet_transactions query failed", exc_info=True)
+
+    spend_rows_by_user: dict = defaultdict(list)
+    for r in spend_rows:
+        if r.get("user_id") not in internal_ids:
+            spend_rows_by_user[r.get("user_id")].append(r)
+    spend_by_user = {
+        uid: net_spend_of_rows(rows) for uid, rows in spend_rows_by_user.items()
+    }
+
+    paid_by_user: dict = defaultdict(lambda: {"usd": Decimal("0"), "count": 0})
+    payments_by_kind: Counter = Counter()
+    for r in payment_rows:
+        uid = r.get("user_id")
+        if uid in internal_ids:
+            continue
+        paid_by_user[uid]["usd"] += Decimal(str(r.get("amount_usd") or 0))
+        paid_by_user[uid]["count"] += 1
+        payments_by_kind[r.get("kind")] += 1
+
+    payload.payments_count = sum(payments_by_kind.values())
+    payload.payments_users = len(paid_by_user)
+    payload.payments_usd = float(sum((p["usd"] for p in paid_by_user.values()), Decimal("0")))
+    payload.payments_by_kind = dict(payments_by_kind)
+    payload.spend_usd = float(sum(spend_by_user.values(), Decimal("0")))
+    payload.spend_users = sum(1 for v in spend_by_user.values() if v > 0)
+    payload.paid_users = sorted(
+        (
+            {
+                "user_id": uid,
+                "email": email_lookup.get(uid) or uid[:8],
+                "paid_usd": float(p["usd"]),
+                "payments": p["count"],
+                "spend_usd": float(spend_by_user.get(uid, Decimal("0"))),
+                "url": f"{site_base}/admin/users/{uid}",
+            }
+            for uid, p in paid_by_user.items()
+        ),
+        key=lambda u: u["paid_usd"],
+        reverse=True,
+    )
 
     return payload
 
