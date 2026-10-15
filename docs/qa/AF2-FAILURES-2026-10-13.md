@@ -1,5 +1,7 @@
 # af2 failures on 2026-10-13: triage
 
+> Snapshot written before the fix. Line cites are as of commit 6a47aeb9 and are now stale. The "smallest useful fix" below has since been made, in both `tools/af2/run_pipeline.py` and `tools/colabfold/run_pipeline.py` (`_msa_server_failure`), with its advice row in `shared/jobs.py::_FAILURE_RULES`.
+
 Source claim: `docs/growth/DIGEST-ANALYSIS-2026-10-14.md` section 4 counts "3 failed and 1 timed out on af2, out of 5 runs" from the 10-13 digest. That count is checked below. It is only partly confirmed.
 
 ## Method
