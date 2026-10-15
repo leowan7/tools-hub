@@ -220,6 +220,57 @@ step-2 observations would be void.
 
 The test does not write to production, so the balance change is Leo's to make.
 
+### Predicted, from the code, before the run
+
+Written before launch so these are predictions, not readings. Each cites the
+deployed build; the run either confirms or falsifies them.
+
+The three surfaces the brief asks about are not three independent decisions.
+The page and the email both read one predicate, `stopped_for_balance`
+(`shared/run_notices.py:28-38`), which is true exactly when the job status is
+`succeeded` and `result["stop_reason"]` equals `WALLET_STOP_REASON`
+(`"wallet_empty"`, `shared/jobs.py:1836`).
+
+| Surface | Will it say "stopped by balance"? | Why |
+| --- | --- | --- |
+| Run page | Predicted yes | `templates/job_detail.html:250-251` renders "Stopped: your wallet balance reached $0" plus an "Add funds" link under `stopped_for_balance`, passed in at `blueprints/jobs.py:790` |
+| Email | Predicted yes | subject `shared/email.py:73`, headline `:214`, top-up link `:229`, all three gated on the same predicate |
+| CSV | Predicted **no** | `candidates_to_csv` takes `candidates`, `fetch_bytes` and `default_job_id` only (`shared/exports.py:704-707`) — no job and no result dict reach it, so it has no field that could carry a stop reason |
+
+The CSV prediction is structural rather than an omission: the export is built
+per candidate row, so there is nowhere for a run-level notice to go.
+
+### A correction to the brief's expected outcome
+
+The brief expects the run to end "`succeeded` + partial, or `completed_no_yield`".
+On this build those are not two values of one field:
+
+- The balance stop hard-codes `terminal_status="succeeded"` and writes
+  `partial: True` with `stop_reason` (`shared/jobs.py:1951-1965`). Status is
+  `succeeded` whether or not any design survived.
+- `completed_no_yield` is a **`failure_class`**, a separate column written by
+  `classify_terminal_state` (called at `shared/jobs.py:1689`, `:1717`,
+  `:1740`, `:1997`). It is returned for a `succeeded` run whose candidate
+  array is present and empty (`:865`).
+
+So a zero-design balance stop is predicted to be `status=succeeded` **and**
+`failure_class=completed_no_yield` at the same time, and still to read as
+stopped-for-balance on the page and in the email, because `stopped_for_balance`
+reads `status`, not `failure_class`. `completed_no_yield` is in
+`_BILLED_FAILURE_CLASSES` (`shared/jobs.py:789-795`), so a zero-design run is
+still billed for the GPU it consumed.
+
+If instead the page or email goes quiet on a zero-design run, that falsifies
+this reading and is worth a defect.
+
+### The email cannot be read from inside the app
+
+There is no staff or admin view of sent mail: the only `email_log` in the tree
+is a pytest fixture (`tests/test_stripe_webhooks.py:127`). The completion mail
+goes to `leowan7+t1@gmail.com`, so answering the brief's email question needs
+Leo to open or forward that message. Everything else here is readable without
+his inbox.
+
 ## Verdict
 
 Step 1: **PASS.** The start gate refuses rfdiffusion at $1.13 in both layers,
