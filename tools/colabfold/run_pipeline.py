@@ -731,8 +731,31 @@ def run_colabfold(
             f"colabfold_batch exited {result.returncode} — see Modal function logs.",
         )
 
+    msa_line = _msa_server_failure(out_dir)
+    if msa_line:
+        _fail("tool-invocation", "msa_server", msa_line)
+
     logger.info("colabfold exit 0")
     return out_dir
+
+
+def _msa_server_failure(out_dir: Path) -> str | None:
+    """ColabFold's "Could not get MSA/templates" line, when a call to the MSA server failed.
+
+    On that error colabfold_batch logs the line, skips the query and still
+    exits 0, so without this check the run fails later as parser:pdb_missing
+    (docs/qa/AF2-FAILURES-2026-10-13.md). Only a line naming
+    api.colabfold.com counts; any other exception keeps the parser path.
+    """
+    try:
+        text = (out_dir / "log.txt").read_text(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        start = line.find("Could not get MSA/templates")
+        if start >= 0 and "api.colabfold.com" in line:
+            return line[start:]
+    return None
 
 
 # ===========================================================================
