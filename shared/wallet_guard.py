@@ -36,6 +36,7 @@ from shared.wallet import (
     wallet_preflight,
 )
 from shared.wallet_estimates import (
+    TOOL_SPECS,
     cushioned_hold_usd,
     estimated_cost_for_tool,
     gpu_class_for_job,
@@ -53,10 +54,13 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # rfdiffusion uploads each design in the llm-proteinDesigner container
 # (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
 # here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
-# tier the hub can send it.
+# tier the hub can send it. bindcraft uploads each accepted design on its 60 s
+# heartbeat tick, in the same repo at 18382cd
+# (docker/bindcraft/run_pipeline.py::_DesignStreamer);
+# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier.
 # proteina uploads each design in tools/proteina/run_pipeline.py::_run_shard,
 # pinned by the same test.
-_LIVE_ALL_PRESETS = frozenset({"boltz2", "rfdiffusion", "proteina"})
+_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "rfdiffusion", "proteina"})
 # Campaign tools whose children open a live anchor instead of a cushioned
 # hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
 # tool keeps its hold.
@@ -74,7 +78,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0, except on rfdiffusion.
+    """The balance a live run needs to start: $0, except on rfdiffusion and bindcraft.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -83,10 +87,19 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     covers that stretch. The figure is derived, not measured: the
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
+
+    bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
+    Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
+    the up-front hold, which was $8.00 on a 2-design run
+    (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2 retry").
+    tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that.
     """
-    if tool_slug != "rfdiffusion":
+    if tool_slug == "bindcraft":
+        return TOOL_SPECS[tool_slug].base_hard_cap_usd
+    if tool_slug == "rfdiffusion":
+        seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
+    else:
         return Decimal("0")
-    seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
 
 
