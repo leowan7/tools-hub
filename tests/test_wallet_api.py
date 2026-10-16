@@ -151,7 +151,7 @@ class TestEstimateEndpointShape:
             return_value={"balance_usd": 5.0, "wallet_frozen": False},
         ):
             _login(client)
-            resp = client.get("/api/wallet/estimate?tool=bindcraft&num_designs=1")
+            resp = client.get("/api/wallet/estimate?tool=pxdesign&num_designs=1")
         body = resp.get_json()
         assert Decimal(body["estimate_usd"]) > Decimal("5")
         assert body["exceeds_hard_cap"] is False
@@ -177,7 +177,7 @@ class TestEstimateEndpointShape:
             "blueprints.wallet.cushioned_hold_usd", return_value=Decimal("8.00"),
         ):
             _login(client)
-            body = client.get("/api/wallet/estimate?tool=bindcraft&num_designs=1").get_json()
+            body = client.get("/api/wallet/estimate?tool=pxdesign&num_designs=1").get_json()
         assert body["required_usd"] == "8.00"
         assert Decimal(body["deficit_usd"]) == Decimal("1.00")
 
@@ -381,7 +381,7 @@ class TestRequiresWalletBlocksAtMoment2:
             REASON_INSUFFICIENT,
         )
 
-        @requires_wallet(tool_slug="bindcraft")
+        @requires_wallet(tool_slug="pxdesign")
         def handler():  # pragma: no cover (must not be called)
             raise AssertionError("handler should not run when blocked")
 
@@ -433,7 +433,7 @@ class TestRequiresWalletBlocksAtMoment2:
         assert rendered_tpl == "wallet/topup.html"
         ctx = render.call_args.kwargs
         assert ctx["gate_reason"] == REASON_INSUFFICIENT
-        assert ctx["tool_slug"] == "bindcraft"
+        assert ctx["tool_slug"] == "pxdesign"
 
 
 class TestRequiresWalletBlocksAtMoment3:
@@ -446,7 +446,7 @@ class TestRequiresWalletBlocksAtMoment3:
             REASON_PER_TOOL_CAP,
         )
 
-        @requires_wallet(tool_slug="bindcraft")
+        @requires_wallet(tool_slug="pxdesign")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run")
 
@@ -497,7 +497,7 @@ class TestRequiresWalletBlocksAtMoment3:
             REASON_SELF_SERVE_CEILING,
         )
 
-        @requires_wallet(tool_slug="bindcraft")
+        @requires_wallet(tool_slug="pxdesign")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run")
 
@@ -615,7 +615,7 @@ class TestRequiresWalletReserveLost:
         from app import requires_wallet
         from shared.wallet import PreflightResult, REASON_OK
 
-        @requires_wallet(tool_slug="bindcraft")
+        @requires_wallet(tool_slug="pxdesign")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run when hold is None")
 
@@ -1011,7 +1011,7 @@ def test_guard_decides_a_short_gate_on_the_hold():
     from app import requires_wallet
     from shared.wallet import REASON_INSUFFICIENT, PreflightResult
 
-    @requires_wallet(tool_slug="bindcraft")
+    @requires_wallet(tool_slug="pxdesign")
     def handler():  # pragma: no cover
         raise AssertionError("handler should not run when blocked")
 

@@ -4,6 +4,9 @@ What admits a job is the CUSHIONED HOLD: ``shared/wallet_guard`` reserves
 ``cushioned_hold_usd`` via ``shared.wallet.reserve_hold``, which refuses on
 ``balance < hold`` before any SQL runs. On any tool carrying a
 ``worst_case_gpu_seconds`` floor the hold sits well above the displayed price.
+A live-charging run reserves no hold; what admits it is ``live_start_usd``
+(``shared/wallet_guard.py`` ``requires_wallet``, the ``0 < balance <
+live_start_usd`` refusal), so that is the figure measured for it here.
 
 History: this file used to assert the credit admitted EVERY tool's smallest run,
 which is why the credit went $15 -> $20 on 2026-09-10. On 2026-09-28 Leo cut the
@@ -15,8 +18,8 @@ cap or credit change that moves a tool across it fails here and sends someone to
 re-read that copy.
 
 A tool is "needs a top-up" when its smallest-run hold leaves less than $1.00 of
-the credit: a hold EQUAL to the credit (rfdiffusion, $5.00) admits a user who
-has spent nothing and refuses one who has spent a cent.
+the credit: a hold EQUAL to the credit admits a user who has spent nothing
+and refuses one who has spent a cent.
 
 At one unit of the scaling parameter ``compute_hard_cap`` clamps its ratio to
 1.0, so for the capped tools the hold is ``base_hard_cap_usd``; see
@@ -31,6 +34,7 @@ import pytest
 
 from shared import wallet_estimates as we
 from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet_guard import live_charging_enabled, live_start_usd
 
 # Both p90 regimes are evaluated and the LARGER hold is used: the historical-p90
 # branch engages at >= MIN_HISTORICAL_RUNS and can move the hold.
@@ -46,12 +50,14 @@ NEEDS_TOPUP = {
     "esmfold2-design",
     "opendde",
     "pxdesign",
-    "rfdiffusion",
 }
 # proteina and rfantibody left this set on 2026-09-30 when their bootstrap
 # estimates were cut to measured runtimes (TOOL_SPECS in
 # shared/wallet_estimates.py). The copy ("most binder design runs ... need a
-# top-up") still holds: five binder design tools remain here.
+# top-up") was read against this set then. rfdiffusion (#427) left it when it
+# went live: the credit covers its live_start_usd. bindcraft went live in #431
+# and stays, because its live_start_usd is its $8.00 cap. Leo, 2026-10-16: the
+# copy stays as it is.
 
 
 def _smallest_run_params(spec: we.ToolSpec) -> dict:
@@ -60,9 +66,14 @@ def _smallest_run_params(spec: we.ToolSpec) -> dict:
 
 
 def _worst_hold(slug: str, monkeypatch) -> tuple[Decimal, str]:
-    """The larger 1-unit hold across both p90 regimes, and which produced it."""
+    """The larger 1-unit hold across both p90 regimes, and which produced it.
+
+    On a live-charging run, its start minimum instead (module docstring).
+    """
     spec = we.TOOL_SPECS[slug]
     params = _smallest_run_params(spec)
+    if live_charging_enabled(slug, params):
+        return live_start_usd(slug, params), "live"
     worst, worst_regime = Decimal("-1"), ""
     for regime, p90 in _P90_REGIMES.items():
         monkeypatch.setattr(we, "_historical_p90_seconds", lambda _s, _v=p90: _v)
