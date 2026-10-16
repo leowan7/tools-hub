@@ -428,6 +428,53 @@ def write_fasta(records: list[dict[str, str]], antigen_header: str, antigen_seq:
     dest.write_text("\n".join(lines) + "\n")
 
 
+_CHAIN_ID_RECORDS = ("ATOM", "HETATM", "ANISOU", "TER")
+
+
+def relabel_colliding_antigen(
+    antigen_pdb: Path, antigen_chain: str, antibody_headers: set[str], dest: Path
+) -> tuple[Path, str]:
+    """Give the antigen a chain id no antibody record uses.
+
+    The antibody records are ``H`` plus an optional ``L``, kept as typed
+    (``_parse_antibody_fasta`` in tools/iggm/__init__.py), and the antigen
+    keeps its PDB chain id (``write_fasta``), so an antigen chain named ``H``
+    or ``L`` would share an id with an antibody chain in IgGM's output, where
+    ``_parse_pdb_chains`` merges the two. On a collision the antigen chain is
+    copied to ``dest`` under the first id, never ``H`` or ``L``, used by no
+    chain in the PDB and no antibody record; a structure that leaves no free
+    id fails as an input refusal rather than raising. Otherwise the inputs
+    come back as they are. The returned id is the one IgGM gets, and ``main``
+    reports it as ``antigen_chain`` so the label names the chain the delivered
+    PDBs carry. ``tests/test_iggm_save_as_you_go.py`` pins all three.
+    """
+    if antigen_chain not in antibody_headers:
+        return antigen_pdb, antigen_chain
+    lines = antigen_pdb.read_text().splitlines(keepends=True)
+    used = {ln[21] for ln in lines if ln.startswith(_CHAIN_ID_RECORDS) and len(ln) > 21}
+    free = next(
+        (
+            c for c in "ABCDEFGIJKMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+            if c not in used and c not in antibody_headers
+        ),
+        None,
+    )
+    if free is None:
+        _fail(
+            "input",
+            "antigen_chain",
+            f"Antigen chain {antigen_chain} shares its id with an antibody chain "
+            "and the structure leaves no free chain id to move it to.",
+        )
+    dest.write_text("".join(
+        ln[:21] + free + ln[22:]
+        if ln.startswith(_CHAIN_ID_RECORDS) and len(ln) > 21 and ln[21] == antigen_chain
+        else ln
+        for ln in lines
+    ))
+    return dest, free
+
+
 def run_iggm(
     fasta_path: Path,
     antigen_pdb: Path,
@@ -564,14 +611,9 @@ def _looks_complete(path: Path, expected_chains: int) -> bool:
     design; the window needs a multi-second stall inside one ``write``, so it
     is left open on purpose.
 
-    Second ceiling: ``expected_chains`` counts the chains the run SUBMITTED
-    while this counts DISTINCT ids. The form validates the antigen chain id for
-    length only (``tools/iggm/__init__.py``) and antibody headers are ``H`` plus
-    an optional ``L`` (``_parse_antibody_fasta``), so a job whose antigen chain
-    is itself named ``H`` or ``L`` collides with an antibody record and the
-    output can never show as many ids as were submitted. No design is then taken
-    mid-run. That job loses streaming, not designs: the final sweep applies no
-    gate and still delivers every one of them.
+    ``expected_chains`` counts the chains the run SUBMITTED while this counts
+    DISTINCT ids, so the two agree only because ``relabel_colliding_antigen``
+    keeps an antigen chain named ``H`` or ``L`` off the antibody ids.
     """
     try:
         return len(_parse_pdb_chains(path.read_text())) >= max(expected_chains, 2)
@@ -777,8 +819,12 @@ def main() -> None:
             )
 
             # ---- build FASTA(s) ----
+            iggm_pdb, iggm_chain = relabel_colliding_antigen(
+                antigen_pdb, antigen_chain, {r["header"] for r in antibody},
+                workdir / "antigen_iggm.pdb",
+            )
             design_fasta = workdir / "design.fasta"
-            write_fasta(antibody, antigen_chain, antigen_seq, design_fasta)
+            write_fasta(antibody, iggm_chain, antigen_seq, design_fasta)
 
             fasta_origin_path: Path | None = None
             if run_task == "affinity_maturation" and fasta_origin_raw:
@@ -799,7 +845,7 @@ def main() -> None:
                 if hdr is not None and buf:
                     wt_records.append({"header": hdr, "sequence": "".join(buf).upper()})
                 fasta_origin_path = workdir / "origin.fasta"
-                write_fasta(wt_records, antigen_chain, antigen_seq, fasta_origin_path)
+                write_fasta(wt_records, iggm_chain, antigen_seq, fasta_origin_path)
 
             send_heartbeat(webhook_url, job_id, stage="designing", designs_total=total_passes)
 
@@ -810,7 +856,7 @@ def main() -> None:
                 _upload_design,
                 antigen_length=n_res,
                 epitope_positions=epitope_positions,
-                antigen_chain=antigen_chain,
+                antigen_chain=iggm_chain,
                 upload_endpoint=upload_endpoint,
                 job_token=job_token,
             )
@@ -825,7 +871,7 @@ def main() -> None:
                 )
 
             rc = run_iggm(
-                design_fasta, antigen_pdb, out_dir, run_task, epitope_positions,
+                design_fasta, iggm_pdb, out_dir, run_task, epitope_positions,
                 max_antigen_size, num_samples, fasta_origin_path,
                 on_poll=lambda: _sweep(True),
             )
@@ -906,7 +952,7 @@ def main() -> None:
                     "designs_completed": len(designs_out),
                     "designs": designs_out,
                     "artifact_keys": artifact_keys,
-                    "antigen_chain": antigen_chain,
+                    "antigen_chain": iggm_chain,
                     "antigen_length": n_res,
                     "epitope_positions": epitope_positions,
                     "epitope_pdb_resnums": epitope_pdb,
