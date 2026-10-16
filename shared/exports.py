@@ -490,7 +490,9 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     stored row says which is which -- a boltzgen / proteina / rfantibody row
     carries ``rank``, ``scores``, sometimes a ``name``, and no chain id at all
     (their ``tools/<pkg>/example/result.json``), and iggm's ``antigen_chain``
-    is the id the FORM supplied, which IgGM's output may have renamed:
+    is the id of the antigen chain in the delivered PDB, which is not
+    necessarily the one the form supplied
+    (``relabel_colliding_antigen`` in ``tools/iggm/run_pipeline.py``):
     ``epitope_contacts`` in ``tools/iggm/run_pipeline.py`` works around that
     by matching the antigen on LENGTH (``tests/test_iggm_smoke.py``,
     ``test_epitope_contacts_identifies_antigen_by_length``). So does
