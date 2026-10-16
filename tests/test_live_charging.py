@@ -30,9 +30,13 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion"}
+LIVE_ALL_PRESETS = {"boltz2", "iggm", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
+# iggm's base cap, the start minimum Leo picked on 2026-10-16.
+IGGM_START = Decimal("3.00")
+# The live tools that refuse a balance below a start minimum.
+STARTS = {"rfdiffusion": RFD_START, "iggm": IGGM_START}
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +74,18 @@ def test_live_tools_upload_each_design_mid_run(tool, chain, needs_loop):
     for funcs, in_loop in sites:
         assert funcs == chain
         assert in_loop or not needs_loop
+
+
+def test_iggm_uploads_and_beats_once_per_design():
+    """iggm streams through one sweep, which uploads and beats per design.
+
+    It is listed apart from the tools above because it uploads through
+    ``upload_file`` rather than ``upload_pdb``, and the per-design loop lives
+    in ``sweep_designs`` rather than in the caller: ``upload_one`` is the
+    injected uploader (``_upload_design`` at the call in ``main``).
+    """
+    assert _upload_sites("iggm", "upload_one") == [(("sweep_designs",), True)]
+    assert (("sweep_designs",), True) in _upload_sites("iggm", "send_heartbeat")
 
 
 # Live tools whose container is not in this repo, so the heartbeat check
@@ -181,11 +197,11 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
                            release=release, gate=gate)
 
 
-LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("af2", {"preset": "batch"}),
+LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("iggm", {}), ("af2", {"preset": "batch"}),
               ("colabfold", {"preset": "batch"}), ("esmfold", {"preset": "batch"})]
 
 
-@pytest.mark.parametrize("slug,form", [f for f in LIVE_FORMS if f[0] != "rfdiffusion"])
+@pytest.mark.parametrize("slug,form", [f for f in LIVE_FORMS if f[0] not in STARTS])
 def test_live_run_opens_an_anchor_on_any_balance_above_zero(slug, form):
     r = _post(slug, form, balance="0.01")
     assert r.body == "RAN"
@@ -212,6 +228,33 @@ def test_rfdiffusion_at_its_start_minimum_opens_an_anchor():
     r = _post("rfdiffusion", {}, balance=RFD_START)
     assert r.body == "RAN"
     r.open.assert_called_once_with("u-1", "rfdiffusion")
+    assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
+
+
+def test_iggm_start_minimum_is_its_base_cap_whatever_the_run_asks_for():
+    for params in ({}, {"num_samples": 1}, {"num_samples": 100},
+                   {"preset": "cdr_design", "num_samples": 4}):
+        assert live_start_usd("iggm", params) == IGGM_START
+    assert IGGM_START == TOOL_SPECS["iggm"].base_hard_cap_usd
+
+
+def test_the_signup_credit_still_admits_an_iggm_run():
+    from shared.wallet import SIGNUP_CREDIT_USD
+
+    assert IGGM_START < SIGNUP_CREDIT_USD
+
+
+def test_iggm_below_its_start_minimum_is_refused():
+    r = _post("iggm", {}, balance=IGGM_START - Decimal("0.0001"))
+    assert r.body == "GATE"
+    assert r.gate == REASON_INSUFFICIENT
+    r.open.assert_not_called()
+
+
+def test_iggm_at_its_start_minimum_opens_an_anchor():
+    r = _post("iggm", {}, balance=IGGM_START)
+    assert r.body == "RAN"
+    r.open.assert_called_once_with("u-1", "iggm")
     assert r.seen == {"hold_tx_id": "anchor-1", "live": True}
 
 
@@ -331,6 +374,8 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     ("af2", {"preset": "standalone"}, "0.10", True),
     ("rfdiffusion", {}, str(RFD_START - Decimal("0.0001")), True),
     ("rfdiffusion", {}, str(RFD_START), False),
+    ("iggm", {}, str(IGGM_START - Decimal("0.0001")), True),
+    ("iggm", {}, str(IGGM_START), False),
 ])
 def test_estimate_deficit_matches_the_guard(monkeypatch, tool, params, balance, short):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")

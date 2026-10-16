@@ -36,6 +36,7 @@ from shared.wallet import (
     wallet_preflight,
 )
 from shared.wallet_estimates import (
+    TOOL_SPECS,
     cushioned_hold_usd,
     estimated_cost_for_tool,
     gpu_class_for_job,
@@ -53,8 +54,12 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # rfdiffusion uploads each design in the llm-proteinDesigner container
 # (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
 # here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
-# tier the hub can send it.
-_LIVE_ALL_PRESETS = frozenset({"boltz2", "rfdiffusion"})
+# tier the hub can send it. iggm uploads and beats once per design inside its
+# own sweep, in this repo: tools/iggm/run_pipeline.py::sweep_designs calls
+# ``upload_one`` and ``send_heartbeat`` in its per-design loop, and
+# ::test_iggm_uploads_and_beats_once_per_design pins both. Every iggm preset
+# streams through that one sweep, so all three are enabled.
+_LIVE_ALL_PRESETS = frozenset({"boltz2", "iggm", "rfdiffusion"})
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -68,7 +73,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0, except on rfdiffusion.
+    """The balance a live run needs to start: $0, except on rfdiffusion and iggm.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -77,7 +82,16 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     covers that stretch. The figure is derived, not measured: the
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
+
+    iggm's figure is its base cap, ``TOOL_SPECS["iggm"].base_hard_cap_usd``.
+    Leo, 2026-10-16: "use the $3.00 start minimum". It is far above what a
+    short iggm run bills -- the paid cancel test charged $0.05 for 37 GPU-s
+    (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and it is below the
+    $5 signup credit, which therefore still admits an iggm run;
+    ::test_the_signup_credit_still_admits_an_iggm_run pins that.
     """
+    if tool_slug == "iggm":
+        return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug != "rfdiffusion":
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
