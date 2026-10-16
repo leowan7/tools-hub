@@ -97,7 +97,7 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     Leo, 2026-10-16: "use the $3.00 start minimum". It is far above what a
     short iggm run bills -- the paid cancel test charged $0.05 for 37 GPU-s
     (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and unlike bindcraft's
-    it is below the $5 signup credit, which therefore still admits an iggm run;
+    it is below ``SIGNUP_CREDIT_USD``, which therefore still admits an iggm run;
     ::test_the_signup_credit_still_admits_an_iggm_run pins that.
     """
     if tool_slug in ("bindcraft", "iggm"):

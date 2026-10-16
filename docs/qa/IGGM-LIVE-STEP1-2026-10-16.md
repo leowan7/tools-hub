@@ -1,8 +1,8 @@
 # IgGM live charging: STEP 1 report (2026-10-16)
 
-Free checks only: no GPU, no prod reads or writes. Code read at `origin/main` 6e322cc3. Every `file:line` below is at that commit, except the lines in `tools/iggm/run_pipeline.py` that PR #432 changes, which are called out as such.
+Free checks only: no GPU, no prod reads or writes. Code read at the then-tip of `main`, 6e322cc3. Every `file:line` in STEP 1 below is at that commit, except the lines in `tools/iggm/run_pipeline.py` that PR #432 then changed, which are called out as such. `main` has since moved on: #432 landed as 53dbe6e8 and the BindCraft live change (#431) as 8211785c, so those `file:line` references are the main-branch lines now.
 
-The STEP 3 PR, which would add IgGM to the live list, does not exist yet. Every line below saying IgGM is not live describes main today.
+STEP 1 and STEP 2 below were written before the live-list change, and every line in them saying IgGM is not live describes `main` as it stood at 6e322cc3. **The PR that carries this document is the STEP 3 change**: at its HEAD IgGM is on the live list (`shared/wallet_guard.py::_LIVE_ALL_PRESETS`).
 
 ## (a) Does IgGM stream designs mid-run? Yes
 
@@ -46,7 +46,7 @@ Preset `complex_prediction`, `num_samples=2` — the smallest run that can strea
 
 The $4.33 is not clamped away: `compute_hard_cap` scales the $3.00 base cap by `num_samples`, so at 2 samples the cap is $6.00.
 
-**No balance SQL is needed.** IgGM is not on the live list (`shared/wallet_guard.py::_LIVE_ALL_PRESETS`), so the run takes the pre-run cushioned hold: 1.5 × the point estimate, clamped to the cap. At the 60 s/pass bootstrap that is 1.5 × $0.1457 = **$0.22**. The +t1 account's balance after the BindCraft retry was $7.59 (`docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md`, PR #431 branch), which covers the hold and the worst case. If run history has pulled the point estimate up, the hold can only rise to the $6.00 cap, which $7.59 still covers.
+**No balance SQL is needed.** At the time of the test IgGM was not on the live list (`shared/wallet_guard.py::_LIVE_ALL_PRESETS`), so the run takes the pre-run cushioned hold: 1.5 × the point estimate, clamped to the cap. At the 60 s/pass bootstrap that is 1.5 × $0.1457 = **$0.22**. The +t1 account's balance after the BindCraft retry was $7.59 (`docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md`, then on the #431 branch, now merged as 8211785c), which covers the hold and the worst case. If run history has pulled the point estimate up, the hold can only rise to the $6.00 cap, which $7.59 still covers.
 
 ## STEP 2 plan (needs Leo's yes typed in this session)
 
@@ -56,7 +56,7 @@ The $4.33 is not clamped away: `compute_hard_cap` scales the $3.00 base cap by `
 - **Cut-off:** cancel at 10 minutes even with no design ($0.73). Such a run proves nothing, and the retry would need a fresh yes.
 - **Reads:** the job page only after its 5 s poll has fired, so the read is not of a pre-hydration placeholder.
 - **Record:** job id, GPU-seconds at the cancel, whether the streamed design survives in the table, `status.json` and every download, and the wallet ledger rows as the page rounds them. Leo runs any prod SQL himself; I run none.
-- **What this test cannot cover:** the balance-runs-out stop. The meter stops only live runs, and IgGM becomes live only once a STEP 3 change is merged and deployed. The cancel path is the only stop available now — the same limit STEP 2 had for BindCraft.
+- **What this test cannot cover:** the balance-runs-out stop. The meter stops only live runs, and IgGM became live only with the STEP 3 change below, which was not merged or deployed when the test ran. The cancel path is the only stop available now — the same limit STEP 2 had for BindCraft.
 
 ## STEP 2: paid cancel test, run 2026-10-16
 
