@@ -93,6 +93,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -565,6 +566,41 @@ def send_heartbeat(
         logger.debug("Heartbeat sent: %s (HTTP %d)", stage, resp.status_code)
     except Exception as exc:
         logger.warning("Heartbeat failed (%s): %s", stage, exc)
+
+
+# Seconds between the beats ``keepalive`` sends while a search chunk runs.
+KEEPALIVE_INTERVAL_S = 60
+
+
+class keepalive:
+    """Send a ``searching`` heartbeat every ``interval`` seconds until exit.
+
+    A chunk's ``complexa design`` blocks this process for minutes, and the
+    hub only refreshes ``gpu_seconds_used`` (what a cancel bills) when a beat
+    arrives (webhooks/modal.py::_handle_heartbeat).
+    """
+
+    def __init__(self, webhook_url: str, job_id: str, designs_completed: int,
+                 designs_total: int, interval: float = KEEPALIVE_INTERVAL_S):
+        self._args = (webhook_url, job_id)
+        self._kwargs = {"stage": "searching",
+                        "designs_completed": designs_completed,
+                        "designs_total": designs_total}
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            send_heartbeat(*self._args, **self._kwargs)
+
+    def __enter__(self) -> "keepalive":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=15)
 
 
 def request_upload_urls(
@@ -4617,7 +4653,9 @@ def _run_shard() -> None:
                 # ``complexa design`` had already written to the reward CSV
                 # before it hung is still parsed, still delivered, still ranked.
                 try:
-                    rc = run_streaming(cmd, work_dir, timeout=budget)
+                    with keepalive(webhook_url, job_id, len(out_designs),
+                                   designs_total):
+                        rc = run_streaming(cmd, work_dir, timeout=budget)
                 except FileNotFoundError:
                     _fail("search", "complexa",
                           f"`{COMPLEXA_BIN}` binary not found on PATH")
