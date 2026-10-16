@@ -54,12 +54,16 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # rfdiffusion uploads each design in the llm-proteinDesigner container
 # (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
 # here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
-# tier the hub can send it. iggm uploads and beats once per design inside its
-# own sweep, in this repo: tools/iggm/run_pipeline.py::sweep_designs calls
-# ``upload_one`` and ``send_heartbeat`` in its per-design loop, and
+# tier the hub can send it. bindcraft uploads each accepted design on its 60 s
+# heartbeat tick, in the same repo at 18382cd
+# (docker/bindcraft/run_pipeline.py::_DesignStreamer);
+# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier. iggm uploads
+# and beats once per design inside its own sweep, in this repo:
+# tools/iggm/run_pipeline.py::sweep_designs calls ``upload_one`` and
+# ``send_heartbeat`` in its per-design loop, and
 # ::test_iggm_uploads_and_beats_once_per_design pins both. Every iggm preset
 # streams through that one sweep, so all three are enabled.
-_LIVE_ALL_PRESETS = frozenset({"boltz2", "iggm", "rfdiffusion"})
+_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "iggm", "rfdiffusion"})
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -73,7 +77,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0, except on rfdiffusion and iggm.
+    """The balance a live run needs to start: $0 on all but three tools.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -83,14 +87,20 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
-    iggm's figure is its base cap, ``TOOL_SPECS["iggm"].base_hard_cap_usd``.
+    bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
+    Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
+    the up-front hold, which was $8.00 on a 2-design run
+    (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2 retry").
+    tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that.
+
+    iggm's figure is its base cap too, ``TOOL_SPECS["iggm"].base_hard_cap_usd``.
     Leo, 2026-10-16: "use the $3.00 start minimum". It is far above what a
     short iggm run bills -- the paid cancel test charged $0.05 for 37 GPU-s
-    (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and it is below the
-    $5 signup credit, which therefore still admits an iggm run;
+    (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and unlike bindcraft's
+    it is below the $5 signup credit, which therefore still admits an iggm run;
     ::test_the_signup_credit_still_admits_an_iggm_run pins that.
     """
-    if tool_slug == "iggm":
+    if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug != "rfdiffusion":
         return Decimal("0")
