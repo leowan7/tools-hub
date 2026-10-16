@@ -600,7 +600,7 @@ class keepalive:
 
     def __exit__(self, *exc: object) -> None:
         self._stop.set()
-        self._thread.join(timeout=15)
+        self._thread.join(timeout=25)
 
 
 def request_upload_urls(
