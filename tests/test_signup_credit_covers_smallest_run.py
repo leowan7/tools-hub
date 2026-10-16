@@ -45,6 +45,7 @@ _HEADROOM = Decimal("1.00")
 # Tools a brand-new user cannot run from the signup credit alone. The copy
 # listed in the module docstring names exactly this group.
 NEEDS_TOPUP = {
+    "bindcraft",
     "boltzgen",
     "esmfold2-design",
     "opendde",
@@ -53,9 +54,10 @@ NEEDS_TOPUP = {
 # proteina and rfantibody left this set on 2026-09-30 when their bootstrap
 # estimates were cut to measured runtimes (TOOL_SPECS in
 # shared/wallet_estimates.py). The copy ("most binder design runs ... need a
-# top-up") was read against this set then. rfdiffusion (#427) and bindcraft
-# (#431) left it when they went live: the credit covers their live_start_usd.
-# Whether the copy's "most" still holds is Leo's call.
+# top-up") was read against this set then. rfdiffusion (#427) left it when it
+# went live: the credit covers its live_start_usd. bindcraft went live in #431
+# and stays, because its live_start_usd is its $8.00 cap. Leo, 2026-10-16: the
+# copy stays as it is.
 
 
 def _smallest_run_params(spec: we.ToolSpec) -> dict:

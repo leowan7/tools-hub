@@ -36,6 +36,7 @@ from shared.wallet import (
     wallet_preflight,
 )
 from shared.wallet_estimates import (
+    TOOL_SPECS,
     cushioned_hold_usd,
     estimated_cost_for_tool,
     gpu_class_for_job,
@@ -81,17 +82,16 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
-    bindcraft's figure comes from a recorded run, not the runtime model: job
-    d73cfaa5 on 4ZQK chain A, cancelled at 1716 GPU-s with no design
-    (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2: paid cancel test").
-    The ``_BINDCRAFT`` model's one-design run is 600 s, and a second run on the
-    same inputs, f8666763, needed up to 804 s for its first design. It is not
-    a bound: job 489a17e0 made no design in 103 min (same doc, "(a) to (d)").
+    bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
+    Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
+    the up-front hold, which was $8.00 on a 2-design run
+    (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2 retry").
+    tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that.
     """
+    if tool_slug == "bindcraft":
+        return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug == "rfdiffusion":
         seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
-    elif tool_slug == "bindcraft":
-        seconds = 1716
     else:
         return Decimal("0")
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)

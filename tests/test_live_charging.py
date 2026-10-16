@@ -33,8 +33,8 @@ LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
 LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
-# 1716 s, job d73cfaa5's stretch with no design, at the A100-80GB rate.
-BC_START = Decimal("2.9989")
+# bindcraft's base cap (Leo, PR #431), so the $5 signup credit is refused.
+BC_START = Decimal("8.00")
 STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START}
 
 
@@ -214,13 +214,6 @@ def test_start_minimum_does_not_depend_on_num_designs(tool):
 def test_start_minimum_is_zero_on_every_other_live_tool():
     for tool in sorted((LIVE | LIVE_ALL_PRESETS) - set(STARTS)):
         assert live_start_usd(tool, {"preset": "batch"}) == 0
-
-
-def test_bindcraft_start_minimum_is_above_its_model_one_design_run():
-    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
-
-    assert runtime_estimate_min(TOOL_RULES["bindcraft"], 120, 1) * 60 == 600
-    assert BC_START > live_due_usd("bindcraft", 600, gpu_class_for_job("bindcraft"), {})
 
 
 @pytest.mark.parametrize("tool", sorted(STARTS))
