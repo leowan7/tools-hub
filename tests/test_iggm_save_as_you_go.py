@@ -42,6 +42,7 @@ against ``tmp_path``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from types import SimpleNamespace
 
@@ -551,3 +552,105 @@ def test_an_unreadable_design_is_dropped_by_the_final_sweep(tmp_path, beats):
     assert [d["name"] for d in stream["designs"]] == ["000_design_0"]
     assert (beats[-1]["designs_completed"], beats[-1]["designs_total"]) == (1, 2)
     assert _signal(beats) == "incomplete", "one of two globbed designs landed"
+
+
+# ---- antigen chain named H or L --------------------------------------------
+
+
+def test_an_antigen_named_h_is_relabelled_off_the_antibody_ids(tmp_path):
+    src = tmp_path / "antigen.pdb"
+    src.write_text(_pdb("HA", residues=3) + "TER     " + " " * 13 + "H\nEND\n")
+
+    path, chain = run_pipeline.relabel_colliding_antigen(
+        src, "H", {"H", "L"}, tmp_path / "antigen_iggm.pdb",
+    )
+
+    assert chain not in {"H", "L", "A"}, "the free id must clash with nothing"
+    chains = _parse_pdb_chains(path.read_text())
+    assert sorted(chains) == sorted({"A", chain})
+    assert len(chains[chain]) == 3, "every antigen residue moved over"
+    assert path.read_text().splitlines()[-2][21] == chain, "TER moved too"
+    before = run_pipeline.antigen_chain_info(src, "H")
+    assert run_pipeline.antigen_chain_info(path, chain) == before
+
+
+def test_an_antigen_that_collides_with_nothing_is_passed_through(tmp_path):
+    src = tmp_path / "antigen.pdb"
+    src.write_text(_pdb("A"))
+    dest = tmp_path / "antigen_iggm.pdb"
+
+    assert run_pipeline.relabel_colliding_antigen(src, "A", {"H", "L"}, dest) == (src, "A")
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize("antigen,headers", [("H", ["H"]), ("L", ["H", "L"]), ("A", ["H", "L"])])
+def test_main_hands_iggm_an_antigen_id_no_antibody_chain_has(
+    tmp_path, monkeypatch, beats, antigen, headers,
+):
+    import tempfile
+
+    seen = {}
+    make_tmp = tempfile.TemporaryDirectory
+    seq = "EVQLVESGGGLVQPGGSLRLSCAASGFTFSSYAMSWVRQAPGKGLEWVS"
+    monkeypatch.setattr(run_pipeline, "SMOKE_RESULTS_PATH", str(tmp_path / "r.json"))
+    monkeypatch.setattr(run_pipeline, "_ship_raw", lambda _wd: None)
+    monkeypatch.setattr(
+        run_pipeline.tempfile, "TemporaryDirectory",
+        lambda **_kw: make_tmp(dir=tmp_path),
+    )
+    monkeypatch.setattr(run_pipeline, "parse_payload", lambda: {
+        "job_spec": {
+            "antibody_fasta": [{"header": h, "sequence": seq} for h in headers],
+            "antigen_chain": antigen,
+        },
+        "upload_urls_endpoint": "https://hub.example.com/u",
+        "input_presigned_url": "https://x/antigen.pdb",
+    })
+
+    def _download(_url, dest):
+        dest.write_text(_pdb(antigen, residues=3))
+        return dest
+
+    def _run(fasta, pdb, out_dir, *_a, on_poll=None, **_k):
+        seen["ids"] = [ln[1:] for ln in fasta.read_text().splitlines() if ln.startswith(">")]
+        seen["pdb_chains"] = set(_parse_pdb_chains(pdb.read_text()))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "design_0.pdb").write_text(_pdb("".join(seen["ids"]), residues=3))
+        on_poll()  # records the size
+        on_poll()  # stable, so the design is taken and uploaded
+        return 1
+
+    monkeypatch.setattr(run_pipeline, "download_antigen_pdb", _download)
+    monkeypatch.setattr(run_pipeline, "run_iggm", _run)
+
+    def _upload(pdb_path, rank, *, antigen_chain, **_kw):
+        seen["reported_chain"] = antigen_chain
+        return {"rank": rank, "name": pdb_path.stem, "antigen_chain": antigen_chain}
+
+    monkeypatch.setattr(run_pipeline, "_upload_design", _upload)
+
+    with pytest.raises(SystemExit):
+        run_pipeline.main()
+
+    *ab_ids, ag_id = seen["ids"]
+    assert ab_ids == headers
+    assert ag_id not in headers
+    assert seen["pdb_chains"] == {ag_id}, "IgGM loads the antigen by the FASTA id"
+    assert len(set(seen["ids"])) == len(headers) + 1, "the expected_chains count"
+    assert seen["reported_chain"] == ag_id, "the label names the chain in the file"
+
+
+def test_an_antigen_with_no_free_chain_id_is_refused_not_crashed(tmp_path, monkeypatch):
+    pool = "ABCDEFGIJKMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    src = tmp_path / "antigen.pdb"
+    src.write_text(_pdb(pool + "H", residues=1))
+    monkeypatch.setattr(run_pipeline, "SMOKE_RESULTS_PATH", str(tmp_path / "r.json"))
+
+    with pytest.raises(SystemExit):
+        run_pipeline.relabel_colliding_antigen(
+            src, "H", {"H", "L"}, tmp_path / "antigen_iggm.pdb",
+        )
+
+    failure = json.loads((tmp_path / "r.json").read_text())
+    assert failure["status"] == "FAILED"
+    assert failure["error"]["check"] == "antigen_chain"
