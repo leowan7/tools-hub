@@ -54,7 +54,13 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # (docker/rfdiffusion/run_pipeline.py::stage_af2_validation), which no test
 # here can read; ::test_rfdiffusion_submits_only_the_pilot_tier pins the one
 # tier the hub can send it.
-_LIVE_ALL_PRESETS = frozenset({"boltz2", "rfdiffusion"})
+# proteina uploads each design in tools/proteina/run_pipeline.py::_run_shard,
+# pinned by the same test.
+_LIVE_ALL_PRESETS = frozenset({"boltz2", "rfdiffusion", "proteina"})
+# Campaign tools whose children open a live anchor instead of a cushioned
+# hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
+# tool keeps its hold.
+LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 

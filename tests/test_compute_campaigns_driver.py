@@ -575,6 +575,100 @@ def test_campaign_without_target_still_dispatches(driver_env):
     assert state["submits"] == 2
 
 
+# ---------------------------------------------------------------------------
+# Live charging: proteina children open a $0 anchor; other tools keep holds
+# ---------------------------------------------------------------------------
+
+
+def _seed_proteina(client):
+    row = _seed_campaign(client, total_subjobs=2, chunk_size=8, requested=16,
+                         concurrency_target=4, tool="proteina")
+    row["preset"] = "protein_binder"
+    row["target_storage_path"] = None
+    row["params"] = {
+        "config_name": "c", "task_name": "t", "target_chain": "A",
+        "rf3_required": False, "nsamples": 8, "replicas": 1, "nsteps": 100,
+        "parameters": {},
+    }
+    return row
+
+
+@pytest.fixture
+def live_anchors(monkeypatch, driver_env):
+    """open_live_run as 0045_live_run_debits.sql answers it: NULL on a balance
+    <= $0, else an anchor id, no money moved."""
+    import shared.wallet as w
+
+    _client, state = driver_env
+    opened: list = []
+
+    def fake_open_live_run(user_id, tool):
+        if state["wallet_balance"] <= 0:
+            return None
+        opened.append(tool)
+        return f"anchor-{len(opened)}"
+
+    monkeypatch.setattr(w, "open_live_run", fake_open_live_run)
+    return opened
+
+
+def test_live_campaign_child_opens_an_anchor_not_a_hold(driver_env, live_anchors):
+    client, state = driver_env
+    _seed_proteina(client)
+    state["wallet_balance"] = Decimal("10")
+
+    drive_campaign("camp-1")
+
+    assert state["holds"] == []
+    assert state["wallet_balance"] == Decimal("10")
+    assert live_anchors == ["proteina", "proteina"]
+    wallets = [c["inputs"]["_wallet"] for c in _children(client)]
+    assert [w["hold_tx_id"] for w in wallets] == ["anchor-1", "anchor-2"]
+    assert all(w["live"] is True for w in wallets)
+    assert state["submits"] == 2
+
+
+def test_non_live_campaign_still_reserves_a_hold(driver_env, live_anchors):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, chunk_size=12, requested=24)
+
+    drive_campaign("camp-1")
+
+    assert live_anchors == []
+    assert len(state["holds"]) == 2
+    wallets = [c["inputs"]["_wallet"] for c in _children(client)]
+    assert all("live" not in w for w in wallets)
+
+
+def test_live_campaign_pauses_on_an_empty_wallet(driver_env, live_anchors, monkeypatch):
+    client, state = driver_env
+    _seed_proteina(client)
+    calls = _patch_pause_email(monkeypatch)
+    state["wallet_balance"] = Decimal("0")
+
+    drive_campaign("camp-1")
+
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    assert _children(client) == []
+    assert len(calls) == 1
+    assert state["released"] == []
+
+
+def test_live_campaign_retries_a_failed_open_on_a_funded_wallet(
+        driver_env, monkeypatch):
+    import shared.wallet as w
+
+    client, state = driver_env
+    _seed_proteina(client)
+    state["wallet_balance"] = Decimal("10")
+    monkeypatch.setattr(w, "open_live_run", lambda user_id, tool: None)
+
+    drive_campaign("camp-1")
+
+    assert _campaign_status(client) != "paused_insufficient_funds"
+    assert _children(client) == []
+
+
 def test_cancel_campaign(driver_env, monkeypatch):
     client, state = driver_env
     _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,

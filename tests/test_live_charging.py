@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion"}
+LIVE_ALL_PRESETS = {"boltz2", "rfdiffusion", "proteina"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
 
@@ -63,6 +63,7 @@ def _upload_sites(tool: str, callee: str = "upload_pdb") -> list[tuple[tuple[str
     ("colabfold", ("_run_batch", "_dispatch"), False),
     ("esmfold", ("_run_batch_folds",), True),
     ("boltz2", ("main",), True),
+    ("proteina", ("_run_shard",), True),
 ])
 def test_live_tools_upload_each_design_mid_run(tool, chain, needs_loop):
     sites = _upload_sites(tool)
@@ -678,7 +679,6 @@ def test_settled_or_failed_debit_leaves_the_run_alone(debit, errors):
 
 
 @pytest.mark.parametrize("over", [
-    {"campaign_id": "camp-1"},
     {"wallet": {"hold_tx_id": "hold-1", "live": "true"}},
     {"wallet": {"hold_tx_id": "hold-1", "live": False}},
     {"wallet": {"hold_tx_id": "hold-1", "estimate_usd": "2.00"}},
@@ -693,6 +693,63 @@ def test_rows_the_meter_never_touches(over):
     assert r.wallet.calls == []
     assert store.rows["job-1"]["status"] == status
     r.modal.cancel.assert_not_called()
+
+
+def _child_row(**over):
+    return _job_row(tool="proteina", preset="protein_binder", campaign_id="camp-1",
+                    **over)
+
+
+def test_campaign_child_is_metered_once_per_tick_and_settled_once():
+    store, wallet = _Jobs(_child_row()), _Wallet("50")
+    _meter(store, 60, wallet=wallet)
+    _meter(store, 120, wallet=wallet)
+    assert wallet.taken["hold-1"] == _due(120, "proteina")
+    assert [c[2] for c in wallet.calls] == [_due(60, "proteina"), _due(120, "proteina")]
+
+    from shared.jobs import ToolJob, _settle_wallet_hold_for_completed_job
+
+    store.rows["job-1"].update(status="succeeded", failure_class="succeeded",
+                               gpu_seconds_used=180)
+    with patch("shared.wallet.settle_live_run") as settle,          patch("shared.wallet.settle_hold") as settle_hold,          patch("shared.wallet.release_hold") as release:
+        _settle_wallet_hold_for_completed_job(ToolJob.from_row(store.rows["job-1"]))
+    settle.assert_called_once()
+    assert settle.call_args.args[0] == "hold-1"
+    settle_hold.assert_not_called()
+    release.assert_not_called()
+
+
+def test_campaign_child_stops_at_zero_and_drives_its_campaign():
+    store, wallet = _Jobs(_child_row()), _Wallet("0.05")
+    with patch.object(jobs_mod, "_drive_campaign_after_terminal") as drive:
+        r = _meter(store, 300, wallet=wallet, candidates=DESIGNS)
+    row = store.rows["job-1"]
+    assert r.summary["stopped"] == 1
+    assert wallet.balance == 0
+    assert row["result"]["stop_reason"] == jobs_mod.WALLET_STOP_REASON
+    assert [c["name"] for c in row["result"]["candidates"]] == ["d1", "d2"]
+    r.settle.assert_called_once()
+    r.settle_hold.assert_not_called()
+    drive.assert_called_once()
+    assert drive.call_args.args[0].campaign_id == "camp-1"
+
+
+def test_campaign_cancel_mid_chunk_bills_the_metered_seconds_and_keeps_designs():
+    store = _Jobs(_child_row(gpu_seconds_used=240))
+    modal = MagicMock()
+    modal.cancel.return_value = {"ok": True, "error": None}
+    with patch.object(jobs_mod, "get_service_client", store.client),          patch.object(jobs_mod, "_charge_workspace_for_completed_job"),          patch.object(jobs_mod, "_drive_campaign_after_terminal"),          patch("shared.job_recovery.reconstruct", return_value=list(DESIGNS)),          patch("shared.wallet.settle_live_run") as settle,          patch("shared.wallet.settle_hold") as settle_hold,          patch("shared.wallet.release_hold") as release:
+        job, err = jobs_mod.cancel_job("job-1", user_id="u-1", modal_client=modal,
+                                       leave_running_if_cancel_fails=False)
+    assert err is None
+    row = store.rows["job-1"]
+    assert row["status"] == "cancelled"
+    settle.assert_called_once()
+    assert settle.call_args.args[:3] == ("hold-1", 240, gpu_class_for_job("proteina", None))
+    assert not settle.call_args.kwargs.get("refund")
+    settle_hold.assert_not_called()
+    release.assert_not_called()
+    assert [c["name"] for c in row["result"]["candidates"]] == ["d1", "d2"]
 
 
 def test_webhook_that_lands_during_the_cancel_wins():
