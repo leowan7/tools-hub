@@ -58,7 +58,13 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # heartbeat tick, in the same repo at 18382cd
 # (docker/bindcraft/run_pipeline.py::_DesignStreamer);
 # ::test_bindcraft_submits_only_the_pilot_tier pins its one tier.
-_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "rfdiffusion"})
+# proteina uploads each design in tools/proteina/run_pipeline.py::_run_shard,
+# pinned by the same test.
+_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "rfdiffusion", "proteina"})
+# Campaign tools whose children open a live anchor instead of a cushioned
+# hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
+# tool keeps its hold.
+LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
