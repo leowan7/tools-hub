@@ -132,6 +132,24 @@ RUN /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
 # ligandmpnn_v_32_010_25.pt URL directly instead.
 RUN cd /opt/proteina && bash env/download_startup.sh --pmpnn --ligmpnn
 
+# PIN atomworks — DO NOT REMOVE (added 2026-10-19). build_uv_env.sh step 6 runs
+# `uv pip install "atomworks[ml,openbabel,dev]"` with no version, behind
+# `|| echo`. atomworks 3.0.0 (PyPI, 2026-10-05) deleted
+# atomworks.io.utils.selection.AtomSelectionStack, which upstream's
+# proteinfoundation/utils/pdb_utils.py:51 imports, so the 2026-10-19 rebuild
+# (image im-J62oz1MwCYiUayCTg18Ja1) failed the import gate below. Checked on the
+# PyPI wheels: 2.2.1's selection.py defines the class, 3.0.0's does not.
+# 2.2.1 is the last 2.x release and the one the contig checks in
+# tests/test_proteina_smoke.py were executed against. The deployed image's
+# own package list was NOT read; the build's import gate is the proof.
+#
+# --no-deps for the same reason as the dm-haiku pin: no resolver after the CUDA
+# wheel steps. hydride is named because 2.2.1 requires it (hydride>=1.2.3, and
+# 1.2.3 is the only such release) while 3.x does not, so a 3.x venv lacks it.
+# biotite stays at the 1.6.0 build_uv_env.sh installs last, which 3.x also
+# required; 2.2.1's own metadata says biotite==1.4.0.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "atomworks==2.2.1" "hydride==1.2.3"
+
 # PIN dm-haiku — DO NOT REMOVE (added 2026-08-04, after a fresh build of THIS
 # Dockerfile came out broken while the already-deployed image built from it on
 # 2026-07-16 kept working. That is what "not reproducible" looked like.)
