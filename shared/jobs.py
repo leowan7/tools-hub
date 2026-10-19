@@ -1862,7 +1862,7 @@ def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dic
 
     Live charging, option (ii) in docs/design/LIVE-CHARGING-2026-10-01.md.
     Called once per ``campaigns:tick`` (cron/tick_campaigns.py), oldest run
-    first. Campaign sub-jobs are skipped. A run is metered from
+    first, campaign children included. A run is metered from
     ``started_at`` only once a heartbeat has written ``inputs._progress``;
     the first heartbeat stamps ``started_at``
     (webhooks/modal.py::_handle_heartbeat). Until then the run is not
@@ -1907,7 +1907,7 @@ def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dic
         try:
             job = ToolJob.from_row(row)
             ws = (job.inputs or {}).get("_wallet") or {}
-            if job.campaign_id or not isinstance(ws, dict):
+            if not isinstance(ws, dict):
                 continue
             if ws.get("live") is not True or not ws.get("hold_tx_id"):
                 continue

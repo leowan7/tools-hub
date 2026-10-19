@@ -1927,7 +1927,8 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
                           finalizes the campaign instead of retrying.
     On any failure the hold is released so no reservation is stranded.
     """
-    from shared.wallet import release_hold, reserve_hold  # noqa: PLC0415
+    from shared.wallet import open_live_run, release_hold, reserve_hold  # noqa: PLC0415
+    from shared.wallet_guard import LIVE_CAMPAIGN_TOOLS, live_start_usd  # noqa: PLC0415
     from shared.jobs import (  # noqa: PLC0415
         create_job, mark_failed, set_modal_call,
     )
@@ -1999,9 +2000,24 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
 
     point_estimate = estimate_child_cost(campaign.tool, design_count, campaign.preset)
     hold_amount = child_hold_usd(campaign.tool, design_count, campaign.preset)
-    hold_tx_id = reserve_hold(
-        campaign.user_id, campaign.tool, None, hold_amount, base_inputs
-    )
+    live = hold_amount > 0 and campaign.tool in LIVE_CAMPAIGN_TOOLS
+    if live:
+        # A $0 anchor the meter debits as the child runs (shared/jobs.py::
+        # meter_live_runs), the same as an atomic live run in
+        # shared/wallet_guard.py::requires_wallet. open_live_run refuses a
+        # balance <= $0 (supabase/migrations/0045_live_run_debits.sql).
+        start_usd = live_start_usd(campaign.tool, base_inputs)
+        hold_tx_id = (
+            None if _wallet_balance_below(campaign.user_id, start_usd)
+            else open_live_run(campaign.user_id, campaign.tool)
+        )
+        # What the refusal below is classified against: the start minimum,
+        # or any balance at all when that is $0.
+        hold_amount = max(start_usd, Decimal("0.0001"))
+    else:
+        hold_tx_id = reserve_hold(
+            campaign.user_id, campaign.tool, None, hold_amount, base_inputs
+        )
     if not hold_tx_id:
         # Classify the refusal. reserve_hold already made the authoritative,
         # atomic decision; this read only routes the campaign to the right
@@ -2028,6 +2044,8 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         "estimate_usd": str(point_estimate),
         "tool_slug": campaign.tool,
     }
+    if live:
+        child_inputs["_wallet"]["live"] = True
 
     child = create_job(
         user_id=campaign.user_id,
