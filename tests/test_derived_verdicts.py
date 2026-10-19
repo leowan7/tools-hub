@@ -546,6 +546,33 @@ def test_recovery_does_not_carry_a_verdict_across():
     assert rebuilt["scores"] == {"ipTM": 0.9, "pLDDT": 88.0}
 
 
+def test_recovery_keeps_proteina_scores():
+    """A cancelled proteina run kept its designs but showed every score as a
+    dash (seen on prod job 580d793b): the rebuild dropped the reward stack the partial
+    carried. Same rule as above, so the verdict still stays behind."""
+    from shared.job_recovery import _candidate_from_partial
+
+    rebuilt = _candidate_from_partial({
+        "rank": 1,
+        "pdb_key": "designs/bon_orig9_r0.pdb",
+        "total_reward": -0.1827,
+        "af2_iptm": 0.8906,
+        "af2_plddt": 0.885,
+        "rf3_score": None,
+        "binder_scrmsd": 1.3234,
+        "cluster_id": None,
+        "target_numbering": "input",
+        "filter_status": "pass",
+    })
+    assert rebuilt["scores"] == {
+        "total_reward": -0.1827,
+        "af2_iptm": 0.8906,
+        "af2_plddt": 0.885,
+        "binder_scrmsd": 1.3234,
+    }
+    assert "filter_status" not in rebuilt
+
+
 def test_a_missing_leg_never_falls_through_to_another_column():
     """Defect 3. On BoltzGen's peptide protocol the refold metrics are never
     produced. The bar must go unanswered rather than quietly re-form itself
