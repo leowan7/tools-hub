@@ -101,12 +101,15 @@ exit path, and ``modal_app.py`` parks that archive on the
 ``ranomics-esmfold2-design-raw`` Volume. See ``_archive_raw`` for why.
 
 TODO (post first prod run, separate PR):
-  - Stage/progress heartbeats. ``_shape_designs`` now streams one
+  - Stage/progress heartbeats. ``_shape_designs`` streams one
     ``new_candidate`` beat per design (see ``send_heartbeat``), which is what
     puts rows on the live page and leaves a partial behind for
-    ``shared/job_recovery.py::reconstruct``. What is still absent is a beat
-    at the START of the run and real ``designs_completed`` /
-    ``designs_total`` counts: both are deliberate, because a child of the
+    ``shared/job_recovery.py::reconstruct``. It runs only after
+    ``designer.design`` returns the whole batch, so a seed's designs all
+    arrive together when its GPU work is done, never one by one during it.
+    ``main`` wraps the run in ``keepalive``, which beats at the start and
+    every 60 s. What is still absent is real ``designs_completed`` /
+    ``designs_total`` counts: deliberate, because a child of the
     multi-seed fan-out knows neither its ordinal nor the umbrella total
     (``modal_app.py::run_tool`` gives every child ``n_seeds = 1`` and the
     full ``batch_size``), so any per-seed count it sent would be read by
@@ -181,6 +184,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -718,6 +722,43 @@ def send_heartbeat(
         logger.debug("Heartbeat sent: %s (HTTP %d)", stage, resp.status_code)
     except Exception as exc:
         logger.warning("Heartbeat failed (%s): %s", stage, exc)
+
+
+# Seconds between the beats ``keepalive`` sends while the run works.
+KEEPALIVE_INTERVAL_S = 60
+
+
+class keepalive:
+    """Send a ``designing`` heartbeat on entry, then every ``interval`` seconds.
+
+    ``designer.design`` blocks for the whole batch, so without this the first
+    beat this process sent was the first streamed candidate, after the GPU
+    work was done. The hub stamps ``started_at`` on a job's first beat and
+    refreshes ``gpu_seconds_used`` only when a beat arrives
+    (webhooks/modal.py::_handle_heartbeat). Counts stay 0/0 for the reason
+    ``_shape_designs``' docstring gives. Copied from
+    tools/proteina/run_pipeline.py::keepalive, plus the beat on entry.
+    """
+
+    def __init__(self, webhook_url: str, job_id: str,
+                 interval: float = KEEPALIVE_INTERVAL_S):
+        self._args = (webhook_url, job_id, "designing")
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        send_heartbeat(*self._args)
+        while not self._stop.wait(self._interval):
+            send_heartbeat(*self._args)
+
+    def __enter__(self) -> "keepalive":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=25)
 
 
 def request_upload_urls(
@@ -1882,7 +1923,9 @@ def main() -> int:
     exits, so "before teardown" means "before main returns".
     """
     try:
-        return _run()
+        with keepalive(os.environ.get("WEBHOOK_URL", ""),
+                       os.environ.get("JOB_ID", "")):
+            return _run()
     finally:
         # smoke_results.json rides along even though it is normally returned
         # inline: on a hard timeout the wrapper's return dict never reaches the
