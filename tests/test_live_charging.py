@@ -39,7 +39,7 @@ BC_START = Decimal("8.00")
 IGGM_START = Decimal("3.00")
 # Leo, 2026-10-19: a flat $1.00 to start a proteina run.
 PROTEINA_START = Decimal("1.00")
-# esmfold2-design's base cap, proposed on review (not yet approved by Leo).
+# esmfold2-design's base cap, approved by Leo on PR #440 review (2026-10-19).
 ESMFOLD2_START = Decimal("15.00")
 # The live tools that refuse a balance below a start minimum.
 STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START, "iggm": IGGM_START,

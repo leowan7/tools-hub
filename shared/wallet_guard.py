@@ -120,7 +120,7 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
 
     esmfold2-design's figure is its base cap, the most ``live_due_usd`` charges
     one seed, so a one-seed run started at that balance owes no more than it
-    had. That is a proposal on PR review, not yet a figure Leo approved.
+    had. Leo approved $15 on PR #440 review (2026-10-19).
     """
     if tool_slug in ("bindcraft", "esmfold2-design", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
