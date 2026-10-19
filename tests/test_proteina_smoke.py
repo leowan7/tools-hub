@@ -5251,6 +5251,37 @@ class TestDockerfileDmHaikuPin:
             "jaxlib) again, which is the entire failure class being fixed.")
 
 
+class TestDockerfileAtomworksPin:
+    """atomworks 3.0.0 removed ``AtomSelectionStack``, which upstream's
+    ``proteinfoundation/utils/pdb_utils.py`` imports; build_uv_env.sh installs
+    atomworks with no version, so the 2026-10-19 rebuild failed its import gate.
+    """
+
+    def _pin(self):
+        installs = _instructions_matching("atomworks==")
+        assert len(installs) == 1, (
+            f"expected exactly one atomworks pin in Dockerfile.modal, got {installs}")
+        return installs[0]
+
+    def test_atomworks_and_hydride_are_pinned_into_the_venv_without_deps(self):
+        _, text = self._pin()
+        for needle in ('"atomworks==2.2.1"', '"hydride==1.2.3"', "--no-deps",
+                       "/opt/proteina/.venv/bin/python -m pip"):
+            assert needle in text, f"atomworks pin lost {needle!r}: {text!r}"
+
+    def test_the_pin_runs_after_the_env_build_and_ensurepip(self):
+        lineno, _ = self._pin()
+        for step in ("build_uv_env.sh", "ensurepip"):
+            assert lineno > max(l for l, _ in _instructions_matching(step)), (
+                f"the atomworks pin runs before {step}")
+
+    def test_the_pins_failure_cannot_be_swallowed(self):
+        lineno, text = self._pin()
+        assert not _failure_swallowing_operators(text), (
+            f"Dockerfile.modal line {lineno} discards the atomworks pin's exit "
+            f"status: {text!r}")
+
+
 class TestDockerfileRuntimeDeps:
     """``requests`` + RDKit, on the line the dm-haiku fix rewrote.
 
