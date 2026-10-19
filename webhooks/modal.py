@@ -83,6 +83,7 @@ from flask import Flask, Response, jsonify, request
 
 from shared.credits import get_service_client
 from shared.jobs import (
+    _SEED_PREFIX,
     TERMINAL_STATUSES,
     ToolJob,
     complete_job,
@@ -574,6 +575,15 @@ def _hb_merge_inputs(
         if _cand_key(new_candidate) not in seen:
             partials.append(new_candidate)
         merged["_partial_candidates"] = partials[:1000]
+        # When each multi-seed child last streamed a design, keyed by its
+        # ``seed{N}_`` name prefix; shared/jobs.py::_finished_seed_seconds
+        # stops metering a seed at this time once its whole batch has arrived.
+        seed = _SEED_PREFIX.match(str(new_candidate.get("name") or ""))
+        if seed:
+            stamps = merged.get("_seed_last_design_at")
+            stamps = dict(stamps) if isinstance(stamps, dict) else {}
+            stamps[seed.group(1)] = datetime.now(timezone.utc).isoformat()
+            merged["_seed_last_design_at"] = stamps
     return merged
 
 

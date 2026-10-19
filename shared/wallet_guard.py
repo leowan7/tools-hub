@@ -120,7 +120,11 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
 
     esmfold2-design's figure is its base cap, the most ``live_due_usd`` charges
     one seed, so a one-seed run started at that balance owes no more than it
-    had. Leo approved $15 on PR #440 review (2026-10-19).
+    had. Leo approved $15 on PR #440 review (2026-10-19). It does not scale
+    with ``n_seeds``: a run of n seeds is metered for n GPUs, so while all n
+    run, $15 lasts 1/n as long as it does for one seed, and the meter stops it at $0
+    whether or not a seed has streamed its designs yet. Scaling it to n seeds
+    is waiting on Leo.
     """
     if tool_slug in ("bindcraft", "esmfold2-design", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd

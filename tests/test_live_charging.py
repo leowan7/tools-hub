@@ -639,6 +639,46 @@ def test_heartbeat_meter_counts_every_esmfold2_seed():
     assert cas.call_args.args[1] == {"gpu_seconds_used": 360}
 
 
+def _esm2_seeds_done(done):
+    """A 4-seed, batch-3 row where seed{N} streamed ``count`` designs, the last
+    ``at`` seconds after started_at."""
+    row = _esm2_row(4)
+    row["inputs"]["_partial_candidates"] = [
+        {"name": f"seed{n}_design_{i}", "rank": 3 * n + i}
+        for n, (count, _at) in done.items() for i in range(count)
+    ]
+    row["inputs"]["_seed_last_design_at"] = {
+        f"seed{n}": (NOW + timedelta(seconds=at)).isoformat() for n, (_c, at) in done.items()
+    }
+    return row
+
+
+def test_a_seed_that_streamed_its_batch_stops_counting_at_its_last_design():
+    # seed0 and seed1 finished at 200 s and 300 s; seed2 has 2 of 3 designs, so
+    # it and seed3 still run: 200 + 300 + 2 * 1000.
+    row = _esm2_seeds_done({0: (3, 200), 1: (3, 300), 2: (2, 400)})
+    assert jobs_mod.billed_gpu_seconds(jobs_mod.ToolJob.from_row(row), 1000) == 2500
+
+
+def test_balance_stop_bills_finished_seeds_only_to_their_last_design():
+    store = _Jobs(_esm2_seeds_done({0: (3, 100), 1: (3, 150), 2: (3, 200)}))
+    _meter(store, 300, wallet=_Wallet("0.05"), candidates=DESIGNS)
+    assert store.rows["job-1"]["gpu_seconds_used"] == 100 + 150 + 200 + 300
+
+
+def test_cancel_bills_finished_seeds_only_to_their_last_design():
+    job = jobs_mod.ToolJob.from_row(_esm2_seeds_done({0: (3, 30), 1: (3, 60)}))
+    with patch.object(jobs_mod, "get_job", return_value=job), \
+         patch.object(jobs_mod, "_cas_update") as cas:
+        jobs_mod.mid_run_monitor_check("job-1", 90.4)
+    assert cas.call_args.args[1] == {"gpu_seconds_used": 30 + 60 + 2 * 90}
+
+
+def test_a_seed_finishing_after_the_wall_clock_counts_the_wall_clock():
+    row = _esm2_seeds_done({0: (3, 5000)})
+    assert jobs_mod.billed_gpu_seconds(jobs_mod.ToolJob.from_row(row), 1000) == 4000
+
+
 def test_single_container_tools_meter_one_gpu():
     job = jobs_mod.ToolJob.from_row(_job_row(inputs={"num_designs": 8, **_job_row()["inputs"]}))
     assert jobs_mod.billed_gpu_seconds(job, 90) == 90

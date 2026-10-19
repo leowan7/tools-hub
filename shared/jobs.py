@@ -2618,21 +2618,59 @@ def _tool_params(job: "ToolJob") -> dict:
     }
 
 
+_SEED_PREFIX = re.compile(r"^(seed-?\d+)_")
+
+
+def _finished_seed_seconds(job: "ToolJob", wall: int) -> list[float]:
+    """Seconds from ``started_at`` to the last streamed design of each seed
+    that has streamed ``batch_size`` designs, each clamped to ``wall``.
+
+    A seed is named by its ``seed{N}_`` design-name prefix
+    (tools/esmfold2_design/modal_app.py::run_tool sets it per child), and the
+    time of its latest design is ``inputs._seed_last_design_at``, which
+    webhooks/modal.py::_hb_merge_inputs stamps.
+    """
+    inputs = job.inputs or {}
+    last = inputs.get("_seed_last_design_at")
+    partials = inputs.get("_partial_candidates")
+    batch = inputs.get("batch_size")
+    started = _parse_ts(job.started_at)
+    if not (isinstance(last, dict) and isinstance(partials, list)
+            and isinstance(batch, int) and batch > 0 and started is not None):
+        return []
+    counts: dict[str, int] = {}
+    for cand in partials:
+        m = _SEED_PREFIX.match(str(cand.get("name") or "")) if isinstance(cand, dict) else None
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    out = []
+    for seed, ts in last.items():
+        at = _parse_ts(ts) if isinstance(ts, str) else None
+        if at is not None and counts.get(seed, 0) >= batch:
+            out.append(min(max((at - started).total_seconds(), 0.0), float(wall)))
+    return out
+
+
 def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
     """GPU seconds a running job has used after ``wall_seconds`` of wall clock.
 
     The clamped wall clock times the containers the job runs side by side
-    (``shared.wallet_estimates.fanout_containers``). An esmfold2-design run
-    with ``n_seeds`` seeds meters ``n_seeds`` GPUs, matching its final bill,
-    which sums each seed's runtime (tools/esmfold2_design/modal_app.py::_aggregate).
+    (``shared.wallet_estimates.fanout_containers``), except that a seed which
+    has streamed its whole batch counts only up to its last design
+    (``_finished_seed_seconds``). The final bill sums each seed's runtime
+    (tools/esmfold2_design/modal_app.py::_aggregate).
     """
-    # ponytail: counts every seed for the whole wall clock, so a seed Modal starts
-    # late, or one that finishes before the slowest, is overcounted. A normal
-    # finish refunds it at settle; a balance stop or cancel keeps it. Per-seed
-    # heartbeats (or a running sum from the orchestrator) would fix it.
+    # ponytail: a seed's start is unknown mid-run (started_at is the first
+    # child's beat), so a seed Modal starts late is still counted from
+    # started_at; a seed that dies without streaming its batch counts until
+    # the run ends; a finished seed's shutdown after its last design is not
+    # counted. A per-seed start beat from the pipeline would close the first two.
     from shared.wallet_estimates import fanout_containers  # noqa: PLC0415
 
-    return int(_safe_gpu_seconds_int(wall_seconds) * fanout_containers(job.tool, _tool_params(job)))
+    wall = _safe_gpu_seconds_int(wall_seconds)
+    seeds = fanout_containers(job.tool, _tool_params(job))
+    done = _finished_seed_seconds(job, wall)[: int(seeds)]
+    return int(sum(done) + (seeds - len(done)) * wall)
 
 
 def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
