@@ -57,14 +57,20 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # tier the hub can send it. bindcraft uploads each accepted design on its 60 s
 # heartbeat tick, in the same repo at 18382cd
 # (docker/bindcraft/run_pipeline.py::_DesignStreamer);
-# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier.
+# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier. iggm uploads
+# and beats once per design inside its own sweep, in this repo:
+# tools/iggm/run_pipeline.py::sweep_designs calls ``upload_one`` and
+# ``send_heartbeat`` in its per-design loop, and
+# ::test_iggm_uploads_and_beats_once_per_design pins both. Every iggm preset
+# streams through that one sweep, so all three are enabled.
 # proteina uploads each design in tools/proteina/run_pipeline.py::_run_shard,
 # pinned by the same test.
-_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "rfdiffusion", "proteina"})
+_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "iggm", "proteina", "rfdiffusion"})
 # Campaign tools whose children open a live anchor instead of a cushioned
 # hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
 # tool keeps its hold.
 LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
+PROTEINA_START_USD = Decimal("1.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -78,7 +84,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0, except on rfdiffusion and bindcraft.
+    """The balance a live run needs to start: $0 on all but four tools.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -93,13 +99,26 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     the up-front hold, which was $8.00 on a 2-design run
     (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2 retry").
     tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that.
+
+    iggm's figure is its base cap too, ``TOOL_SPECS["iggm"].base_hard_cap_usd``.
+    Leo, 2026-10-16: "use the $3.00 start minimum". It is far above what a
+    short iggm run bills -- the paid cancel test charged $0.05 for 37 GPU-s
+    (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and unlike bindcraft's
+    it is below ``SIGNUP_CREDIT_USD``, which therefore still admits an iggm run;
+    ::test_the_signup_credit_still_admits_an_iggm_run pins that.
+
+    proteina's figure is a flat $1.00. Leo, 2026-10-19: "lets just say 1
+    dollar to start a run as the minimum". The ``_PROTEINA`` runtime model's
+    8-design run at the 120-aa pivot is $0.94, and $1.00 is below
+    ``SIGNUP_CREDIT_USD``; ::test_proteina_starts_at_one_dollar pins both.
     """
-    if tool_slug == "bindcraft":
+    if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
-    if tool_slug == "rfdiffusion":
-        seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
-    else:
+    if tool_slug == "proteina":
+        return PROTEINA_START_USD
+    if tool_slug != "rfdiffusion":
         return Decimal("0")
+    seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
 
 
