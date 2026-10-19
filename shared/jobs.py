@@ -2625,6 +2625,9 @@ def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
     with ``n_seeds`` seeds meters ``n_seeds`` GPUs, matching its final bill,
     which sums each seed's runtime (tools/esmfold2_design/modal_app.py::_aggregate).
     """
+    # ponytail: counts every seed from the first heartbeat, so seeds Modal starts
+    # late are overcounted. A normal finish refunds it at settle; a balance stop or
+    # cancel keeps it. Per-seed heartbeats would fix it if staggering shows up.
     from shared.wallet_estimates import fanout_containers  # noqa: PLC0415
 
     return int(_safe_gpu_seconds_int(wall_seconds) * fanout_containers(job.tool, _tool_params(job)))
