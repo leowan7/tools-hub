@@ -736,8 +736,9 @@ class keepalive:
     work was done. The hub stamps ``started_at`` on a job's first beat and
     refreshes ``gpu_seconds_used`` only when a beat arrives
     (webhooks/modal.py::_handle_heartbeat). Counts stay 0/0 for the reason
-    ``_shape_designs``' docstring gives. Copied from
-    tools/proteina/run_pipeline.py::keepalive, plus the beat on entry.
+    ``_shape_designs``' docstring gives. Same shape as
+    tools/proteina/run_pipeline.py::keepalive, which takes counts, sends
+    ``searching`` and does not beat on entry.
     """
 
     def __init__(self, webhook_url: str, job_id: str,
