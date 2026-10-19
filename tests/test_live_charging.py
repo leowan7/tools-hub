@@ -30,7 +30,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "iggm", "proteina", "rfdiffusion"}
+LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
 # bindcraft's base cap (Leo, PR #431), so the $5 signup credit is refused.
@@ -39,9 +39,11 @@ BC_START = Decimal("8.00")
 IGGM_START = Decimal("3.00")
 # Leo, 2026-10-19: a flat $1.00 to start a proteina run.
 PROTEINA_START = Decimal("1.00")
+# esmfold2-design's base cap, proposed on review (not yet approved by Leo).
+ESMFOLD2_START = Decimal("15.00")
 # The live tools that refuse a balance below a start minimum.
 STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START, "iggm": IGGM_START,
-          "proteina": PROTEINA_START}
+          "proteina": PROTEINA_START, "esmfold2-design": ESMFOLD2_START}
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +53,7 @@ STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START, "iggm": IGGM_START,
 
 def _upload_sites(tool: str, callee: str = "upload_pdb") -> list[tuple[tuple[str, ...], bool]]:
     """(enclosing function chain, inside a loop) for every ``callee`` call."""
-    path = ROOT / "tools" / tool / "run_pipeline.py"
+    path = ROOT / "tools" / tool.replace("-", "_") / "run_pipeline.py"
     sites: list = []
 
     def walk(node, funcs, in_loop):  # noqa: ANN001
@@ -603,6 +605,60 @@ def test_meter_prices_the_run_on_its_own_params():
     with patch("shared.wallet.live_due_usd", return_value=Decimal("0.01")) as due:
         _meter(store, 60, wallet=_Wallet("50"))
     due.assert_called_once_with("boltz2", 60, GPU, {"num_samples": 7})
+
+
+ESM2 = "esmfold2-design"
+
+
+def _esm2_row(n_seeds):
+    row = _job_row(tool=ESM2)
+    row["inputs"] = {"n_seeds": n_seeds, "batch_size": 3, **row["inputs"]}
+    return row
+
+
+@pytest.mark.parametrize("n_seeds", [1, 4])
+def test_meter_counts_every_esmfold2_seed(n_seeds):
+    store, wallet = _Jobs(_esm2_row(n_seeds)), _Wallet("500")
+    _meter(store, 60, wallet=wallet)
+    params = {"n_seeds": n_seeds, "batch_size": 3}
+    due = live_due_usd(ESM2, 60 * n_seeds, gpu_class_for_job(ESM2, None), params)
+    assert wallet.calls == [("hold-1", "u-1", due, 60 * n_seeds, gpu_class_for_job(ESM2, None))]
+
+
+def test_balance_stop_on_a_multi_seed_run_bills_every_seed():
+    store = _Jobs(_esm2_row(4))
+    _meter(store, 300, wallet=_Wallet("0.05"), candidates=DESIGNS)
+    assert store.rows["job-1"]["gpu_seconds_used"] == 1200
+
+
+def test_heartbeat_meter_counts_every_esmfold2_seed():
+    job = jobs_mod.ToolJob.from_row(_esm2_row(4))
+    with patch.object(jobs_mod, "get_job", return_value=job), \
+         patch.object(jobs_mod, "_cas_update") as cas:
+        jobs_mod.mid_run_monitor_check("job-1", 90.4)
+    assert cas.call_args.args[1] == {"gpu_seconds_used": 360}
+
+
+def test_single_container_tools_meter_one_gpu():
+    job = jobs_mod.ToolJob.from_row(_job_row(inputs={"num_designs": 8, **_job_row()["inputs"]}))
+    assert jobs_mod.billed_gpu_seconds(job, 90) == 90
+
+
+def test_live_meter_and_final_bill_count_seeds_the_same_way():
+    from tools.esmfold2_design import modal_app
+
+    children = [(s, {"smoke_result": {"status": "ok", "runtime_seconds": 600}})
+                for s in range(3)]
+    final = modal_app._aggregate(children, [], {"job_id": "job-1"})["smoke_result"]["runtime_seconds"]
+    assert final == jobs_mod.billed_gpu_seconds(jobs_mod.ToolJob.from_row(_esm2_row(3)), 600)
+
+
+def test_esmfold2_start_minimum_covers_the_most_one_seed_can_owe():
+    from shared.wallet import SIGNUP_CREDIT_USD
+
+    assert ESMFOLD2_START == TOOL_SPECS[ESM2].base_hard_cap_usd
+    assert live_due_usd(ESM2, 5400, gpu_class_for_job(ESM2, None), {"n_seeds": 1}) == ESMFOLD2_START
+    assert ESMFOLD2_START > SIGNUP_CREDIT_USD
 
 
 @pytest.mark.parametrize("tool", sorted(LIVE_ALL_PRESETS))

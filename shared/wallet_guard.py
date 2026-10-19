@@ -64,8 +64,14 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # ::test_iggm_uploads_and_beats_once_per_design pins both. Every iggm preset
 # streams through that one sweep, so all three are enabled.
 # proteina uploads each design in tools/proteina/run_pipeline.py::_run_shard,
-# pinned by the same test.
-_LIVE_ALL_PRESETS = frozenset({"bindcraft", "boltz2", "iggm", "proteina", "rfdiffusion"})
+# pinned by the same test. esmfold2-design is the exception: each seed uploads
+# its designs in tools/esmfold2_design/run_pipeline.py::_shape_designs, which
+# runs only after ``designer.design`` returns the seed's whole batch, so a
+# stop before then keeps none of that seed's designs. Its start minimum (see
+# live_start_usd) keeps a one-seed run clear of the balance stop.
+_LIVE_ALL_PRESETS = frozenset(
+    {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfdiffusion"}
+)
 # Campaign tools whose children open a live anchor instead of a cushioned
 # hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
 # tool keeps its hold.
@@ -84,7 +90,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0 on all but four tools.
+    """The balance a live run needs to start: $0 on all but five tools.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -111,8 +117,12 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     dollar to start a run as the minimum". The ``_PROTEINA`` runtime model's
     8-design run at the 120-aa pivot is $0.94, and $1.00 is below
     ``SIGNUP_CREDIT_USD``; ::test_proteina_starts_at_one_dollar pins both.
+
+    esmfold2-design's figure is its base cap, the most ``live_due_usd`` charges
+    one seed, so a one-seed run started at that balance owes no more than it
+    had. That is a proposal on PR review, not yet a figure Leo approved.
     """
-    if tool_slug in ("bindcraft", "iggm"):
+    if tool_slug in ("bindcraft", "esmfold2-design", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug == "proteina":
         return PROTEINA_START_USD

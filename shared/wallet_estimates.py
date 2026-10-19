@@ -667,6 +667,25 @@ def get_tool_spec(tool_slug: str) -> Optional[ToolSpec]:
     return TOOL_SPECS.get(tool_slug)
 
 
+def fanout_containers(tool_slug: str, params: Mapping[str, object]) -> float:
+    """Containers one job of ``tool_slug`` runs side by side: 1 unless its
+    spec sets ``worst_case_scales_with_param``, then the scaling param over
+    the baseline (esmfold2-design: ``n_seeds``)."""
+    spec = TOOL_SPECS.get(tool_slug)
+    if not (
+        spec is not None
+        and spec.worst_case_scales_with_param
+        and spec.scaling_param
+        and spec.designs_per_run_baseline > 0
+    ):
+        return 1.0
+    return max(
+        _effective_scaling_value(spec, _without_non_finite(dict(params or {})))
+        / float(spec.designs_per_run_baseline),
+        1.0,
+    )
+
+
 def _without_non_finite(params: Mapping[str, object]) -> dict:
     """Drop NaN/inf caller params so they read as absent (-> the baseline).
 
@@ -935,17 +954,7 @@ def cushioned_hold_usd(
         # uses (see _scale_seconds) so it covers the whole multi-unit job, not
         # just one container. Single-container tools skip this (flag defaults
         # False) and floor at one container.
-        if (
-            spec.worst_case_scales_with_param
-            and spec.scaling_param
-            and spec.designs_per_run_baseline > 0
-        ):
-            ratio = max(
-                _effective_scaling_value(spec, params or {})
-                / float(spec.designs_per_run_baseline),
-                1.0,
-            )
-            wc_seconds *= Decimal(str(ratio))
+        wc_seconds *= Decimal(str(fanout_containers(tool_slug, params)))
         floor = wc_seconds * rate * WALLET_MARKUP
         hold = max(hold, min(floor, cap))
     return _quantize_usd(min(hold, cap))
