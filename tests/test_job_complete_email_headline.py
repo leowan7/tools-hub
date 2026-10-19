@@ -757,7 +757,7 @@ def _recovered(*, backfilled: bool) -> dict:
 
     Transcribed from the two writers, not invented: scores hold ONLY the keys
     ``_candidate_from_partial`` copies off a streamed partial -- ipTM, pLDDT,
-    i_pae and nothing else (shared/job_recovery.py::_candidate_from_partial) -- and the pdb_key is
+    i_pae and nothing else for a non-proteina tool (shared/job_recovery.py::_candidate_from_partial) -- and the pdb_key is
     its ``f"designs/{basename}"``. The wrapper is
     ``recover_stuck_job_result``'s (its ``return`` in shared/job_recovery.py);
     scripts/finalize_stuck_job.py::main writes the identical dict.

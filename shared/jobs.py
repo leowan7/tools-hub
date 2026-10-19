@@ -417,8 +417,9 @@ def requested_designs(job) -> Optional[int]:
 def recovered_columns(rows) -> list:
     """The score columns a list rebuilt by ``shared/job_recovery.py`` can fill.
 
-    ``_candidate_from_partial`` there writes only ``ipTM``, ``pLDDT`` and
-    ``i_pae``, so a results partial's own column list (``mean_pLDDT``,
+    ``_candidate_from_partial`` there writes ``ipTM``, ``pLDDT`` and
+    ``i_pae`` (plus proteina's own score names, which no template calling this
+    reads), so a results partial's own column list (``mean_pLDDT``,
     ``epitope_contacts``, ``ranking_score``...) renders a recovered row as dashes.
     Kept in that order, and only where some row carries the key.
     tests/test_recovered_job_rendering.py::
