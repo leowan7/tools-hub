@@ -548,7 +548,7 @@ def test_recovery_does_not_carry_a_verdict_across():
 
 def test_recovery_keeps_proteina_scores():
     """A cancelled proteina run kept its designs but showed every score as a
-    dash (job 580d793b): the rebuild dropped the reward stack the partial
+    dash (seen on prod job 580d793b): the rebuild dropped the reward stack the partial
     carried. Same rule as above, so the verdict still stays behind."""
     from shared.job_recovery import _candidate_from_partial
 

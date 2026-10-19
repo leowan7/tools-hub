@@ -53,7 +53,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# The proteina measurement fields of webhooks/modal.py::_sanitize_candidate.
+# The proteina measurement fields of webhooks/modal.py::_sanitize_candidate. The
+# heartbeat (tools/proteina/run_pipeline.py) streams the first five; the rest
+# are copied only if a partial ever carries them.
 _PROTEINA_SCORE_KEYS = (
     "total_reward", "af2_iptm", "af2_plddt", "rf3_score", "binder_scrmsd",
     "ligand_scrmsd", "ff_energy", "rmsd", "min_ipae",
@@ -95,7 +97,8 @@ def _candidate_from_partial(part: dict) -> dict:
     # proteina's partial names each score as its final result's ``scores`` does
     # (tools/proteina/run_pipeline.py's new_candidate heartbeat), the names the
     # ``columns`` of templates/tools/proteina_results.html read. Without them a
-    # kept proteina design showed every score as a dash (job 580d793b).
+    # kept proteina design showed every score as a dash (seen on prod job
+    # 580d793b, 2026-10-19).
     for key in _PROTEINA_SCORE_KEYS:
         if part.get(key) is not None:
             scores[key] = part[key]
