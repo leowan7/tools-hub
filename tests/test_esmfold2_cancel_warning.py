@@ -73,7 +73,7 @@ def test_finished_esmfold2_page_has_no_warning(client):
     assert 'id="cancel-confirm"' not in _page(client, "esmfold2-design", {}, status="failed")
 
 
-def test_the_warning_path_never_calls_window_confirm(client):
+def test_the_warning_script_returns_before_window_confirm(client):
     """At 0 designs the click opens the in-page box and returns before
     window.confirm; "Cancel anyway" posts straight through doCancel."""
     html = _page(client, "esmfold2-design", {})
