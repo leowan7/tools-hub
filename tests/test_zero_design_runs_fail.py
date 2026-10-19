@@ -85,7 +85,8 @@ def _capture(monkeypatch, module) -> list[dict]:
 def _clock(monkeypatch, module) -> None:
     """Advance the module's clock 60 s per read so ``main``'s runtime is > 0."""
     monkeypatch.setattr(
-        module, "time", SimpleNamespace(time=itertools.count(1000, 60).__next__)
+        module, "time", SimpleNamespace(time=itertools.count(1000, 60).__next__,
+                                        monotonic=time.monotonic)
     )
 
 

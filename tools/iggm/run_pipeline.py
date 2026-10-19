@@ -576,10 +576,15 @@ def _upload_design(
     }
 
 
+# Seconds a mid-run sweep lets pass without a heartbeat before it sends one.
+KEEPALIVE_INTERVAL_S = 60
+
+
 def new_design_stream() -> dict[str, Any]:
     """Sweep state: the files already taken, their last-seen sizes, the entries
-    delivered so far, and the next rank to hand out."""
-    return {"taken": set(), "sizes": {}, "designs": [], "next_rank": 0}
+    delivered so far, the next rank to hand out, and when the last beat went."""
+    return {"taken": set(), "sizes": {}, "designs": [], "next_rank": 0,
+            "beat_at": time.monotonic()}
 
 
 def _looks_complete(path: Path, expected_chains: int) -> bool:
@@ -729,6 +734,19 @@ def sweep_designs(
             designs_total=designs_total,
             new_candidate=entry,
         )
+        stream["beat_at"] = time.monotonic()
+    if require_stable and time.monotonic() - stream["beat_at"] >= KEEPALIVE_INTERVAL_S:
+        # The hub refreshes gpu_seconds_used, what a cancel bills, only when a
+        # beat arrives (webhooks/modal.py::_handle_heartbeat), and one design
+        # can take minutes. Sent on the sweep's thread, after its design beats.
+        send_heartbeat(
+            webhook_url,
+            job_id,
+            stage="designing",
+            designs_completed=len(stream["designs"]),
+            designs_total=designs_total,
+        )
+        stream["beat_at"] = time.monotonic()
     if not require_stable:
         # The loop above beats only on a design it TOOK, so a final sweep that
         # took nothing -- every design already streamed -- would leave the last

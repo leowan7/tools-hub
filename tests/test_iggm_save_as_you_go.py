@@ -654,3 +654,72 @@ def test_an_antigen_with_no_free_chain_id_is_refused_not_crashed(tmp_path, monke
     failure = json.loads((tmp_path / "r.json").read_text())
     assert failure["status"] == "FAILED"
     assert failure["error"]["check"] == "antigen_chain"
+
+
+# ---------------------------------------------------------------------------
+# the keepalive: a beat about every KEEPALIVE_INTERVAL_S while design.py runs
+# ---------------------------------------------------------------------------
+
+
+def _age(stream, seconds=run_pipeline.KEEPALIVE_INTERVAL_S + 1):
+    """Pretend the last beat went ``seconds`` ago."""
+    stream["beat_at"] -= seconds
+
+
+def test_a_quiet_mid_run_sweep_beats_once_the_interval_passes(tmp_path, beats):
+    """A cancel bills gpu_seconds_used as of the last beat, so a minutes-long
+    design with no beat under it is GPU time the hub never charges."""
+    out = tmp_path / "out"
+    out.mkdir()
+    stream = new_design_stream()
+
+    _sweep(out, stream, _taker([]))
+    assert beats == [], "no beat before the interval"
+
+    _age(stream)
+    _sweep(out, stream, _taker([]))
+    assert beats == [{"job_id": "job1", "stage": "designing",
+                      "designs_completed": 0, "designs_total": 3}]
+
+    _sweep(out, stream, _taker([]))
+    assert len(beats) == 1, "the keepalive restarts the interval"
+
+
+def test_a_design_beat_restarts_the_interval(tmp_path, beats):
+    out = tmp_path / "out"
+    out.mkdir()
+    _write(out / "design_0.pdb")
+    stream = new_design_stream()
+    _sweep(out, stream, _taker([]))
+    _age(stream)
+    _sweep(out, stream, _taker([]))  # takes design_0: its beat, no keepalive
+    assert len(beats) == 1 and "new_candidate" in beats[0]
+    _sweep(out, stream, _taker([]))
+    assert len(beats) == 1
+
+
+def test_the_final_sweep_sends_no_keepalive(tmp_path, beats):
+    """The final sweep's one closing beat is the snapshot's last word; a
+    keepalive after it would carry the plan instead of the measured total."""
+    out = tmp_path / "out"
+    out.mkdir()
+    stream = new_design_stream()
+    _age(stream)
+    _sweep(out, stream, _taker([]), require_stable=False)
+    assert beats == [{"job_id": "job1", "stage": "designing",
+                      "designs_completed": 0, "designs_total": 0}]
+
+
+def test_the_keepalive_beats_for_as_long_as_design_py_runs(tmp_path, popen, beats):
+    """run_iggm sweeps on every poll, so the keepalive follows the child."""
+    popen(_FakeProc(rc=0, alive_polls=4))
+    out = tmp_path / "out"
+    out.mkdir()
+    stream = new_design_stream()
+
+    def on_poll():
+        _age(stream)
+        _sweep(out, stream, _taker([]))
+
+    assert _run(tmp_path, on_poll) == 0
+    assert len(beats) == 4
