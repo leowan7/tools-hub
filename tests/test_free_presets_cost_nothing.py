@@ -177,6 +177,8 @@ def test_a_non_finite_design_count_does_not_500_the_submit_route(offline_estimat
     with gate_app.test_client() as client, patch(
         "shared.wallet_guard.wallet_reserve_hold", return_value="tx-001"
     ), patch(
+        "shared.wallet_guard.open_live_run", return_value="tx-001"
+    ), patch(
         "shared.wallet_guard.get_or_create_wallet", return_value=_WALLET_OK
     ), patch(
         "shared.wallet.get_or_create_wallet", return_value=_WALLET_OK
@@ -320,10 +322,12 @@ def test_a_frozen_wallet_still_refuses_a_free_run(offline_estimator):
 
 
 def test_a_paid_preset_still_reserves(offline_estimator):
-    """Control: the same harness DOES place a hold for a paid preset.
+    """Control: the same harness DOES open a charge for a paid preset.
 
-    Without this, ``reserve.assert_not_called()`` above would also pass if
-    the decorator had stopped reserving for every submit.
+    proteina is live-charged (shared/wallet_guard.py::_LIVE_ALL_PRESETS), so
+    a paid preset opens a live anchor instead of a hold. Without this,
+    ``reserve.assert_not_called()`` above would also pass if the decorator
+    had stopped charging for every submit.
     """
     from shared.wallet import REASON_OK, PreflightResult
 
@@ -331,8 +335,10 @@ def test_a_paid_preset_still_reserves(offline_estimator):
     gate_app = _gate_app("proteina", seen)
 
     with gate_app.test_client() as client, patch(
-        "shared.wallet_guard.wallet_reserve_hold", return_value="tx-001"
+        "shared.wallet_guard.wallet_reserve_hold", return_value="tx-002"
     ) as reserve, patch(
+        "shared.wallet_guard.open_live_run", return_value="tx-001"
+    ) as open_live, patch(
         "shared.wallet_guard.get_or_create_wallet",
         return_value={"balance_usd": 100.0, "wallet_frozen": False},
     ), patch(
@@ -354,4 +360,5 @@ def test_a_paid_preset_still_reserves(offline_estimator):
 
     assert resp.status_code == 200
     assert seen.get("hold_tx_id") == "tx-001"
-    assert reserve.call_count == 1
+    assert open_live.call_count == 1
+    reserve.assert_not_called()
