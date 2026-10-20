@@ -2015,6 +2015,7 @@ def cancel_job(
     user_id: str,
     modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
     leave_running_if_cancel_fails: bool = True,
+    now: Optional[datetime] = None,
 ) -> tuple[Optional["ToolJob"], Optional[str]]:
     """Cancel a pending/running job. Owner-scoped; bills consumed GPU.
 
@@ -2027,8 +2028,10 @@ def cancel_job(
          cancelled here anyway, as before live charging.
       3. Mark the job 'cancelled' with failure_class='user_cancelled'.
       4. Settle the wallet hold against the row's ``gpu_seconds_used``.
-         ``mid_run_monitor_check`` writes it from a heartbeat, but not
-         on every check: it returns early for a missing or non-running
+         ``mid_run_monitor_check`` writes it from each heartbeat and once
+         more here, from the seconds since ``started_at`` at the cancel,
+         when the first heartbeat has arrived. It does not write on
+         every call: it returns early for a missing or non-running
          row and skips a zero value, and the write itself is
          best-effort. If nothing has written it, the cancel takes the
          zero-consumption ``release_hold`` path in
@@ -2066,6 +2069,13 @@ def cancel_job(
                 "Modal cancel failed for job %s (%s); cancelling locally.",
                 job_id, cancelled.get("error"),
             )
+
+    # Bill up to the cancel, not up to the last heartbeat, which can be a
+    # keepalive interval old. Only after the first beat, as meter_live_runs.
+    started = _parse_ts(job.started_at)
+    if started is not None and "_progress" in (job.inputs or {}):
+        now = now or datetime.now(timezone.utc)
+        mid_run_monitor_check(job_id, (now - started).total_seconds())
 
     # Compare-and-swap the terminal transition. If this returns False the
     # Modal webhook (or an inline-poll writer) wrote a terminal status
