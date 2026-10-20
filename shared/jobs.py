@@ -2623,7 +2623,8 @@ _SEED_PREFIX = re.compile(r"^(seed-?\d+)_")
 
 _SEED_NAME = re.compile(r"^seed-?\d+$")
 
-# A seed whose keepalive has been quiet this long has stopped. The pipeline
+# A seed whose keepalive has been quiet this long is taken to have stopped
+# (a dropped webhook post looks the same). The pipeline
 # beats every tools/esmfold2_design/run_pipeline.py::KEEPALIVE_INTERVAL_S (60 s).
 _SEED_BEAT_STALE_S = 150
 
@@ -2674,17 +2675,18 @@ def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
 
     With per-seed beats (``_seed_beat_spans``), each seed counts from its own
     first beat to its last design once its whole batch has streamed, else to
-    its last beat once that is ``_SEED_BEAT_STALE_S`` old, else to now; a seed
-    with no beat yet counts 0. Without them (single-container tools, and
+    its last beat once that is ``_SEED_BEAT_STALE_S`` old, else to now; once
+    any seed has beaten, a seed with no beat yet counts 0. Without them (single-container tools, and
     pipelines deployed before the seed beat), the clamped wall clock times the
     containers the job runs side by side
     (``shared.wallet_estimates.fanout_containers``), with a finished seed
     counted from ``started_at`` to its last design. The final bill sums each
     seed's runtime (tools/esmfold2_design/modal_app.py::_aggregate).
     """
-    # ponytail: a seed that dies is counted to its last beat, up to one
-    # keepalive interval short of its real end; a finished seed's shutdown
-    # after its last design is not counted.
+    # ponytail: a seed that dies counts to now for up to _SEED_BEAT_STALE_S
+    # after its last beat, then to its last beat, up to one keepalive interval
+    # short of its real end; a finished seed's shutdown after its last design
+    # is not counted.
     from shared.wallet_estimates import fanout_containers  # noqa: PLC0415
 
     wall = _safe_gpu_seconds_int(wall_seconds)
