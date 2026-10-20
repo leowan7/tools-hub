@@ -82,6 +82,7 @@ _LIVE_ALL_PRESETS = frozenset(
 # tool keeps its hold.
 LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
 PROTEINA_START_USD = Decimal("1.00")
+RFANTIBODY_START_USD = Decimal("2.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -105,12 +106,14 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
-    rfantibody's figure is derived the same way, from the ``_RFANTIBODY``
-    model's one-design run at 120 aa. Its first design reaches Storage only
-    after RFdiffusion and ProteinMPNN finish every backbone and RF2 finishes
-    one (llm-proteinDesigner docker/rfantibody/run_pipeline.py::_DesignStreamer),
-    so a run of more designs, or on a larger target, waits longer than this
-    covers. The figure is a proposal awaiting Leo.
+    rfantibody's figure is a flat $2.00, a proposal awaiting Leo. Its first
+    design reaches Storage only after RFdiffusion and ProteinMPNN finish every
+    backbone and RF2 finishes one (llm-proteinDesigner
+    docker/rfantibody/run_pipeline.py::_DesignStreamer). On the one run with a
+    recorded stage split (``_RFANTIBODY``'s size comment: 412 aa, 4 designs,
+    RFdiffusion 1115 s + ProteinMPNN 42 s + RF2 ~1330 s) that is about 1490 s,
+    $1.81 at the A100-40GB rate. A run whose stretch before its first design
+    costs more than $2.00 can still be stopped at $0 with no design.
 
     bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
     Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
@@ -142,7 +145,9 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug == "proteina":
         return PROTEINA_START_USD
-    if tool_slug not in ("rfdiffusion", "rfantibody"):
+    if tool_slug == "rfantibody":
+        return RFANTIBODY_START_USD
+    if tool_slug != "rfdiffusion":
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)

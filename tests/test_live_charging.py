@@ -34,9 +34,8 @@ LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina"
                     "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
-# 300.00 s, _RFANTIBODY's one-design run at 120 aa, at the A100-40GB rate.
-# Proposed, awaiting Leo.
-RFA_START = Decimal("0.3641")
+# A flat $2.00 to start an rfantibody run. Proposed, awaiting Leo.
+RFA_START = Decimal("2.00")
 # bindcraft's base cap (Leo, PR #431), so the $5 signup credit is refused.
 BC_START = Decimal("8.00")
 # iggm's base cap, the start minimum Leo picked on 2026-10-16.
