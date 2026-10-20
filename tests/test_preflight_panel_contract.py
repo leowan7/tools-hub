@@ -742,7 +742,7 @@ def test_the_panel_does_not_block_proteinas_own_multichain_flow(client):
     # chains C73 is skipped as unparseable and the panel is still green with
     # one hotspot, and without the chain-set/gate agreement C73 resolves and
     # is then dropped downstream. Both show up here and nowhere else, because
-    # preflight.js:143 and preflight_panel.html:63 render `surviving` only —
+    # preflight.js and preflight_panel.html render `hotspots.surviving` only —
     # so a dropped hotspot is invisible to the user by construction.
     assert body["hotspots"]["dropped"] == [], body["hotspots"]
     assert body["hotspots"]["surviving"] == ["A113", "C73"], (

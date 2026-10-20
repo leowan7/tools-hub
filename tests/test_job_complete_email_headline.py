@@ -827,3 +827,23 @@ def test_a_recovered_run_gets_no_email_callout():
             f"that carries no backfilled flag, so the assertions above are "
             f"evidence about the SHAPE test, not about the flag: {body!r}"
         )
+
+
+def test_a_recovered_run_gets_no_next_step_line():
+    """The next-step copy says "validate the top design", so it needs one.
+
+    ``_next_step_for_job`` gates only on tone and SOURCE_TOOLS, so a recovered
+    boltzgen run -- whose callout the backfilled flag suppresses -- still told
+    the reader to validate a top design the mail never named. The unflagged
+    half shows the line is otherwise sent for the same tool.
+    """
+    bodies = _bodies(_sent(_job(tool="boltzgen",
+                                result=_recovered(backfilled=True))))
+    for part, body in bodies.items():
+        assert "validate the top design" not in body, (part, body)
+        assert "Top design" not in body, (part, body)
+
+    unflagged = _bodies(_sent(_job(tool="boltzgen",
+                                   result=_recovered(backfilled=False))))
+    for part, body in unflagged.items():
+        assert "validate the top design" in body, (part, body)

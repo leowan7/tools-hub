@@ -453,7 +453,7 @@ class TestEveryPartialIsExampleSafe:
         # RETIRED WORDINGS. af2 and colabfold said these directly above
         # example pages that render no download at all: af2's controls are
         # double-gated on `not is_example` AND `pdb_b64`
-        # (af2_results.html:241,245) and NEITHER example payload carries a
+        # (both gates in af2_results.html) and NEITHER example payload carries a
         # blob, so both pages instructed a download they did not offer.
         # Both are reworded now, which means -- unlike the three entries
         # above -- these are written nowhere, so the control test below

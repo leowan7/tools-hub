@@ -219,6 +219,10 @@ def _job_complete_template_context(
     next_step_url, next_step_label = _next_step_for_job(
         job=job, base_url=base_url, tone=tone,
     )
+    # The next-step copy reads "validate the top design"; with no top design
+    # named above (test_a_recovered_run_gets_no_next_step_line) it is dropped.
+    if not (top_score_label and top_score_value):
+        next_step_url, next_step_label = "", ""
     return {
         "base_url":          base_url,
         "tool_label":        tool,

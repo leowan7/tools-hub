@@ -214,7 +214,8 @@ def _proteina_form(**kw):
 #
 # WHY EVERY REFUSAL BELOW IS ASSERTED AS A CONTIGUOUS PHRASE AND NEVER AS A
 # BARE NUMBER. ``_visible()`` is the WHOLE document, ``<head>`` included, and
-# ``templates/base.html:28`` ships a Google Fonts URL on every rendered page
+# the Google Fonts ``<link>`` in ``templates/base.html`` ships a URL on every
+# rendered page
 # containing ``wght@8..60,400;8..60,500;8..60,600`` and ``9..40,700``; the
 # page's own inline CSS then repeats ``font-weight: 600`` and ``700``. So the
 # substrings "400", "500", "600" and "700" are present in every response body

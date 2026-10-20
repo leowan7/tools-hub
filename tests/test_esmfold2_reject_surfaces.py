@@ -918,8 +918,8 @@ class TestTheHeadlineMetricChain:
         # ``test_an_integer_reading_keeps_its_type``.
         #
         # "Epitope contacts", not "epitope_contacts": the clause names the
-        # column the way the results table heads it
-        # (templates/components/candidate_table.html:522), which is the
+        # column the way the results table heads it (the ``th[data-col]``
+        # header in templates/components/candidate_table.html), which is the
         # glossary label. It read the storage key until 2026-09-14.
         assert clause == "One design at Epitope contacts 7", clause
 

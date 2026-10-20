@@ -1260,7 +1260,8 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
 
     AND THE ASSERTION HAD TO MOVE WITH IT, which the fixture change on its own
     did not do. ``_visible_text`` is the WHOLE document, and
-    ``templates/base.html:28`` ships a Google Fonts URL on every rendered page
+    the Google Fonts ``<link>`` in ``templates/base.html`` ships a URL on
+    every rendered page
     containing ``wght@8..60,400;8..60,500;8..60,600``, so "500" and "600" are
     unconditionally present in every response body. ``"600" in body and "500"
     in body`` therefore asserted nothing about this gate: with

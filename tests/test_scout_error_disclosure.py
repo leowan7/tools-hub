@@ -476,7 +476,8 @@ class TestSseContractIsIntact:
     def test_error_event_keeps_stage_and_a_nonempty_msg(
         self, client, monkeypatch, reap_jobs, exc
     ):
-        """templates/scout/index.html:342 reads data.stage then data.msg.
+        """``source.onmessage`` in templates/scout/index.html reads data.stage
+        then data.msg.
 
         An empty or missing ``msg`` would leave the banner blank, and a
         missing ``stage`` would hang the stream open.
