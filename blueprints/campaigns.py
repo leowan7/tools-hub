@@ -96,7 +96,8 @@ LAB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 # dispatch the next wave). Collapse repeat polls — many tabs, fast interval —
 # to at most one reconcile per campaign per interval so N tabs cannot fan out
 # N x synchronous Modal polls (and job dispatch) on a 5-second GET. The cron
-# tick (~60-90s) reconciles every campaign regardless, so this throttle only
+# tick (every 5 minutes; docs/design/LIVE-CHARGING-2026-10-01.md "§7 item 10")
+# reconciles every campaign regardless, so this throttle only
 # trades a little settle latency for load; it never blocks progress.
 _STATUS_RECONCILE_MIN_INTERVAL_S = 20.0
 _last_status_reconcile: dict = {}
@@ -863,10 +864,10 @@ def compute_campaign_status(campaign_id):
     # returned an inline result but posted no terminal webhook (atomic-pattern
     # tools: proteina / iggm). Without this the counts on a *watched* campaign
     # would not advance — and its wallet hold would not settle — until the next
-    # cron reconcile (~60-90s), or, absent the cron, the 6-hour stuck-job
-    # sweeper. Doing it here settles a watched campaign near-instantly. Throttled
-    # (see _status_reconcile_due) and best-effort; a poll fault must not break
-    # the status read. Re-fetch so a just-finalised campaign reports terminal now.
+    # cron reconcile (every 5 minutes; see app.py `campaigns:tick`). Doing it
+    # here settles a watched campaign near-instantly. Throttled (see
+    # _status_reconcile_due) and best-effort; a poll fault must not break the
+    # status read. Re-fetch so a just-finalised campaign reports terminal now.
     if campaign.status not in (
         "completed", "completed_with_failures", "failed", "cancelled",
     ) and _status_reconcile_due(campaign_id):

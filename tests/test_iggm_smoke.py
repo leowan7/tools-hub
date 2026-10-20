@@ -516,9 +516,8 @@ class TestTemplatesParse:
 # ``url_for('tool_submit')`` that 500'd /tools/iggm in production once the
 # flag went on. Render the route for real. See also
 # tests/test_template_endpoints.py, which statically catches the same bug
-# class across every template — including iggm_results.html, which has no
-# render test of its own (other tools render theirs against a fake job; see
-# tests/test_esmfold_smoke.py).
+# class across every template — including iggm_results.html, which section 8
+# below and tests/test_results_sort_nullable.py render against a fake job.
 
 
 @pytest.fixture
@@ -645,3 +644,38 @@ class TestFormRenders:
         # vanished from the registry — otherwise this passes for the wrong
         # reason and stops testing the launch gate at all.
         assert get_adapter("iggm") is not None
+
+
+# ---------------------------------------------------------------------------
+# 8. A recovered / cancelled run's summary panel reads the run's inputs
+# ---------------------------------------------------------------------------
+
+
+def test_recovered_run_panel_shows_antigen_chain_and_epitope_from_inputs():
+    """A cancelled run's result is rebuilt as ``candidates`` alone
+    (shared/job_recovery.reconstruct), with no ``antigen_chain`` or
+    ``epitope_pdb_resnums``; the panel read "chain ?" and "none"
+    (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, F2)."""
+    import re
+    import types
+
+    from app import create_app
+
+    app = create_app()
+    job = types.SimpleNamespace(
+        id="job-1", status="cancelled", preset="design",
+        inputs={"antigen_chain": "C", "epitope_pdb_resnums": [7, 8, 108]},
+        result={
+            "candidates": [
+                {"rank": 1, "pdb_key": "designs/d1.pdb", "scores": {}},
+            ],
+            "candidate_count": 1,
+            "backfilled": True,
+        },
+    )
+    with app.test_request_context("/"):
+        html = app.jinja_env.get_template("tools/iggm_results.html").render(job=job)
+    flat = re.sub(r"\s+", " ", html)
+    assert "chain C" in flat
+    assert "7, 8, 108" in flat
+    assert "chain ?" not in flat

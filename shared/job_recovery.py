@@ -102,11 +102,17 @@ def _candidate_from_partial(part: dict) -> dict:
     for key in _PROTEINA_SCORE_KEYS:
         if part.get(key) is not None:
             scores[key] = part[key]
-    return {
+    candidate = {
         "rank": part.get("rank"),
         "pdb_key": f"designs/{basename}",
         "scores": scores,
     }
+    # At the root, where templates/tools/proteina_results.html reads it; the
+    # partial's value is already allowlisted by
+    # webhooks/modal.py::_sanitize_candidate.
+    if part.get("target_numbering") is not None:
+        candidate["target_numbering"] = part["target_numbering"]
+    return candidate
 
 
 # storage3's list() defaults to ``{"limit": 100}``

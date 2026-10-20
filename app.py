@@ -1118,7 +1118,8 @@ def create_app() -> Flask:
 
             flask campaigns:tick
 
-        Scheduled via Railway cron (~60-90s).
+        Scheduled outside the repo by Railway cron, every 5 minutes
+        (docs/design/LIVE-CHARGING-2026-10-01.md, "§7 item 10: the cron").
         """
         from cron.tick_campaigns import tick_campaigns  # noqa: PLC0415
 
