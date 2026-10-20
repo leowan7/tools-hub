@@ -69,14 +69,28 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # runs only after ``designer.design`` returns the seed's whole batch, so a
 # stop before then keeps none of that seed's designs. Its start minimum (see
 # live_start_usd) keeps a one-seed run clear of the balance stop.
+# pxdesign uploads each finished design on its 60 s heartbeat tick, in the
+# llm-proteinDesigner repo (docker/pxdesign/run_pipeline.py::_DesignStreamer,
+# branch feat/pxdesign-stream-designs), which no test here can read;
+# ::test_pxdesign_submits_only_the_pilot_tier pins the one tier the hub sends.
 _LIVE_ALL_PRESETS = frozenset(
-    {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfdiffusion"}
+    {
+        "bindcraft",
+        "boltz2",
+        "esmfold2-design",
+        "iggm",
+        "proteina",
+        "pxdesign",
+        "rfdiffusion",
+    }
 )
 # Campaign tools whose children open a live anchor instead of a cushioned
 # hold (shared/compute_campaigns.py::_dispatch_chunk). Every other campaign
 # tool keeps its hold.
 LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
 PROTEINA_START_USD = Decimal("1.00")
+# PROPOSED, not yet decided by Leo. See live_start_usd for the derivation.
+PXDESIGN_START_USD = Decimal("2.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -90,7 +104,7 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0 on all but five tools.
+    """The balance a live run needs to start: $0 on all but six tools.
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -118,6 +132,40 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     8-design run at the 120-aa pivot is $0.94, and $1.00 is below
     ``SIGNUP_CREDIT_USD``; ::test_proteina_starts_at_one_dollar pins both.
 
+    pxdesign's figure is a flat $2.00, and is a PROPOSAL awaiting Leo's
+    decision -- no one has approved it. Derivation: a pxdesign run streams its
+    first design only once PXDesign has sampled, converted and AF2-validated
+    it, so time-to-first-design is bounded by the length of a run that
+    delivered a design, and every such run on record ran 1051 GPU-s or less:
+    one-design smoke runs at 993, 1006, 1048 and 1051, and the two pilot runs
+    -- the only tier the hub sends -- at 462 and 504 (docs/VALIDATION-LOG.md,
+    rows 2026-04-22 to 2026-05-27; the 4517 GPU-s mini_pilot row FAILED and
+    delivered nothing). At the longest of them,
+    ``live_due_usd("pxdesign", 1051, "A100-80GB")``
+    is $1.84, so $2.00 is the next round figure above it, and it is below
+    ``SIGNUP_CREDIT_USD``; ::test_pxdesign_starts_at_two_dollars pins both.
+    Known limits of the figure: it assumes PXDesign converts and validates
+    samples incrementally, so that a one-design run's length is also the time
+    to the first design of a larger run. If instead it finishes all sampling
+    before any conversion, time-to-first-design approaches whole-run length
+    and no modest minimum covers it -- unverified either way, because no run
+    has streamed a pxdesign design yet. The figure also does not cover large
+    targets toward the 600-aa ceiling, whose first design costs more.
+    And it does not scale with ``num_designs``, so it admits a run the balance
+    cannot fund: measured with this repo's estimator, a pilot at 1, 8 and 24
+    designs estimates $6.29, $25.17 and $75.50 and used to hold $9.44, $37.75
+    and $113.24, and all three now start at $2.00. The pre-change hold refused
+    every one of them on a $2.00 balance. That is what save-as-you-go is for --
+    the meter stops the run at $0 and the user keeps the designs already
+    streamed -- so it is sound only once the streaming container is deployed;
+    until then a stopped run delivers nothing for the money. Non-scaling is the
+    shape of every live figure here, not something peculiar to pxdesign:
+    esmfold2-design's paragraph below records the same gap, and no candidate
+    flat figure closes it -- even the $13.00 base cap is under a 24-design
+    pilot's $75.50. Only the scaled cap ($156.00 at 24) would, which is what
+    the cushioned hold did. ::test_pxdesign_start_minimum_does_not_scale pins
+    the figures. Scaling it is Leo's call, as it is for esmfold2-design.
+
     esmfold2-design's figure is its base cap, the most ``live_due_usd`` charges
     one seed, so a one-seed run started at that balance owes no more than it
     had. Leo approved $15 on PR #440 review (2026-10-19). It does not scale
@@ -130,6 +178,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
     if tool_slug == "proteina":
         return PROTEINA_START_USD
+    if tool_slug == "pxdesign":
+        return PXDESIGN_START_USD
     if tool_slug != "rfdiffusion":
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60

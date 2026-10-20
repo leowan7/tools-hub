@@ -49,7 +49,6 @@ NEEDS_TOPUP = {
     "boltzgen",
     "esmfold2-design",
     "opendde",
-    "pxdesign",
 }
 # proteina and rfantibody left this set on 2026-09-30 when their bootstrap
 # estimates were cut to measured runtimes (TOOL_SPECS in
@@ -58,6 +57,14 @@ NEEDS_TOPUP = {
 # went live: the credit covers its live_start_usd. bindcraft went live in #431
 # and stays, because its live_start_usd is its $8.00 cap. Leo, 2026-10-16: the
 # copy stays as it is.
+# pxdesign leaves this set if the PROPOSED $2.00 live start minimum is the one
+# Leo picks (shared/wallet_guard.py::live_start_usd): the credit then admits a
+# pxdesign run, where its cushioned hold refused one -- that hold is $9.4371
+# with no p90 history (cushioned_hold_usd(None, "pxdesign", {"num_designs": 1}),
+# live charging off), NOT the $13.00 base cap, which is only its ceiling. The
+# threshold that puts pxdesign back is not the credit but the credit less
+# _HEADROOM: any start minimum above $4.00, the $13.00 cap among them, and this
+# set goes with it. The copy has not been re-read against pxdesign leaving.
 
 
 def _smallest_run_params(spec: we.ToolSpec) -> dict:

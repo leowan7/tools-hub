@@ -99,7 +99,8 @@ The **alternative** keeps `cancelled`, writes a result, and widens the template 
 | mpnn | No heartbeats at all (re-read: 0 calls) | Nothing | re-read `tools/mpnn/run_pipeline.py:657-662` |
 | bindcraft | No. Candidates are uploaded after the 14400 s subprocess (re-read `llm-proteinDesigner/docker/bindcraft/run_pipeline.py:1418-1426`, `:1520-1545`) | Nothing | |
 | boltzgen | No. Candidates are uploaded after the 6600 s subprocess (re-read `llm-proteinDesigner/docker/boltzgen/run_pipeline.py:1926-1952`, `:2070-2084`) | Nothing | |
-| rfdiffusion, rfantibody, pxdesign | **UNVERIFIED.** No pipeline in this repo; `tools/<tool>/` holds only `meta.py` and an example (re-read `ls`) | **UNVERIFIED** | Board item 6a records that rfdiffusion partials carry no `pdb_key`, so `reconstruct` would fall back to the Storage listing |
+| rfdiffusion, rfantibody | **UNVERIFIED.** No pipeline in this repo; `tools/<tool>/` holds only `meta.py` and an example (re-read `ls`) | **UNVERIFIED** | Board item 6a records that rfdiffusion partials carry no `pdb_key`, so `reconstruct` would fall back to the Storage listing |
+| pxdesign | Yes, as of 2026-10-20: each finished design is uploaded on its own on the 60 s heartbeat tick (`llm-proteinDesigner/docker/pxdesign/run_pipeline.py::_DesignStreamer`, branch `feat/pxdesign-stream-designs`, not yet merged) | The design it was uploading, at most | No run has exercised this path; the streamed candidates carry null scores, because `summary.csv` exists only once the subprocess exits |
 
 Two more limits:
 
@@ -136,7 +137,9 @@ Two more limits:
 | bindcraft | A100-80GB | `_HeartbeatThread` every 60 s (re-read `…/bindcraft/run_pipeline.py:1418-1424`) | 60 s | $0.10 / $0.06 |
 | boltzgen (main path) | A100-40GB | keepalive every 300 s (re-read `…/boltzgen/run_pipeline.py:1929-1930`) | 300 s | $0.36 / $0.21 |
 | boltzgen (preset path) | A100-40GB | none (census `…/boltzgen/run_pipeline.py:515-540`) | ≤ 1800 s | $2.18 / $1.29 |
-| rfdiffusion, rfantibody, pxdesign | A100-40GB / A100-40GB / A100-80GB | **UNVERIFIED**. The only in-repo statement is the generic "every 60s" in `docs/ATOMIC-TOOLS.md:67` | UNVERIFIED | UNVERIFIED |
+| rfdiffusion, rfantibody | A100-40GB / A100-40GB | **UNVERIFIED**. The only in-repo statement is the generic "every 60s" in `docs/ATOMIC-TOOLS.md:67` | UNVERIFIED | UNVERIFIED |
+| pxdesign | A100-80GB | every 60 s as of 2026-10-20 (`llm-proteinDesigner/docker/pxdesign/run_pipeline.py::run_webhook_tier`, branch `feat/pxdesign-stream-designs`); it was every 300 s at 18382cd | 60 s | $0.10 / $0.06 |
+| pxdesign (the image deployed today, until the container PR merges and pxdesign redeploys) | A100-80GB | every 300 s at 18382cd | 300 s | $0.52 / $0.31 |
 
 For a balance-limited run, the customer is charged more than the hold only when funds that arrived during the run, such as a top-up, cover the whole overshoot (§3.1, D5). Otherwise the overshoot column is what **Ranomics** absorbs.
 
