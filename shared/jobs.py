@@ -2686,19 +2686,15 @@ def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
 def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
     """Persist a running job's heartbeat GPU seconds to the row.
 
-    Sole non-test caller: ``webhooks/modal.py::_run_mid_run_monitor``,
-    driven off the inbound Modal heartbeat. There is no scheduler and no
-    fixed interval -- the cadence is whatever each tool's pipeline emits
-    heartbeats at.
+    Non-test callers: ``webhooks/modal.py::_run_mid_run_monitor``, driven
+    off the inbound Modal heartbeat, and ``cancel_job``, once at the cancel.
+    There is no scheduler and no fixed interval -- between those, the
+    cadence is whatever each tool's pipeline emits heartbeats at.
 
     The ``_cas_update`` call below writes ``billed_gpu_seconds`` of the
     wall-clock ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``,
     which is what a user-initiated cancel
     bills (``cancel_job`` settles the hold off a fresh read of the row).
-    The value written is a heartbeat-resolution snapshot (last value
-    reported), so a cancel bills what the last heartbeat reported and
-    not what the job consumed after it. Heartbeat cadence is set by
-    each tool's pipeline, so the size of that gap is not bounded here.
     The write is CAS-guarded on status IN (pending, running) so a
     terminal webhook landing between the read and the write wins; the
     heartbeat's older snapshot cannot clobber the authoritative
