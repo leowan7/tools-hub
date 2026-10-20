@@ -56,6 +56,25 @@ def test_merge_dedups_repeat_candidate():
     assert len(out["_partial_candidates"]) == 1
 
 
+def test_merge_stamps_the_seed_a_multi_seed_design_came_from():
+    out = modal_webhook._hb_merge_inputs(
+        {"_seed_last_design_at": {"seed0": "2026-10-19T00:00:00+00:00"}},
+        stage="folding", designs_completed=0, designs_total=0,
+        new_candidate={"rank": 3, "name": "seed1_design_0"},
+    )
+    stamps = out["_seed_last_design_at"]
+    assert set(stamps) == {"seed0", "seed1"}
+    assert stamps["seed0"] == "2026-10-19T00:00:00+00:00"
+
+
+def test_merge_stamps_nothing_for_a_single_seed_design():
+    out = modal_webhook._hb_merge_inputs(
+        {}, stage="folding", designs_completed=0, designs_total=0,
+        new_candidate={"rank": 0, "name": "design_0"},
+    )
+    assert "_seed_last_design_at" not in out
+
+
 # ---------------------------------------------------------------------------
 # CAS store fake
 # ---------------------------------------------------------------------------

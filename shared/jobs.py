@@ -1917,12 +1917,9 @@ def meter_live_runs(*, modal_client=None, now: Optional[datetime] = None) -> dic
             started = _parse_ts(job.started_at)
             if started is None:
                 continue
-            elapsed = max(0, int((now - started).total_seconds()))
+            elapsed = billed_gpu_seconds(job, (now - started).total_seconds())
             gpu_class = gpu_class_for_job(job.tool, ws.get("gpu_class"))
-            params = {
-                k: v for k, v in (job.inputs or {}).items()
-                if isinstance(k, str) and not k.startswith("_")
-            }
+            params = _tool_params(job)
             debit = debit_live_run(
                 ws["hold_tx_id"], job.user_id,
                 live_due_usd(job.tool, elapsed, gpu_class, params),
@@ -2614,6 +2611,68 @@ def _safe_gpu_seconds_int(value) -> int:  # noqa: ANN001
     return int(min(f, _MAX_GPU_SECONDS))
 
 
+def _tool_params(job: "ToolJob") -> dict:
+    return {
+        k: v for k, v in (job.inputs or {}).items()
+        if isinstance(k, str) and not k.startswith("_")
+    }
+
+
+_SEED_PREFIX = re.compile(r"^(seed-?\d+)_")
+
+
+def _finished_seed_seconds(job: "ToolJob", wall: int) -> list[float]:
+    """Seconds from ``started_at`` to the last streamed design of each seed
+    that has streamed ``batch_size`` designs, each clamped to ``wall``.
+
+    A seed is named by its ``seed{N}_`` design-name prefix
+    (tools/esmfold2_design/modal_app.py::run_tool sets it per child), and the
+    time of its latest design is ``inputs._seed_last_design_at``, which
+    webhooks/modal.py::_hb_merge_inputs stamps.
+    """
+    inputs = job.inputs or {}
+    last = inputs.get("_seed_last_design_at")
+    partials = inputs.get("_partial_candidates")
+    batch = inputs.get("batch_size")
+    started = _parse_ts(job.started_at)
+    if not (isinstance(last, dict) and isinstance(partials, list)
+            and isinstance(batch, int) and batch > 0 and started is not None):
+        return []
+    counts: dict[str, int] = {}
+    for cand in partials:
+        m = _SEED_PREFIX.match(str(cand.get("name") or "")) if isinstance(cand, dict) else None
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    out = []
+    for seed, ts in last.items():
+        at = _parse_ts(ts) if isinstance(ts, str) else None
+        if at is not None and counts.get(seed, 0) >= batch:
+            out.append(min(max((at - started).total_seconds(), 0.0), float(wall)))
+    return out
+
+
+def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
+    """GPU seconds a running job has used after ``wall_seconds`` of wall clock.
+
+    The clamped wall clock times the containers the job runs side by side
+    (``shared.wallet_estimates.fanout_containers``), except that a seed which
+    has streamed its whole batch counts only up to its last design
+    (``_finished_seed_seconds``). The final bill sums each seed's runtime
+    (tools/esmfold2_design/modal_app.py::_aggregate).
+    """
+    # ponytail: a seed's start is unknown mid-run (started_at is the first
+    # child's beat), so a seed Modal starts late is still counted from
+    # started_at; a seed that dies without streaming its batch counts until
+    # the run ends; a finished seed's shutdown after its last design is not
+    # counted. A per-seed start beat from the pipeline would close the first two.
+    from shared.wallet_estimates import fanout_containers  # noqa: PLC0415
+
+    wall = _safe_gpu_seconds_int(wall_seconds)
+    seeds = fanout_containers(job.tool, _tool_params(job))
+    done = _finished_seed_seconds(job, wall)[: int(seeds)]
+    return int(sum(done) + (seeds - len(done)) * wall)
+
+
 def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
     """Persist a running job's heartbeat GPU seconds to the row.
 
@@ -2622,8 +2681,9 @@ def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
     fixed interval -- the cadence is whatever each tool's pipeline emits
     heartbeats at.
 
-    The ``_cas_update`` call below writes ``cumulative_gpu_seconds`` to
-    ``tool_jobs.gpu_seconds_used``, which is what a user-initiated cancel
+    The ``_cas_update`` call below writes ``billed_gpu_seconds`` of the
+    wall-clock ``cumulative_gpu_seconds`` to ``tool_jobs.gpu_seconds_used``,
+    which is what a user-initiated cancel
     bills (``cancel_job`` settles the hold off a fresh read of the row).
     The value written is a heartbeat-resolution snapshot (last value
     reported), so a cancel bills what the last heartbeat reported and
@@ -2642,7 +2702,7 @@ def mid_run_monitor_check(job_id: str, cumulative_gpu_seconds: float) -> None:
     try:
         _cas_update(
             job_id,
-            {"gpu_seconds_used": _safe_gpu_seconds_int(cumulative_gpu_seconds)},
+            {"gpu_seconds_used": billed_gpu_seconds(job, cumulative_gpu_seconds)},
             allowed_current=("pending", "running"),
         )
     except Exception:

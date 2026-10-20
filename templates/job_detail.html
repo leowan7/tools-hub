@@ -476,6 +476,20 @@
               style="color: #f87171; border-color: rgba(248,113,113,0.35);"
               data-job-id="{{ job.id }}">Cancel run</button>
       <span id="cancel-status" style="color: var(--text-secondary); font-size: 0.85rem;"></span>
+      {% if job.tool == 'esmfold2-design' %}
+        {# In-page, not window.confirm: a native dialog wedged the tab and the
+           cancel POST never fired. Shown by the cancel script below while
+           data-delivered is 0; the poll keeps it current. #}
+        {% set _pc = (job.inputs or {}).get('_partial_candidates') %}
+        <div id="cancel-confirm" hidden role="alert"
+             data-delivered="{{ _pc|length if _pc is sequence and _pc is not string and _pc is not mapping else 0 }}"
+             style="flex-basis: 100%; padding: 0.75rem 1rem; border: 1px solid rgba(248,113,113,0.35); border-radius: 6px;">
+          <p style="margin: 0 0 0.5rem;">No designs have been saved yet. Cancelling now is charged for the GPU time used and keeps no designs, because designs arrive only when a seed's batch finishes.</p>
+          <button type="button" id="cancel-confirm-yes" class="btn-secondary"
+                  style="color: #f87171; border-color: rgba(248,113,113,0.35);">Cancel anyway</button>
+          <button type="button" id="cancel-confirm-no" class="btn-secondary">Keep running</button>
+        </div>
+      {% endif %}
     {% endif %}
   </div>
 
@@ -530,8 +544,25 @@
         var btn = document.getElementById('cancel-job-btn');
         if (!btn) return;
         var statusNote = document.getElementById('cancel-status');
+        var confirmBox = document.getElementById('cancel-confirm');
         btn.addEventListener('click', function () {
+          if (confirmBox && Number(confirmBox.dataset.delivered) === 0) {
+            confirmBox.hidden = false;
+            return;
+          }
           if (!window.confirm('Cancel this run? Your wallet will be charged for GPU minutes already consumed. Time already used is not refunded.')) return;
+          doCancel();
+        });
+        if (confirmBox) {
+          document.getElementById('cancel-confirm-yes').addEventListener('click', function () {
+            confirmBox.hidden = true;
+            doCancel();
+          });
+          document.getElementById('cancel-confirm-no').addEventListener('click', function () {
+            confirmBox.hidden = true;
+          });
+        }
+        function doCancel() {
           btn.disabled = true;
           statusNote.textContent = 'Cancelling...';
           fetch('/jobs/' + btn.dataset.jobId + '/cancel', {
@@ -553,7 +584,7 @@
               statusNote.textContent = 'Network error. Retry in a moment.';
               btn.disabled = false;
             });
-        });
+        }
       })();
     </script>
   {% endif %}
@@ -777,6 +808,11 @@
           }
 
           renderCandidates(data.partial_candidates);
+          var cc = document.getElementById('cancel-confirm');
+          if (cc && Array.isArray(data.partial_candidates)) {
+            cc.dataset.delivered = String(data.partial_candidates.length);
+            if (data.partial_candidates.length > 0) cc.hidden = true;
+          }
           renderSummary(data);
           renderEta(data);
         }
