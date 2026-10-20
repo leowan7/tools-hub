@@ -83,6 +83,7 @@ from flask import Flask, Response, jsonify, request
 
 from shared.credits import get_service_client
 from shared.jobs import (
+    _SEED_NAME,
     _SEED_PREFIX,
     TERMINAL_STATUSES,
     ToolJob,
@@ -328,13 +329,18 @@ def _handle_heartbeat() -> Any:
     # partial-results streaming). Unlike the stage string, candidate data
     # is rendered back to the user, so it is gated behind the job_token
     # shared secret to stop a spoofed heartbeat injecting fake results.
+    # A multi-seed child's ``seed`` names it for the per-seed meter
+    # (shared/jobs.py::billed_gpu_seconds), so it is token-gated the same way.
+    stored_token = job.job_token or ""
+    token = str(body.get("job_token") or "")
+    # An empty stored token must never match: hmac.compare_digest("", "")
+    # returns True, so guard it explicitly before the constant-time check.
+    token_ok = bool(stored_token) and hmac.compare_digest(stored_token, token)
+    seed = str(body.get("seed") or "")
+    seed = seed if token_ok and _SEED_NAME.match(seed) else None
     new_candidate = body.get("new_candidate")
     if isinstance(new_candidate, dict):
-        stored_token = job.job_token or ""
-        token = str(body.get("job_token") or "")
-        # An empty stored token must never match: hmac.compare_digest("", "")
-        # returns True, so guard it explicitly before the constant-time check.
-        if not stored_token or not hmac.compare_digest(stored_token, token):
+        if not token_ok:
             logger.warning(
                 "Heartbeat candidate token mismatch for job %s; dropping it",
                 job_id,
@@ -358,6 +364,7 @@ def _handle_heartbeat() -> Any:
         designs_completed=_safe_int(body.get("designs_completed")),
         designs_total=_safe_int(body.get("designs_total")),
         new_candidate=new_candidate,
+        seed=seed,
     )
 
     # The heartbeat is unauthenticated on this path, so a client-supplied
@@ -543,6 +550,7 @@ def _hb_merge_inputs(
     designs_completed: int,
     designs_total: int,
     new_candidate: dict | None,
+    seed: str | None = None,
 ) -> dict:
     """Return a new inputs dict with this heartbeat's progress folded in.
 
@@ -576,14 +584,24 @@ def _hb_merge_inputs(
             partials.append(new_candidate)
         merged["_partial_candidates"] = partials[:1000]
         # When each multi-seed child last streamed a design, keyed by its
-        # ``seed{N}_`` name prefix; shared/jobs.py::_finished_seed_seconds
+        # ``seed{N}_`` name prefix; shared/jobs.py::_seed_finished_at
         # stops metering a seed at this time once its whole batch has arrived.
-        seed = _SEED_PREFIX.match(str(new_candidate.get("name") or ""))
-        if seed:
+        named = _SEED_PREFIX.match(str(new_candidate.get("name") or ""))
+        if named:
             stamps = merged.get("_seed_last_design_at")
             stamps = dict(stamps) if isinstance(stamps, dict) else {}
-            stamps[seed.group(1)] = datetime.now(timezone.utc).isoformat()
+            stamps[named.group(1)] = datetime.now(timezone.utc).isoformat()
             merged["_seed_last_design_at"] = stamps
+    # [first, last] beat of each multi-seed child, keyed by the keepalive's
+    # ``seed``; shared/jobs.py::billed_gpu_seconds meters each seed over it.
+    if seed:
+        beats = merged.get("_seed_beats")
+        beats = dict(beats) if isinstance(beats, dict) else {}
+        now = datetime.now(timezone.utc).isoformat()
+        prior = beats.get(seed)
+        first = prior[0] if isinstance(prior, list) and len(prior) == 2 else now
+        beats[seed] = [first, now]
+        merged["_seed_beats"] = beats
     return merged
 
 
@@ -600,6 +618,7 @@ def _append_heartbeat_state(
     designs_completed: int,
     designs_total: int,
     new_candidate: dict | None = None,
+    seed: str | None = None,
 ) -> None:
     """Merge the latest heartbeat into the job row's inputs jsonb.
 
@@ -648,6 +667,7 @@ def _append_heartbeat_state(
             designs_completed=designs_completed,
             designs_total=designs_total,
             new_candidate=new_candidate,
+            seed=seed,
         )
         merged["_hb_version"] = (old_version or 0) + 1
         try:
@@ -684,6 +704,7 @@ def _append_heartbeat_state(
         designs_completed=designs_completed,
         designs_total=designs_total,
         new_candidate=new_candidate,
+        seed=seed,
     )
     prior_version = current_inputs.get("_hb_version")
     merged["_hb_version"] = (

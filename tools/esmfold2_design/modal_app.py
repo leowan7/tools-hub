@@ -212,6 +212,10 @@ def _build_run_env(payload: dict) -> dict[str, str]:
         "JOB_ID": str(payload.get("job_id", "")),
         "JOB_TOKEN": str(payload.get("job_token", "")),
         "JOB_TIER": str(payload.get("job_tier", "minibinder")),
+        # "seed3" for run_tool's ``seed3_`` child, "" for a single-seed run.
+        "SEED_NAME": str(
+            (payload.get("job_spec") or {}).get("pdb_prefix") or ""
+        ).removesuffix("_"),
     }
     return env
 

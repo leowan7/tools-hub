@@ -700,6 +700,7 @@ def send_heartbeat(
     designs_completed: int = 0,
     designs_total: int = 0,
     new_candidate: dict | None = None,
+    seed: str = "",
 ) -> None:
     """Fire-and-forget heartbeat. Never raises — the run survives a flaky
     webhook hop. Copied from ``tools/boltz2/run_pipeline.py::send_heartbeat``;
@@ -716,6 +717,9 @@ def send_heartbeat(
     }
     if isinstance(new_candidate, dict):
         body["new_candidate"] = new_candidate
+    if seed:
+        body["seed"] = seed
+    if isinstance(new_candidate, dict) or seed:
         body["job_token"] = os.environ.get("JOB_TOKEN", "")
     try:
         resp = requests.post(_heartbeat_url(webhook_url), json=body, timeout=10)
@@ -739,19 +743,24 @@ class keepalive:
     ``_shape_designs``' docstring gives. Same shape as
     tools/proteina/run_pipeline.py::keepalive, which takes counts, sends
     ``searching`` and does not beat on entry.
+
+    ``seed`` names a multi-seed child (``SEED_NAME``, set by
+    modal_app.py::_build_run_env) on every beat, so the hub meters each seed
+    from its own first beat to its last (shared/jobs.py::billed_gpu_seconds).
     """
 
     def __init__(self, webhook_url: str, job_id: str,
-                 interval: float = KEEPALIVE_INTERVAL_S):
+                 interval: float = KEEPALIVE_INTERVAL_S, seed: str = ""):
         self._args = (webhook_url, job_id, "designing")
+        self._seed = seed
         self._interval = interval
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self) -> None:
-        send_heartbeat(*self._args)
+        send_heartbeat(*self._args, seed=self._seed)
         while not self._stop.wait(self._interval):
-            send_heartbeat(*self._args)
+            send_heartbeat(*self._args, seed=self._seed)
 
     def __enter__(self) -> "keepalive":
         self._thread.start()
@@ -1925,7 +1934,8 @@ def main() -> int:
     """
     try:
         with keepalive(os.environ.get("WEBHOOK_URL", ""),
-                       os.environ.get("JOB_ID", "")):
+                       os.environ.get("JOB_ID", ""),
+                       seed=os.environ.get("SEED_NAME", "")):
             return _run()
     finally:
         # smoke_results.json rides along even though it is normally returned

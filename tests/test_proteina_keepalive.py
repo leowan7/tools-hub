@@ -91,6 +91,6 @@ def test_the_hub_meters_the_body_the_keepalive_posts():
     assert resp.status_code == 200
     append.assert_called_once_with(job_id="job-1", stage="searching",
                                    designs_completed=2, designs_total=8,
-                                   new_candidate=None)
+                                   new_candidate=None, seed=None)
     (job_id, seconds), _ = monitor.call_args
     assert job_id == "job-1" and seconds >= 90
