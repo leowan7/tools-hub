@@ -977,7 +977,8 @@ def test_campaign_cancel_mid_chunk_bills_the_metered_seconds_and_keeps_designs()
     modal.cancel.return_value = {"ok": True, "error": None}
     with patch.object(jobs_mod, "get_service_client", store.client),          patch.object(jobs_mod, "_charge_workspace_for_completed_job"),          patch.object(jobs_mod, "_drive_campaign_after_terminal"),          patch("shared.job_recovery.reconstruct", return_value=list(DESIGNS)),          patch("shared.wallet.settle_live_run") as settle,          patch("shared.wallet.settle_hold") as settle_hold,          patch("shared.wallet.release_hold") as release:
         job, err = jobs_mod.cancel_job("job-1", user_id="u-1", modal_client=modal,
-                                       leave_running_if_cancel_fails=False)
+                                       leave_running_if_cancel_fails=False,
+                                       now=NOW + timedelta(seconds=240))
     assert err is None
     row = store.rows["job-1"]
     assert row["status"] == "cancelled"
@@ -987,6 +988,32 @@ def test_campaign_cancel_mid_chunk_bills_the_metered_seconds_and_keeps_designs()
     settle_hold.assert_not_called()
     release.assert_not_called()
     assert [c["name"] for c in row["result"]["candidates"]] == ["d1", "d2"]
+
+
+def _cancel(store, seconds):
+    modal = MagicMock()
+    modal.cancel.return_value = {"ok": True, "error": None}
+    with patch.object(jobs_mod, "get_service_client", store.client),          patch.object(jobs_mod, "_charge_workspace_for_completed_job"),          patch("shared.job_recovery.reconstruct", return_value=[]),          patch("shared.wallet.settle_live_run") as settle:
+        _job, err = jobs_mod.cancel_job("job-1", user_id="u-1", modal_client=modal,
+                                        now=NOW + timedelta(seconds=seconds))
+    assert err is None
+    return SimpleNamespace(settle=settle, row=store.rows["job-1"])
+
+
+def test_iggm_cancel_between_heartbeats_bills_up_to_the_cancel():
+    # iggm F1: the last keepalive wrote 60 s; the cancel lands at 125 s, before
+    # the next one. The bill is 125 s, not the stale 60 s.
+    r = _cancel(_Jobs(_job_row(tool="iggm", gpu_seconds_used=60)), 125)
+    assert r.row["gpu_seconds_used"] == 125
+    assert r.settle.call_args.args[:2] == ("hold-1", 125)
+
+
+def test_cancel_before_the_first_heartbeat_stays_free():
+    row = _job_row(tool="iggm")
+    del row["inputs"]["_progress"]
+    r = _cancel(_Jobs(row), 125)
+    assert r.row["gpu_seconds_used"] is None
+    assert r.settle.call_args.kwargs.get("refund") is True
 
 
 def test_webhook_that_lands_during_the_cancel_wins():
