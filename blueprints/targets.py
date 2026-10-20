@@ -1460,7 +1460,8 @@ def target_launch_submit(target_id):
         # Funded. Past this line the campaign HAS started and WILL bill,
         # whether or not the thread below ever runs, PROVIDED the campaign tick
         # is scheduled: `funded` is in `cron/tick_campaigns.py::_ACTIVE_STATES`
-        # and that module's docstring puts a tick at ~60-90 s, but the SCHEDULE
+        # and Railway runs that tick every 5 minutes (read 2026-10-05,
+        # docs/design/LIVE-CHARGING-2026-10-01.md, "§7 item 10: the cron"), but the SCHEDULE
         # lives outside this repo (the Procfile declares only `release` and
         # `web`, and `campaigns:tick` is a Flask CLI command with no in-repo
         # caller). If it is not scheduled, a campaign whose drive thread never
