@@ -280,7 +280,8 @@ ANON_INTAKE_LIMIT = 10
 # _FOLLOWUP is process-local like the counters, so a paired /progress +
 # /analyze costs 1 charge on one worker and 2 when it splits. The split ratio
 # is UNMEASURED -- do not infer one from the SSE stream; the client closes it
-# BEFORE issuing /analyze (templates/scout/index.html:319).
+# BEFORE issuing /analyze (templates/scout/index.html, ``source.onmessage``
+# on ``data.stage === 'done'``).
 #
 # FOR AN ATTACKER IT IS 20 ANALYSES REGARDLESS, and the CPU rows above assume
 # exactly that. POST /scout/analyze runs run_pipeline ITSELF when the chain has
@@ -593,7 +594,7 @@ def _client_error(exc: BaseException) -> str:
     ``ScoutInputError`` at the same time.
 
     An empty message falls back too -- the SSE clients render ``data.msg``
-    straight into the banner (``templates/scout/index.html:346``), and a
+    straight into the banner (``showAnalyzeError(data.msg || ...)`` in templates/scout/index.html), and a
     blank banner is worse than a generic one.
     """
     if isinstance(exc, ScoutInputError) and str(exc).strip():
@@ -1288,42 +1289,46 @@ def analyze():
                      "side chains for that chain."
         }), 422
 
-    with csv_path.open(newline="") as csv_file:
-        reader = csv_module.DictReader(csv_file)
-        fieldnames = reader.fieldnames or []
-        for row in reader:
-            resi_nums = sorted(int(n) for n in re.findall(r'\d+', row.get("residues", "")))
-            if len(resi_nums) > 1:
-                filtered = []
+    try:
+        with csv_path.open(newline="") as csv_file:
+            reader = csv_module.DictReader(csv_file)
+            fieldnames = reader.fieldnames or []
+            for row in reader:
+                resi_nums = sorted(int(n) for n in re.findall(r'\d+', row.get("residues", "")))
+                if len(resi_nums) > 1:
+                    filtered = []
+                    for k, num in enumerate(resi_nums):
+                        prev_gap = abs(num - resi_nums[k - 1]) if k > 0 else 999
+                        next_gap = abs(resi_nums[k + 1] - num) if k + 1 < len(resi_nums) else 999
+                        if min(prev_gap, next_gap) <= 20:
+                            filtered.append(num)
+                    resi_nums = filtered if filtered else resi_nums
+                filled_nums = []
                 for k, num in enumerate(resi_nums):
-                    prev_gap = abs(num - resi_nums[k - 1]) if k > 0 else 999
-                    next_gap = abs(resi_nums[k + 1] - num) if k + 1 < len(resi_nums) else 999
-                    if min(prev_gap, next_gap) <= 20:
-                        filtered.append(num)
-                resi_nums = filtered if filtered else resi_nums
-            filled_nums = []
-            for k, num in enumerate(resi_nums):
-                filled_nums.append(num)
-                if k + 1 < len(resi_nums):
-                    gap = resi_nums[k + 1] - num
-                    if 1 < gap <= 4:
-                        filled_nums.extend(range(num + 1, resi_nums[k + 1]))
-            composite = float(row.get("composite_score", 0))
-            rcount = int(row.get("residue_count", 0))
-            all_rows.append(dict(row))
-            all_epitopes.append({
-                "epitope_id": int(row.get("epitope_id", row.get("patch_id", 0))),
-                "residues": row.get("residues", ""),
-                "residue_numbers": filled_nums,
-                "residue_count": rcount,
-                "composite_score": composite,
-                "mean_rsa": float(row.get("mean_rsa", 0)),
-                "secondary_structure": row.get("secondary_structure", "loop"),
-                "centroid_x": float(row.get("centroid_x", 0)),
-                "centroid_y": float(row.get("centroid_y", 0)),
-                "centroid_z": float(row.get("centroid_z", 0)),
-                "_row": dict(row),
-            })
+                    filled_nums.append(num)
+                    if k + 1 < len(resi_nums):
+                        gap = resi_nums[k + 1] - num
+                        if 1 < gap <= 4:
+                            filled_nums.extend(range(num + 1, resi_nums[k + 1]))
+                composite = float(row.get("composite_score", 0))
+                rcount = int(row.get("residue_count", 0))
+                all_rows.append(dict(row))
+                all_epitopes.append({
+                    "epitope_id": int(row.get("epitope_id", row.get("patch_id", 0))),
+                    "residues": row.get("residues", ""),
+                    "residue_numbers": filled_nums,
+                    "residue_count": rcount,
+                    "composite_score": composite,
+                    "mean_rsa": float(row.get("mean_rsa", 0)),
+                    "secondary_structure": row.get("secondary_structure", "loop"),
+                    "centroid_x": float(row.get("centroid_x", 0)),
+                    "centroid_y": float(row.get("centroid_y", 0)),
+                    "centroid_z": float(row.get("centroid_z", 0)),
+                    "_row": dict(row),
+                })
+    except (OSError, csv_module.Error, ValueError, TypeError):
+        logger.exception("Unreadable results CSV for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
 
     _max_resi = (
         int(_chain_total * _MAX_PATCH_FRACTION)
@@ -1367,19 +1372,23 @@ def analyze():
         for row in all_rows
     ) if all_rows else False
 
-    for e in all_epitopes:
-        row = e["_row"]
-        e["quality_flags"] = compute_quality_flags(
-            secondary_structure=row.get("secondary_structure", "loop"),
-            hydrophobicity=float(row.get("hydrophobicity", 0)),
-            burial_raw=float(row.get("burial_raw", 0)),
-            bfactor_score=float(row.get("bfactor_score", 0)),
-            is_functional_site=False,
-            residues_str=row.get("residues", ""),
-            chain_first=_chain_first,
-            chain_last=_chain_last,
-            is_plddt=_is_plddt,
-        )
+    try:
+        for e in all_epitopes:
+            row = e["_row"]
+            e["quality_flags"] = compute_quality_flags(
+                secondary_structure=row.get("secondary_structure", "loop"),
+                hydrophobicity=float(row.get("hydrophobicity", 0)),
+                burial_raw=float(row.get("burial_raw", 0)),
+                bfactor_score=float(row.get("bfactor_score", 0)),
+                is_functional_site=False,
+                residues_str=row.get("residues", ""),
+                chain_first=_chain_first,
+                chain_last=_chain_last,
+                is_plddt=_is_plddt,
+            )
+    except (ValueError, TypeError):
+        logger.exception("Unreadable results CSV for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
 
     # Both top-3 files are rewritten or removed on every run that reaches here;
     # earlier returns are covered beside run_pipeline instead. A chain that
@@ -1883,9 +1892,14 @@ def feasibility_analyze():
             logger.exception("Feasibility pipeline error for job %s", job_id)
             return jsonify({"error": _GENERIC_ERROR}), 500
 
-    return jsonify(_feasibility_payload(
-        job_id, job_dir, pdb_path, chain_id, epitope_residues, feasibility_csv,
-    )), 200
+    try:
+        payload = _feasibility_payload(
+            job_id, job_dir, pdb_path, chain_id, epitope_residues, feasibility_csv,
+        )
+    except (OSError, csv_module.Error, ValueError, TypeError):
+        logger.exception("Unreadable feasibility CSV for job %s", job_id)
+        return jsonify({"error": _GENERIC_ERROR}), 500
+    return jsonify(payload), 200
 
 
 @scout_bp.route("/feasibility/progress", methods=["GET"])
@@ -1923,7 +1937,10 @@ def feasibility_progress():
     epitope_residues: list[int] = []
     results_csv = None
     if epitope_str:
-        epitope_residues = [int(x.strip()) for x in epitope_str.split(",") if x.strip().lstrip("-").isdigit()]
+        epitope_residues = [
+            int(x) for x in (t.strip() for t in epitope_str.split(","))
+            if re.fullmatch(r"-?\d+", x)
+        ]
     elif epitope_id:
         results_csv = _results_csv_for_chain(job_dir, chain_id)
         if results_csv is not None:

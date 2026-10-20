@@ -255,9 +255,10 @@ def _elements(html: str) -> list:
 
 
 # The shapes this shared macro renders, each named for a real caller and given
-# that caller's arguments. `job` and `campaign` come from
-# templates/components/results_shell.html:48; `target` and `target_grouped` are
-# both templates/targets/detail.html:525, which passes `agg.multi_tool`,
+# that caller's arguments. `job` and `campaign` come from the
+# `candidate_table(...)` call in components/results_shell.html; `target` and
+# `target_grouped` are both the `candidate_table(...)` call in
+# targets/detail.html, which passes `agg.multi_tool`,
 # `sort_mode`, `agg.split_tools` and `agg.per_tool` -- so it renders the first
 # shape when the target holds ONE tool and the second when it holds more.
 #

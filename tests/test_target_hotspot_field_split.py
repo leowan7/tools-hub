@@ -210,8 +210,8 @@ def _squash(text):
 
 def test_the_launch_screen_renders_proteinas_field_disabled():
     """Every control inside a tool panel is server-rendered ``disabled`` and
-    enabled by syncPanels() when the box is ticked (templates/targets/launch.html
-    :90-95). A field that shipped enabled would post proteina's chain-qualified
+    enabled by ``syncPanels()`` in templates/targets/launch.html when the box
+    is ticked. A field that shipped enabled would post proteina's chain-qualified
     hotspots on a launch that never selected proteina — where ``_tool_form``
     would hand them to nothing, but the request would still carry them."""
     body = _squash(_template("targets/launch.html"))

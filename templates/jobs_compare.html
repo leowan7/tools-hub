@@ -76,7 +76,7 @@
               <div>{{ job.gpu_seconds_used or '—' }}</div>
             </div>
             <hr style="border: none; border-top: 1px solid var(--border); margin: 0.85rem 0;">
-            <div style="color: var(--text-secondary); margin-bottom: 0.4rem;">Top candidates ({{ candidates|length }} total)</div>
+            <div style="color: var(--text-secondary); margin-bottom: 0.4rem;">{% if col.ranked %}Top candidates{% else %}Designs{% endif %} ({{ candidates|length }} total)</div>
             {% if candidates %}
               {# THE ROWS STAY IN THE PIPELINE'S ORDER and the bar is shown
                  beside them, rather than the table being re-sorted. A
