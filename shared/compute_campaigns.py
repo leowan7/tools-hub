@@ -1259,7 +1259,7 @@ def list_campaigns_for_target(
 
     :func:`cancel_campaign` would accept a draft (it refuses only
     completed/completed_with_failures/failed/cancelled), but **no UI reaches
-    it**: ``templates/runs/detail.html:102`` renders the Cancel button only for
+    it**: ``templates/runs/detail.html`` renders the Cancel button (``#rd-cancel``) only for
     ``funded``/``running``/``completing``/``paused_insufficient_funds``, and
     ``templates/runs/list.html`` has no cancel affordance at all. So a stranded
     draft is visible on /campaigns and not clearable from there; clearing it

@@ -199,7 +199,7 @@ def _candidate_rows(html: str) -> list[tuple[str, str, str, str]]:
     file could see whether that cell was normalised.
     """
     flat = _flat(html)
-    start = flat.find("Top candidates")
+    start = re.search(r"(?:Top candidates|Designs) \(\d+ total\)", flat).start()
     # THE HEADER, not only the cells. Deleting the "Bar" <th> left every
     # assertion in this file green: the row parser counts <td>s, so a table
     # shipping a fourth data column under three headings was invisible to it.
@@ -1005,12 +1005,21 @@ class TestARecoveredColumnIsNotGated:
     above 6". A bar-aware shortfall, removed by a gate added to suppress an
     unearned claim.
 
-    NOT CLOSED BY THIS: the per-column heading "Top candidates (N total)" IS a
-    superlative over a list nothing ranked. It reads ``col.candidates``, not
-    ``col.top``, so the gate would not have reached it either. Left alone
-    rather than fixed here -- ``_candidate_rows`` in this file anchors on that
-    literal string, so renaming it is a wider diff than this change.
+    THE ONE SUPERLATIVE ON THE PAGE is the per-column heading, which read
+    "Top candidates (N total)" over a list nothing ranked. It reads
+    ``col.candidates``, not ``col.top``, so it is gated on its own key
+    (``col.ranked``) and a backfilled column is headed "Designs" instead --
+    ``test_a_backfilled_column_is_not_headed_top_candidates`` below.
     """
+
+    def test_a_backfilled_column_is_not_headed_top_candidates(
+        self, flask_app, monkeypatch,
+    ):
+        flat = _flat(_render_compare(
+            flask_app, monkeypatch, [_recovered_job(), _other_job()],
+        ))
+        assert flat.count("Top candidates (") == 1, flat
+        assert "Designs (2 total)" in flat, flat
 
     def test_a_backfilled_column_still_shows_its_shared_metrics(
         self, flask_app, monkeypatch,

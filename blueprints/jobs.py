@@ -412,7 +412,8 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
     # THE GLOSSARY NAME, NOT THE STORAGE KEY. This string goes into an
     # og:title -- a compose box on someone else's site -- and the same
     # column's header on our own results table is the glossary label
-    # (templates/components/candidate_table.html:522). Printing the raw key
+    # (the ``th[data-col]`` header in templates/components/candidate_table.html,
+    # which prints ``g.get('label', col)``). Printing the raw key
     # here made the two disagree: "CDR_iPTM_proxy 0.799" on the card against
     # "CDR distogram proxy" in the table. score_legends.label_and_unit is the
     # same splitter the bar sentences use, so a unit lands after the number
@@ -707,6 +708,9 @@ def jobs_compare():
             "top": top,
             "top_index": top_index,
             "top_verdict": top_verdict,
+            # Heading only: "Top candidates" over a list nothing ranked is the
+            # superlative TestARecoveredColumnIsNotGated leaves to this key.
+            "ranked": supports_headline_claim(j.result, j.tool, mode),
         })
     return render_template("jobs_compare.html", columns=columns)
 
