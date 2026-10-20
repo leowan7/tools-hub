@@ -106,8 +106,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
-    rfantibody's figure is a flat $2.00, a proposal awaiting Leo. Its first
-    design reaches Storage only after RFdiffusion and ProteinMPNN finish every
+    rfantibody's figure is a flat $2.00. Leo, 2026-10-20: "yes, $2 for
+    rfantibody". Its first design reaches Storage only after RFdiffusion and ProteinMPNN finish every
     backbone and RF2 finishes one (llm-proteinDesigner
     docker/rfantibody/run_pipeline.py::_DesignStreamer). On the one run with a
     recorded stage split (``_RFANTIBODY``'s size comment: 412 aa, 4 designs,
