@@ -67,6 +67,22 @@ def test_merge_stamps_the_seed_a_multi_seed_design_came_from():
     assert stamps["seed0"] == "2026-10-19T00:00:00+00:00"
 
 
+def test_merge_keeps_a_seed_first_beat_and_moves_its_last():
+    first = {"_seed_beats": {"seed1": ["2026-10-19T00:00:00+00:00"] * 2}}
+    out = modal_webhook._hb_merge_inputs(
+        first, stage="designing", designs_completed=0, designs_total=0,
+        new_candidate=None, seed="seed1",
+    )
+    beat_first, beat_last = out["_seed_beats"]["seed1"]
+    assert beat_first == "2026-10-19T00:00:00+00:00"
+    assert beat_last > beat_first
+    new = modal_webhook._hb_merge_inputs(
+        out, stage="designing", designs_completed=0, designs_total=0,
+        new_candidate=None, seed="seed2",
+    )["_seed_beats"]
+    assert set(new) == {"seed1", "seed2"} and new["seed2"][0] == new["seed2"][1]
+
+
 def test_merge_stamps_nothing_for_a_single_seed_design():
     out = modal_webhook._hb_merge_inputs(
         {}, stage="folding", designs_completed=0, designs_total=0,

@@ -24,7 +24,7 @@ import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from shared import score_legends
@@ -2621,9 +2621,16 @@ def _tool_params(job: "ToolJob") -> dict:
 _SEED_PREFIX = re.compile(r"^(seed-?\d+)_")
 
 
-def _finished_seed_seconds(job: "ToolJob", wall: int) -> list[float]:
-    """Seconds from ``started_at`` to the last streamed design of each seed
-    that has streamed ``batch_size`` designs, each clamped to ``wall``.
+_SEED_NAME = re.compile(r"^seed-?\d+$")
+
+# A seed whose keepalive has been quiet this long is taken to have stopped
+# (a dropped webhook post looks the same). The pipeline
+# beats every tools/esmfold2_design/run_pipeline.py::KEEPALIVE_INTERVAL_S (60 s).
+_SEED_BEAT_STALE_S = 150
+
+
+def _seed_finished_at(job: "ToolJob") -> dict[str, datetime]:
+    """When each seed that has streamed ``batch_size`` designs streamed its last.
 
     A seed is named by its ``seed{N}_`` design-name prefix
     (tools/esmfold2_design/modal_app.py::run_tool sets it per child), and the
@@ -2634,42 +2641,74 @@ def _finished_seed_seconds(job: "ToolJob", wall: int) -> list[float]:
     last = inputs.get("_seed_last_design_at")
     partials = inputs.get("_partial_candidates")
     batch = inputs.get("batch_size")
-    started = _parse_ts(job.started_at)
     if not (isinstance(last, dict) and isinstance(partials, list)
-            and isinstance(batch, int) and batch > 0 and started is not None):
-        return []
+            and isinstance(batch, int) and batch > 0):
+        return {}
     counts: dict[str, int] = {}
     for cand in partials:
         m = _SEED_PREFIX.match(str(cand.get("name") or "")) if isinstance(cand, dict) else None
         if m:
             counts[m.group(1)] = counts.get(m.group(1), 0) + 1
-    out = []
+    out = {}
     for seed, ts in last.items():
         at = _parse_ts(ts) if isinstance(ts, str) else None
         if at is not None and counts.get(seed, 0) >= batch:
-            out.append(min(max((at - started).total_seconds(), 0.0), float(wall)))
+            out[seed] = at
+    return out
+
+
+def _seed_beat_spans(job: "ToolJob") -> dict[str, tuple[datetime, datetime]]:
+    """seed -> (first beat, last beat), from ``inputs._seed_beats``, which
+    webhooks/modal.py::_hb_merge_inputs stamps from each child's keepalive."""
+    beats = (job.inputs or {}).get("_seed_beats")
+    out = {}
+    for seed, span in (beats.items() if isinstance(beats, dict) else ()):
+        if isinstance(span, list) and len(span) == 2:
+            first, last = (_parse_ts(t) if isinstance(t, str) else None for t in span)
+            if first is not None and last is not None:
+                out[seed] = (first, last)
     return out
 
 
 def billed_gpu_seconds(job: "ToolJob", wall_seconds: float) -> int:
     """GPU seconds a running job has used after ``wall_seconds`` of wall clock.
 
-    The clamped wall clock times the containers the job runs side by side
-    (``shared.wallet_estimates.fanout_containers``), except that a seed which
-    has streamed its whole batch counts only up to its last design
-    (``_finished_seed_seconds``). The final bill sums each seed's runtime
-    (tools/esmfold2_design/modal_app.py::_aggregate).
+    With per-seed beats (``_seed_beat_spans``), each seed counts from its own
+    first beat to its last design once its whole batch has streamed, else to
+    its last beat once that is ``_SEED_BEAT_STALE_S`` old, else to now; once
+    any seed has beaten, a seed with no beat yet counts 0. Without them (single-container tools, and
+    pipelines deployed before the seed beat), the clamped wall clock times the
+    containers the job runs side by side
+    (``shared.wallet_estimates.fanout_containers``), with a finished seed
+    counted from ``started_at`` to its last design. The final bill sums each
+    seed's runtime (tools/esmfold2_design/modal_app.py::_aggregate).
     """
-    # ponytail: a seed's start is unknown mid-run (started_at is the first
-    # child's beat), so a seed Modal starts late is still counted from
-    # started_at; a seed that dies without streaming its batch counts until
-    # the run ends; a finished seed's shutdown after its last design is not
-    # counted. A per-seed start beat from the pipeline would close the first two.
+    # ponytail: a seed that dies counts to now for up to _SEED_BEAT_STALE_S
+    # after its last beat, then to its last beat, up to one keepalive interval
+    # short of its real end; a finished seed's shutdown after its last design
+    # is not counted.
     from shared.wallet_estimates import fanout_containers  # noqa: PLC0415
 
     wall = _safe_gpu_seconds_int(wall_seconds)
-    seeds = fanout_containers(job.tool, _tool_params(job))
-    done = _finished_seed_seconds(job, wall)[: int(seeds)]
+    seeds = int(fanout_containers(job.tool, _tool_params(job)))
+    started = _parse_ts(job.started_at)
+    if started is None:
+        return seeds * wall
+    now = started + timedelta(seconds=wall)
+
+    def span(a: datetime, b: datetime) -> float:
+        return min(max((min(b, now) - max(a, started)).total_seconds(), 0.0), float(wall))
+
+    finished = _seed_finished_at(job)
+    beats = _seed_beat_spans(job)
+    if beats:
+        total = 0.0
+        for seed, (first, last) in list(beats.items())[:seeds]:
+            end = finished.get(seed) or (
+                last if (now - last).total_seconds() > _SEED_BEAT_STALE_S else now)
+            total += span(first, end)
+        return int(total)
+    done = [span(started, at) for at in finished.values()][:seeds]
     return int(sum(done) + (seeds - len(done)) * wall)
 
 
