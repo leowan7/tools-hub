@@ -111,8 +111,9 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     backbone and RF2 finishes one (llm-proteinDesigner
     docker/rfantibody/run_pipeline.py::_DesignStreamer). On the one run with a
     recorded stage split (``_RFANTIBODY``'s size comment: 412 aa, 4 designs,
-    RFdiffusion 1115 s + ProteinMPNN 42 s + RF2 ~1330 s) that is about 1490 s,
-    $1.81 at the A100-40GB rate. A run whose stretch before its first design
+    RFdiffusion 1115 s + ProteinMPNN 42 s + RF2 ~1330 s) it is about 1490 s,
+    $1.81 at the A100-40GB rate, a derived figure that assumes RF2's time
+    splits evenly over the 4 designs. A run whose stretch before its first design
     costs more than $2.00 can still be stopped at $0 with no design.
 
     bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
