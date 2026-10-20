@@ -693,6 +693,56 @@ def test_live_meter_and_final_bill_count_seeds_the_same_way():
     assert final == jobs_mod.billed_gpu_seconds(jobs_mod.ToolJob.from_row(_esm2_row(3)), 600)
 
 
+def _with_beats(row, beats):
+    """``beats``: seed{N} -> (first, last) beat, in seconds after started_at."""
+    row["inputs"]["_seed_beats"] = {
+        f"seed{n}": [(NOW + timedelta(seconds=a)).isoformat(),
+                     (NOW + timedelta(seconds=b)).isoformat()]
+        for n, (a, b) in beats.items()
+    }
+    return row
+
+
+def _billed(row, wall):
+    return jobs_mod.billed_gpu_seconds(jobs_mod.ToolJob.from_row(row), wall)
+
+
+def test_a_late_starting_seed_counts_from_its_own_first_beat():
+    # seed1 first beat 600 s in; seeds 2 and 3 have not started.
+    row = _with_beats(_esm2_row(4), {0: (0, 990), 1: (600, 990)})
+    assert _billed(row, 1000) == 1000 + 400
+
+
+def test_a_seed_that_died_without_streaming_stops_at_its_last_beat():
+    row = _with_beats(_esm2_row(2), {0: (0, 990), 1: (0, 300)})
+    assert _billed(row, 1000) == 1000 + 300
+
+
+def test_a_seed_beat_inside_the_stale_window_still_counts_to_now():
+    row = _with_beats(_esm2_row(2), {0: (0, 990), 1: (0, 1000 - jobs_mod._SEED_BEAT_STALE_S)})
+    assert _billed(row, 1000) == 2000
+
+
+def test_a_finished_seed_counts_from_its_first_beat_to_its_last_design():
+    row = _with_beats(_esm2_seeds_done({0: (3, 400)}), {0: (100, 450), 1: (0, 990)})
+    assert _billed(row, 1000) == 300 + 1000
+
+
+def test_balance_stop_bills_each_seed_over_its_own_beats():
+    row = _with_beats(_esm2_row(4), {0: (0, 290), 1: (200, 290), 2: (0, 100)})
+    store = _Jobs(row)
+    _meter(store, 300, wallet=_Wallet("0.05"), candidates=DESIGNS)
+    assert store.rows["job-1"]["gpu_seconds_used"] == 300 + 100 + 100
+
+
+def test_cancel_bills_each_seed_over_its_own_beats():
+    job = jobs_mod.ToolJob.from_row(_with_beats(_esm2_row(4), {0: (0, 90), 1: (60, 90)}))
+    with patch.object(jobs_mod, "get_job", return_value=job), \
+         patch.object(jobs_mod, "_cas_update") as cas:
+        jobs_mod.mid_run_monitor_check("job-1", 90.4)
+    assert cas.call_args.args[1] == {"gpu_seconds_used": 90 + 30}
+
+
 def test_esmfold2_start_minimum_covers_the_most_one_seed_can_owe():
     from shared.wallet import SIGNUP_CREDIT_USD
 

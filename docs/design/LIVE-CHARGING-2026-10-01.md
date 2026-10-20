@@ -39,7 +39,7 @@
 - **F2. Heartbeats cannot drive the stop.**
   - Several tools are silent for 1 to 1.5 hours, and two tools never send one.
   - A heartbeat-driven stop would overshoot by up to about $22 on esmfold2-design.
-  - A cron-driven stop bounds the overshoot to one tick: about $0.37 on an H100 at a 90 s tick (§2).
+  - A cron-driven stop bounds the overshoot to one tick: about $1.23 on an H100 at the real 300 s tick (§2.3; "§7 item 10: the cron").
 
 ---
 
@@ -153,7 +153,7 @@ The cron check does not need heartbeats, because metering is wall-clock (`webhoo
 
 Unknowns behind these figures:
 
-- **Tick interval: UNVERIFIED.** `cron/tick_campaigns.py:15` says "~60-90s". The schedule itself lives in Railway, outside the repo (`blueprints/targets.py:1457-1461`, filed as A46).
+- **Tick interval: 300 s.** Railway runs `campaigns:tick` on `*/5 * * * *` (read 2026-10-05; see "§7 item 10: the cron"). The schedule lives in Railway, outside the repo (A46).
 - **Cancel latency: UNVERIFIED.** The call is bounded by `_bounded_modal_call` (`gpu/modal_client.py:602-628`). How fast Modal then stops the container is unmeasured.
 - **Cold start before `started_at`.** Time before `started_at` is not metered. The first heartbeat sets it, and so does a status poll: `blueprints/jobs.py::job_status` calls `mark_running` when the poll says `running`, and `ModalClient.poll` says `running` for any call that has not returned, queued or booting included (`gpu/modal_client.py`, the `except TimeoutError` branch). With the job page closed, the stop is late by the container boot and the extra is absorbed. With it open, queue and boot are metered and the stop is early by that much. When `started_at` is not set, the check falls back to `created_at` (in phase 2, only for a row with a Modal call id; see "Leo, 2026-10-06"). That makes the stop early by the queue and boot time. Superseded on 2026-10-07: see "Metering clock: the first heartbeat (2026-10-07)" at the end.
 
@@ -211,7 +211,7 @@ Without a mid-run top-up the customer pays exactly their hold, which is their wh
 ### 3.2 Option (ii): per-heartbeat or per-tick ledger debits
 
 - **Mechanism.** Debit `charge` rows as the run goes. A new SQL function locks the wallet with `FOR UPDATE` and never debits below 0. **This needs a migration.**
-- **Wallet history.** One row per tick: about 80 rows for a two-hour run at 90 s. The only alternative is coalescing, which breaks the append-only ledger.
+- **Wallet history.** One row per tick: about 24 rows for a two-hour run at the real 300 s tick (about 80 at 90 s). The only alternative is coalescing, which breaks the append-only ledger.
 - **Refunds.** Refunded classes (infra_crash, tool_error, preflight_miss, no_progress_timeout, unclassified) must reverse the accumulated debits. That is a new refund path.
 - **Readers that change.** Every reader of hold-parented rows changes: `job_spend_by_hold` (`shared/wallet.py:1371-1428`), `run_notices.overrun_line` (`shared/run_notices.py:24-51`), `_failure_money`, and the transactions template lineage (`templates/wallet/transactions.html:100-160`).
 - **Upside.** No whole-balance reservation, so concurrent runs are fine. A mid-run top-up or auto-reload naturally keeps a run alive.
@@ -330,7 +330,7 @@ As planned in phase 1: this was to start only after Leo approved **and** the no-
 7. **D7. Graceful stop per tool (phase 2b).** Which tools, and in what order? *Recommended:* proteina first (it has the biggest silent stretch and a reported partial path, UNVERIFIED), then bindcraft and boltzgen (they already have keepalive threads).
 8. **D8. Showing the minimum top-up amount** on the refusal page. Does it count as a "pre-run number"?
 9. **D9. Campaigns.** *Recommended:* leave them unchanged in v1.
-10. **Confirm** that the `campaigns:tick` Railway cron is scheduled, at what interval, and that it has Modal credentials. The stop depends on it (A46).
+10. **Confirm** that the `campaigns:tick` Railway cron is scheduled, at what interval, and that it has Modal credentials. The stop depends on it (A46). Answered 2026-10-05: every 5 minutes, Modal credentials set ("§7 item 10: the cron").
 
 ---
 
@@ -397,7 +397,7 @@ Phase 2 was first built on option (i′). Citations in this section, down to "Ou
 
 - **Schedule.** `railway status --json`: the service `tools-hub-campaigns-tick` runs `flask --app app campaigns:tick` on `*/5 * * * *`. Its latest deploy was SUCCESS.
 - **Credentials.** `railway variables` (names only): `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` are set.
-- **Overshoot bound.** The tick is 300 s, not the 60-90 s in `cron/tick_campaigns.py`. The bound is therefore the 300 s row of §2.3, plus the cancel latency.
+- **Overshoot bound.** The tick is 300 s. The bound is therefore the 300 s row of §2.3, plus the cancel latency.
 - **Cancel latency: UNVERIFIED.** It is measured by T1.
 
 ### Deviations from the note

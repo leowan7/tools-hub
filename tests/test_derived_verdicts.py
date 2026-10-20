@@ -571,6 +571,17 @@ def test_recovery_keeps_proteina_scores():
         "binder_scrmsd": 1.3234,
     }
     assert "filter_status" not in rebuilt
+    # The results page reads the numbering line off the candidate root
+    # (templates/tools/proteina_results.html); a rebuild that dropped it
+    # rendered no numbering line at all.
+    assert rebuilt["target_numbering"] == "input"
+
+
+def test_recovery_invents_no_numbering_for_a_partial_without_one():
+    from shared.job_recovery import _candidate_from_partial
+
+    rebuilt = _candidate_from_partial({"rank": 1, "pdb_key": "designs/d1.pdb"})
+    assert "target_numbering" not in rebuilt
 
 
 def test_a_missing_leg_never_falls_through_to_another_column():
