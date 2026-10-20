@@ -14,12 +14,16 @@
    rendered such a run as having produced nothing. Those rows are already candidate-
    shaped, and `candidates` first is the order shared/jobs.candidate_records reads. #}
 {% set recovered         = display_rows(output.get('candidates')) %}
-{% set run_task          = output.get('run_task') %}
+{# A recovered or cancelled run's result holds only `candidates`
+   (shared/job_recovery.reconstruct), so the run's own inputs, written under the
+   same keys by tools/iggm/__init__.py, fill the summary panel instead. #}
+{% set job_inputs        = job.inputs or {} %}
+{% set run_task          = output.get('run_task') or job_inputs.get('run_task') %}
 {% set tier              = output.get('tier') %}
-{% set antigen_chain     = output.get('antigen_chain') %}
+{% set antigen_chain     = output.get('antigen_chain') or job_inputs.get('antigen_chain') %}
 {% set antigen_length    = output.get('antigen_length') %}
 {% set epitope_positions = output.get('epitope_positions', []) %}
-{% set epitope_pdb       = output.get('epitope_pdb_resnums', []) %}
+{% set epitope_pdb       = output.get('epitope_pdb_resnums') or job_inputs.get('epitope_pdb_resnums') or [] %}
 {% set artifact_keys     = output.get('artifact_keys', []) %}
 {% set runtime_seconds   = output.get('runtime_seconds') %}
 {% set designs_total     = output.get('designs_total') or (recovered_total(job, recovered) if recovered else (raw_designs | length)) %}

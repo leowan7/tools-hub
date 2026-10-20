@@ -12,7 +12,9 @@ CLI entry point::
 
     flask campaigns:tick
 
-Scheduled separately via Railway cron (~60-90s), like ``jobs:sweep-stuck``.
+Scheduled separately via Railway cron, every 5 minutes (read from Railway on
+2026-10-05; the schedule is outside the repo, see
+docs/design/LIVE-CHARGING-2026-10-01.md, "§7 item 10: the cron").
 """
 
 from __future__ import annotations
