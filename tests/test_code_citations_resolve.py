@@ -151,10 +151,11 @@ _OUTSIDE_THIS_REPO = frozenset(
         # ``llm-proteinDesigner/docker/<tool>/run_pipeline.py``; the ``<tool>``
         # placeholder is what truncates it to a leading slash here.
         "/run_pipeline.py",
-        # The same repo's rfdiffusion and bindcraft containers, cited by path
+        # The same repo's rfdiffusion, bindcraft and rfantibody containers, cited by path
         # from shared/wallet_guard.py for their per-design uploads.
         "docker/rfdiffusion/run_pipeline.py",
         "docker/bindcraft/run_pipeline.py",
+        "docker/rfantibody/run_pipeline.py",
         # The vendored upstream ESM / ESMFold2 sources, which exist only
         # inside the built esmfold2-design image: ``binder_design.py`` is
         # copied to /opt from the esm tarball by a .run_commands() layer in

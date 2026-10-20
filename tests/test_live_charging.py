@@ -30,9 +30,12 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfdiffusion"}
+LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfantibody",
+                    "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
+# A flat $2.00 to start an rfantibody run, the figure Leo picked 2026-10-20.
+RFA_START = Decimal("2.00")
 # bindcraft's base cap (Leo, PR #431), so the $5 signup credit is refused.
 BC_START = Decimal("8.00")
 # iggm's base cap, the start minimum Leo picked on 2026-10-16.
@@ -42,7 +45,8 @@ PROTEINA_START = Decimal("1.00")
 # esmfold2-design's base cap, approved by Leo on PR #440 review (2026-10-19).
 ESMFOLD2_START = Decimal("15.00")
 # The live tools that refuse a balance below a start minimum.
-STARTS = {"rfdiffusion": RFD_START, "bindcraft": BC_START, "iggm": IGGM_START,
+STARTS = {"rfdiffusion": RFD_START, "rfantibody": RFA_START, "bindcraft": BC_START,
+          "iggm": IGGM_START,
           "proteina": PROTEINA_START, "esmfold2-design": ESMFOLD2_START}
 
 
@@ -98,7 +102,7 @@ def test_iggm_uploads_and_beats_once_per_design():
 
 # Live tools whose container is not in this repo, so the heartbeat check
 # cannot read them.
-OUT_OF_REPO = {"bindcraft", "rfdiffusion"}
+OUT_OF_REPO = {"bindcraft", "rfantibody", "rfdiffusion"}
 
 
 @pytest.mark.parametrize("tool", sorted((LIVE | LIVE_ALL_PRESETS) - OUT_OF_REPO))
@@ -133,6 +137,13 @@ def test_rfdiffusion_submits_only_the_pilot_tier(preset):
 @pytest.mark.parametrize("preset", ["", "smoke", "full", "batch"])
 def test_bindcraft_submits_only_the_pilot_tier(preset):
     from tools.bindcraft import validate
+
+    assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
+
+
+@pytest.mark.parametrize("preset", ["smoke", "mini_pilot", "full", "batch"])
+def test_rfantibody_submits_only_the_pilot_tier(preset):
+    from tools.rfantibody import validate
 
     assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
 
@@ -212,7 +223,8 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
                            release=release, gate=gate)
 
 
-LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("bindcraft", {}), ("iggm", {}),
+LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("rfantibody", {}), ("bindcraft", {}),
+              ("iggm", {}),
               ("af2", {"preset": "batch"}), ("colabfold", {"preset": "batch"}),
               ("esmfold", {"preset": "batch"})]
 
@@ -421,6 +433,8 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     ("af2", {"preset": "standalone"}, "0.10", True),
     ("rfdiffusion", {}, str(RFD_START - Decimal("0.0001")), True),
     ("rfdiffusion", {}, str(RFD_START), False),
+    ("rfantibody", {}, str(RFA_START - Decimal("0.0001")), True),
+    ("rfantibody", {}, str(RFA_START), False),
     ("bindcraft", {}, str(BC_START - Decimal("0.0001")), True),
     ("bindcraft", {}, str(BC_START), False),
     ("iggm", {}, str(IGGM_START - Decimal("0.0001")), True),
