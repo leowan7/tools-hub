@@ -211,7 +211,7 @@ Without a mid-run top-up the customer pays exactly their hold, which is their wh
 ### 3.2 Option (ii): per-heartbeat or per-tick ledger debits
 
 - **Mechanism.** Debit `charge` rows as the run goes. A new SQL function locks the wallet with `FOR UPDATE` and never debits below 0. **This needs a migration.**
-- **Wallet history.** One row per tick: about 80 rows for a two-hour run at 90 s. The only alternative is coalescing, which breaks the append-only ledger.
+- **Wallet history.** One row per tick: about 24 rows for a two-hour run at the real 300 s tick (about 80 at 90 s). The only alternative is coalescing, which breaks the append-only ledger.
 - **Refunds.** Refunded classes (infra_crash, tool_error, preflight_miss, no_progress_timeout, unclassified) must reverse the accumulated debits. That is a new refund path.
 - **Readers that change.** Every reader of hold-parented rows changes: `job_spend_by_hold` (`shared/wallet.py:1371-1428`), `run_notices.overrun_line` (`shared/run_notices.py:24-51`), `_failure_money`, and the transactions template lineage (`templates/wallet/transactions.html:100-160`).
 - **Upside.** No whole-balance reservation, so concurrent runs are fine. A mid-run top-up or auto-reload naturally keeps a run alive.
