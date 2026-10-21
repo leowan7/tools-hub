@@ -126,12 +126,12 @@ def _sweep_stranded_holds(client, now: datetime, summary: dict) -> None:
             row = jobs.get(hold_id)
             if row is None:
                 if release_hold(hold_id, reason="swept_no_job"):
-                    summary["holds_swept"] += 1
+                    summary["holds_retried"] += 1
                 else:
                     summary["errors"].append(f"hold:{hold_id}:release failed")
             elif row.get("status") in TERMINAL_STATUSES:
                 _settle_wallet_hold_for_completed_job(ToolJob.from_row(row))
-                summary["holds_swept"] += 1
+                summary["holds_retried"] += 1
 
 
 def _within_campaign_session(row: dict, now: datetime) -> bool:
@@ -173,12 +173,14 @@ def sweep_stuck_jobs(
     Returns a summary dict suitable for logging::
 
         {"pending_swept": N, "running_swept": M, "recovered": K,
-         "holds_swept": H, "errors": [...]}
+         "holds_retried": H, "errors": [...]}
 
     ``pending_swept`` / ``running_swept`` count jobs timed out (full
     refund). ``recovered`` counts jobs whose lost-webhook result was
-    finalized as succeeded instead of being discarded. ``holds_swept`` counts
-    open holds sent to release or settle by :func:`_sweep_stranded_holds`.
+    finalized as succeeded instead of being discarded. ``holds_retried`` counts
+    open holds sent to release or settle by :func:`_sweep_stranded_holds`;
+    a settle failure is only logged, so a hold still open is counted again
+    on the next run.
     """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.jobs import timeout_stuck_job  # noqa: PLC0415
@@ -202,7 +204,7 @@ def sweep_stuck_jobs(
         "pending_swept": 0,
         "running_swept": 0,
         "recovered": 0,
-        "holds_swept": 0,
+        "holds_retried": 0,
         "errors": [],
     }
 

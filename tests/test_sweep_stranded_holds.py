@@ -1,7 +1,7 @@
 """The stuck-job sweep retries holds that a failed release or settle left open.
 
 ``shared.wallet.release_hold`` logs a failure and returns False, and its
-callers ignore that, so the sweep is the only retry.
+no caller retries it, so the sweep is the retry.
 """
 
 from __future__ import annotations
@@ -108,5 +108,5 @@ def test_open_holds_are_released_or_resettled_by_job_state(monkeypatch):
 
     assert released == ["1"]
     assert settled == ["j2", "j7"]
-    assert summary["holds_swept"] == 3
+    assert summary["holds_retried"] == 3
     assert summary["errors"] == []
