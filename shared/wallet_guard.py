@@ -57,7 +57,11 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # tier the hub can send it. bindcraft uploads each accepted design on its 60 s
 # heartbeat tick, in the same repo at 18382cd
 # (docker/bindcraft/run_pipeline.py::_DesignStreamer);
-# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier. iggm uploads
+# ::test_bindcraft_submits_only_the_pilot_tier pins its one tier. rfantibody
+# uploads each design RF2 finishes on its 60 s heartbeat tick, in the same repo
+# (docker/rfantibody/run_pipeline.py::_DesignStreamer, llm-proteinDesigner
+# PR #38, merged as d3771ee);
+# ::test_rfantibody_submits_only_the_pilot_tier pins its one tier. iggm uploads
 # and beats once per design inside its own sweep, in this repo:
 # tools/iggm/run_pipeline.py::sweep_designs calls ``upload_one`` and
 # ``send_heartbeat`` in its per-design loop, and
@@ -81,6 +85,7 @@ _LIVE_ALL_PRESETS = frozenset(
         "iggm",
         "proteina",
         "pxdesign",
+        "rfantibody",
         "rfdiffusion",
     }
 )
@@ -89,8 +94,10 @@ _LIVE_ALL_PRESETS = frozenset(
 # tool keeps its hold.
 LIVE_CAMPAIGN_TOOLS = frozenset({"proteina"})
 PROTEINA_START_USD = Decimal("1.00")
-# PROPOSED, not yet decided by Leo. See live_start_usd for the derivation.
+# Leo chose this figure, flat, on 2026-10-21. See live_start_usd for the
+# derivation and for what a flat figure does not cover.
 PXDESIGN_START_USD = Decimal("2.00")
+RFANTIBODY_START_USD = Decimal("2.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -114,6 +121,16 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     ``_RFDIFFUSION`` runtime model's one-design run at its 120-aa pivot, which
     is its fixed term plus one per-design term.
 
+    rfantibody's figure is a flat $2.00. Leo, 2026-10-20: "yes, $2 for
+    rfantibody". Its first design reaches Storage only after RFdiffusion and ProteinMPNN finish every
+    backbone and RF2 finishes one (llm-proteinDesigner
+    docker/rfantibody/run_pipeline.py::_DesignStreamer). On the one run with a
+    recorded stage split (``_RFANTIBODY``'s size comment: 412 aa, 4 designs,
+    RFdiffusion 1115 s + ProteinMPNN 42 s + RF2 ~1330 s) it is about 1490 s,
+    $1.81 at the A100-40GB rate, a derived figure that assumes RF2's time
+    splits evenly over the 4 designs. A run whose stretch before its first design
+    costs more than $2.00 can still be stopped at $0 with no design.
+
     bindcraft's figure is its base cap, ``TOOL_SPECS["bindcraft"].base_hard_cap_usd``.
     Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
     the up-front hold, which was $8.00 on a 2-design run
@@ -132,8 +149,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     8-design run at the 120-aa pivot is $0.94, and $1.00 is below
     ``SIGNUP_CREDIT_USD``; ::test_proteina_starts_at_one_dollar pins both.
 
-    pxdesign's figure is a flat $2.00, and is a PROPOSAL awaiting Leo's
-    decision -- no one has approved it. Derivation: a pxdesign run streams its
+    pxdesign's figure is a flat $2.00. Leo, 2026-10-21: "$2 flat for
+    pxdesign". Derivation: a pxdesign run streams its
     first design only once PXDesign has sampled, converted and AF2-validated
     it, so time-to-first-design is bounded by the length of a run that
     delivered a design, and every such run on record ran 1051 GPU-s or less:
@@ -180,6 +197,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return PROTEINA_START_USD
     if tool_slug == "pxdesign":
         return PXDESIGN_START_USD
+    if tool_slug == "rfantibody":
+        return RFANTIBODY_START_USD
     if tool_slug != "rfdiffusion":
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
