@@ -51,6 +51,88 @@ logger = logging.getLogger(__name__)
 # flight when the budget runs out, and the final upload.
 _CAMPAIGN_SESSION_SLACK_HOURS = 2
 
+# A hold younger than this may belong to a submit whose job row is not
+# written yet.
+_STRANDED_HOLD_AGE_HOURS = 2
+# ponytail: holds older than this are never retried; page the scan instead if a
+# release can stay failing that long.
+_STRANDED_HOLD_WINDOW_DAYS = 30
+_HOLD_PAGE = 1000
+_HOLD_CHUNK = 100
+
+
+def _sweep_stranded_holds(client, now: datetime, summary: dict) -> None:
+    """Retry holds that nothing closed: a failed release or settle is only logged.
+
+    A hold is open while no row other than a ``run_debit`` names it as parent
+    (shared/wallet.py::_has_open_hold). Its job is the ``tool_jobs`` row whose
+    ``inputs._wallet.hold_tx_id`` is the hold id; ``wallet_transactions.job_id``
+    is NULL on holds. A hold with no job is released; a hold whose job ended is
+    sent back through the job's own settle route, which charges or refunds by
+    the job's outcome. A hold that stays open is retried on the next run.
+    """
+    from shared.jobs import (  # noqa: PLC0415
+        TERMINAL_STATUSES,
+        ToolJob,
+        _settle_wallet_hold_for_completed_job,
+    )
+    from shared.wallet import release_hold  # noqa: PLC0415
+
+    hold_ids: list[str] = []
+    while True:
+        page = (
+            client.table("wallet_transactions")
+            .select("id")
+            .eq("kind", "hold")
+            .lt("created_at", (now - timedelta(hours=_STRANDED_HOLD_AGE_HOURS)).isoformat())
+            .gte("created_at", (now - timedelta(days=_STRANDED_HOLD_WINDOW_DAYS)).isoformat())
+            .order("id")
+            .range(len(hold_ids), len(hold_ids) + _HOLD_PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        hold_ids.extend(str(r["id"]) for r in page)
+        if len(page) < _HOLD_PAGE:
+            break
+
+    for start in range(0, len(hold_ids), _HOLD_CHUNK):
+        chunk = hold_ids[start:start + _HOLD_CHUNK]
+        closed = {
+            str(r["parent_tx_id"])
+            for r in client.table("wallet_transactions")
+            .select("parent_tx_id")
+            .in_("parent_tx_id", chunk)
+            .neq("kind", "run_debit")
+            .execute()
+            .data
+            or []
+        }
+        open_ids = [h for h in chunk if h not in closed]
+        if not open_ids:
+            continue
+        # A failed read raises out of this pass, so a job is called missing
+        # only when the read succeeded and matched nothing.
+        jobs = {
+            str(((r.get("inputs") or {}).get("_wallet") or {}).get("hold_tx_id")): r
+            for r in client.table("tool_jobs")
+            .select("*")
+            .in_("inputs->_wallet->>hold_tx_id", open_ids)
+            .execute()
+            .data
+            or []
+        }
+        for hold_id in open_ids:
+            row = jobs.get(hold_id)
+            if row is None:
+                if release_hold(hold_id, reason="swept_no_job"):
+                    summary["holds_swept"] += 1
+                else:
+                    summary["errors"].append(f"hold:{hold_id}:release failed")
+            elif row.get("status") in TERMINAL_STATUSES:
+                _settle_wallet_hold_for_completed_job(ToolJob.from_row(row))
+                summary["holds_swept"] += 1
+
 
 def _within_campaign_session(row: dict, now: datetime) -> bool:
     """True while a campaign piece is still inside its own session budget.
@@ -91,11 +173,12 @@ def sweep_stuck_jobs(
     Returns a summary dict suitable for logging::
 
         {"pending_swept": N, "running_swept": M, "recovered": K,
-         "errors": [...]}
+         "holds_swept": H, "errors": [...]}
 
     ``pending_swept`` / ``running_swept`` count jobs timed out (full
     refund). ``recovered`` counts jobs whose lost-webhook result was
-    finalized as succeeded instead of being discarded.
+    finalized as succeeded instead of being discarded. ``holds_swept`` counts
+    open holds sent to release or settle by :func:`_sweep_stranded_holds`.
     """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.jobs import timeout_stuck_job  # noqa: PLC0415
@@ -119,6 +202,7 @@ def sweep_stuck_jobs(
         "pending_swept": 0,
         "running_swept": 0,
         "recovered": 0,
+        "holds_swept": 0,
         "errors": [],
     }
 
@@ -195,5 +279,11 @@ def sweep_stuck_jobs(
                 "sweep: running timeout raised for %s", job_id, exc_info=True,
             )
             summary["errors"].append(f"running:{job_id}:{exc}")
+
+    try:
+        _sweep_stranded_holds(client, now, summary)
+    except Exception as exc:
+        logger.warning("sweep: stranded-hold pass failed", exc_info=True)
+        summary["errors"].append(f"holds:{exc}")
 
     return summary
