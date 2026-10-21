@@ -21,8 +21,8 @@ start minimum decides admission -- so these tests would stop proving the
 hold-based gate they name, and the reserve-hold ones would prove nothing.
 It was ``pxdesign`` until 2026-10-20, when pxdesign went live; boltzgen
 scales on the same ``num_designs`` and its one-design hold ($9.1035) is
-within a few cents of pxdesign's ($9.4371), which is what the figures below
-are calibrated against.
+within 3.5% of pxdesign's ($9.4371) -- 33 cents below it -- which is what the
+figures below are calibrated against.
 
 Each test uses its own patch set so a missing service client in
 one test never leaks into the next. The wallet preflight is

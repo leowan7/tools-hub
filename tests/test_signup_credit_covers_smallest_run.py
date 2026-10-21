@@ -57,8 +57,8 @@ NEEDS_TOPUP = {
 # went live: the credit covers its live_start_usd. bindcraft went live in #431
 # and stays, because its live_start_usd is its $8.00 cap. Leo, 2026-10-16: the
 # copy stays as it is.
-# pxdesign leaves this set if the PROPOSED $2.00 live start minimum is the one
-# Leo picks (shared/wallet_guard.py::live_start_usd): the credit then admits a
+# pxdesign left this set when Leo set its live start minimum at $2.00 on
+# 2026-10-21 (shared/wallet_guard.py::live_start_usd): the credit admits a
 # pxdesign run, where its cushioned hold refused one -- that hold is $9.4371
 # with no p90 history (cushioned_hold_usd(None, "pxdesign", {"num_designs": 1}),
 # live charging off), NOT the $13.00 base cap, which is only its ceiling. The
