@@ -1208,8 +1208,17 @@ def _effective_scaling_value(spec: ToolSpec, params: Mapping[str, object]) -> fl
     stored job passes the job_spec (has the pre-computed ``total_passes`` but the
     FASTA only as a parsed list, no top-level ``fasta`` string). Prefer the
     stored ``total_passes`` when present — it is the authoritative pass count —
-    then fall back to deriving it from the FASTA mask count."""
-    raw = _safe_float(params.get(spec.scaling_param), spec.designs_per_run_baseline)
+    then fall back to deriving it from the FASTA mask count.
+
+    The scaling key is read top-level first (the submit form), then under
+    ``parameters`` (a stored job: tools/boltz2/__init__.py::validate nests
+    ``n_designs_total`` there, as af2/colabfold/esmfold do on batch).
+    Pinned by tests/test_wallet_scaling_nested.py."""
+    value = params.get(spec.scaling_param)
+    nested = params.get("parameters")
+    if value is None and isinstance(nested, Mapping):
+        value = _without_non_finite(nested).get(spec.scaling_param)
+    raw = _safe_float(value, spec.designs_per_run_baseline)
     # No non-finite guard HERE: the p90 row loop calls this with row-derived
     # params, where a NaN must survive to be DROPPED by the isfinite check
     # further down rather than become a plausible number that shifts the
