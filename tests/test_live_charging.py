@@ -30,8 +30,8 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
-LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina", "rfantibody",
-                    "rfdiffusion"}
+LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina",
+                    "pxdesign", "rfantibody", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
 # A flat $2.00 to start an rfantibody run, the figure Leo picked 2026-10-20.
@@ -44,10 +44,15 @@ IGGM_START = Decimal("3.00")
 PROTEINA_START = Decimal("1.00")
 # esmfold2-design's base cap, approved by Leo on PR #440 review (2026-10-19).
 ESMFOLD2_START = Decimal("15.00")
+# A flat $2.00 to start a pxdesign run, the figure Leo picked 2026-10-21: the
+# next round figure above a one-design pxdesign run's live cost. See
+# shared/wallet_guard.py::live_start_usd.
+PXDESIGN_START = Decimal("2.00")
 # The live tools that refuse a balance below a start minimum.
-STARTS = {"rfdiffusion": RFD_START, "rfantibody": RFA_START, "bindcraft": BC_START,
-          "iggm": IGGM_START,
-          "proteina": PROTEINA_START, "esmfold2-design": ESMFOLD2_START}
+STARTS = {"rfdiffusion": RFD_START, "rfantibody": RFA_START,
+          "bindcraft": BC_START, "iggm": IGGM_START,
+          "proteina": PROTEINA_START, "esmfold2-design": ESMFOLD2_START,
+          "pxdesign": PXDESIGN_START}
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +107,7 @@ def test_iggm_uploads_and_beats_once_per_design():
 
 # Live tools whose container is not in this repo, so the heartbeat check
 # cannot read them.
-OUT_OF_REPO = {"bindcraft", "rfantibody", "rfdiffusion"}
+OUT_OF_REPO = {"bindcraft", "pxdesign", "rfantibody", "rfdiffusion"}
 
 
 @pytest.mark.parametrize("tool", sorted((LIVE | LIVE_ALL_PRESETS) - OUT_OF_REPO))
@@ -144,6 +149,13 @@ def test_bindcraft_submits_only_the_pilot_tier(preset):
 @pytest.mark.parametrize("preset", ["smoke", "mini_pilot", "full", "batch"])
 def test_rfantibody_submits_only_the_pilot_tier(preset):
     from tools.rfantibody import validate
+
+    assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
+
+
+@pytest.mark.parametrize("preset", ["smoke", "mini_pilot", "full", "batch"])
+def test_pxdesign_submits_only_the_pilot_tier(preset):
+    from tools.pxdesign import validate
 
     assert validate({"preset": preset}, {}) == (None, "Pick a preset.")
 
@@ -223,8 +235,8 @@ def _post(slug, form, *, balance=None, state=None, estimate=Decimal("2.00"),
                            release=release, gate=gate)
 
 
-LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("rfantibody", {}), ("bindcraft", {}),
-              ("iggm", {}),
+LIVE_FORMS = [("boltz2", {}), ("rfdiffusion", {}), ("rfantibody", {}),
+              ("bindcraft", {}), ("iggm", {}), ("pxdesign", {}),
               ("af2", {"preset": "batch"}), ("colabfold", {"preset": "batch"}),
               ("esmfold", {"preset": "batch"})]
 
@@ -297,6 +309,61 @@ def test_proteina_starts_at_one_dollar():
     assert PROTEINA_START < SIGNUP_CREDIT_USD
 
 
+def test_pxdesign_starts_at_two_dollars():
+    from shared.wallet import SIGNUP_CREDIT_USD
+    from shared.wallet_guard import live_due_usd
+
+    for params in ({}, {"num_designs": 1}, {"num_designs": 8}):
+        assert live_start_usd("pxdesign", params) == PXDESIGN_START
+    # The longest one-design smoke run on record, 1051 GPU-s
+    # (docs/VALIDATION-LOG.md, row 2026-04-29).
+    assert live_due_usd("pxdesign", 1051, gpu_class_for_job("pxdesign"), {})         == Decimal("1.8367")
+    assert PXDESIGN_START < SIGNUP_CREDIT_USD
+
+
+def test_pxdesign_start_minimum_does_not_scale():
+    """The gap the flat figure leaves, in figures, so a change to it is visible.
+
+    A larger pilot is admitted on a balance that cannot fund it, where the
+    cushioned hold refused it. Sound only once the streaming container is
+    deployed: the meter stops the run at $0 and the user keeps what streamed.
+    No flat figure closes the gap -- the $13.00 base cap is under a 24-design
+    pilot too, and only the scaled cap, which is what the hold used to be,
+    covers it. Scaling it is Leo's call (shared/wallet_guard.py::live_start_usd).
+    """
+    from shared.wallet_estimates import (
+        TOOL_SPECS, compute_hard_cap, cushioned_hold_usd, estimated_cost_for_tool,
+    )
+
+    expected = {
+        1: (Decimal("6.2914"), Decimal("9.4371"), Decimal("13.0000")),
+        8: (Decimal("25.1654"), Decimal("37.7481"), Decimal("52.0000")),
+        24: (Decimal("75.4963"), Decimal("113.2445"), Decimal("156.0000")),
+    }
+    for n, (estimate, hold, cap) in expected.items():
+        params = {"num_designs": n, "preset": "pilot"}
+        assert estimated_cost_for_tool(None, "pxdesign", params) == estimate
+        assert cushioned_hold_usd(None, "pxdesign", params) == hold
+        assert compute_hard_cap("pxdesign", params) == cap
+        # Flat: the same figure admits all three.
+        assert live_start_usd("pxdesign", params) == PXDESIGN_START
+        assert PXDESIGN_START < hold
+    assert TOOL_SPECS["pxdesign"].base_hard_cap_usd < expected[24][0]
+
+
+def test_pxdesign_below_its_start_minimum_is_refused():
+    r = _post("pxdesign", {}, balance=PXDESIGN_START - Decimal("0.0001"))
+    assert r.body == "GATE"
+    assert r.gate == REASON_INSUFFICIENT
+    r.open.assert_not_called()
+
+
+def test_pxdesign_at_its_start_minimum_opens_an_anchor():
+    r = _post("pxdesign", {}, balance=PXDESIGN_START)
+    assert r.body == "RAN"
+    r.open.assert_called_once_with("u-1", "pxdesign")
+
+
 def test_proteina_below_its_start_minimum_is_refused():
     r = _post("proteina", {}, balance=PROTEINA_START - Decimal("0.0001"))
     assert r.body == "GATE"
@@ -352,7 +419,10 @@ def test_live_tools_keep_the_other_refusals(why):
     r.open.assert_not_called()
 
 
-@pytest.mark.parametrize("slug,form", [("af2", {"preset": "standalone"}), ("pxdesign", {})])
+# boltzgen is posted with no preset; af2 with one. Neither slug is in
+# _LIVE_ALL_PRESETS, so both still take the cushioned hold. This case named
+# pxdesign and rfantibody in turn until each went live.
+@pytest.mark.parametrize("slug,form", [("af2", {"preset": "standalone"}), ("boltzgen", {})])
 def test_other_tools_keep_the_cushioned_hold(slug, form):
     short = _post(slug, form, balance="1.00")
     assert short.gate == REASON_INSUFFICIENT
@@ -439,6 +509,8 @@ def test_submit_stashes_the_live_mark(monkeypatch, preset, allow, wallet):
     ("bindcraft", {}, str(BC_START), False),
     ("iggm", {}, str(IGGM_START - Decimal("0.0001")), True),
     ("iggm", {}, str(IGGM_START), False),
+    ("pxdesign", {}, str(PXDESIGN_START - Decimal("0.0001")), True),
+    ("pxdesign", {}, str(PXDESIGN_START), False),
 ])
 def test_estimate_deficit_matches_the_guard(monkeypatch, tool, params, balance, short):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")

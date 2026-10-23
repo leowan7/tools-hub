@@ -12,6 +12,18 @@ Covers:
 * ``GET /account/topup-complete``: Stripe Checkout success_url
   landing. Validates a session_id and renders confirmation.
 
+The stand-in tool throughout is ``boltzgen``, and it has to be one that is
+NOT in ``shared/wallet_guard.py::_LIVE_ALL_PRESETS``: a live tool takes a
+different branch of the gate: ``REASON_INSUFFICIENT`` is bypassed
+(``requires_wallet``, the ``not (live and ...)`` arm), ``wallet_reserve_hold``
+is never reached because the live arm calls ``open_live_run`` instead, and the
+start minimum decides admission -- so these tests would stop proving the
+hold-based gate they name, and the reserve-hold ones would prove nothing.
+It was ``pxdesign`` until 2026-10-20, when pxdesign went live; boltzgen
+scales on the same ``num_designs`` and its one-design hold ($9.1035) is
+within 3.5% of pxdesign's ($9.4371) -- 33 cents below it -- which is what the
+figures below are calibrated against.
+
 Each test uses its own patch set so a missing service client in
 one test never leaks into the next. The wallet preflight is
 exercised through public surfaces (HTTP routes) instead of unit
@@ -151,7 +163,7 @@ class TestEstimateEndpointShape:
             return_value={"balance_usd": 5.0, "wallet_frozen": False},
         ):
             _login(client)
-            resp = client.get("/api/wallet/estimate?tool=pxdesign&num_designs=1")
+            resp = client.get("/api/wallet/estimate?tool=boltzgen&num_designs=1")
         body = resp.get_json()
         assert Decimal(body["estimate_usd"]) > Decimal("5")
         assert body["exceeds_hard_cap"] is False
@@ -177,7 +189,7 @@ class TestEstimateEndpointShape:
             "blueprints.wallet.cushioned_hold_usd", return_value=Decimal("8.00"),
         ):
             _login(client)
-            body = client.get("/api/wallet/estimate?tool=pxdesign&num_designs=1").get_json()
+            body = client.get("/api/wallet/estimate?tool=boltzgen&num_designs=1").get_json()
         assert body["required_usd"] == "8.00"
         assert Decimal(body["deficit_usd"]) == Decimal("1.00")
 
@@ -381,7 +393,7 @@ class TestRequiresWalletBlocksAtMoment2:
             REASON_INSUFFICIENT,
         )
 
-        @requires_wallet(tool_slug="pxdesign")
+        @requires_wallet(tool_slug="boltzgen")
         def handler():  # pragma: no cover (must not be called)
             raise AssertionError("handler should not run when blocked")
 
@@ -433,7 +445,7 @@ class TestRequiresWalletBlocksAtMoment2:
         assert rendered_tpl == "wallet/topup.html"
         ctx = render.call_args.kwargs
         assert ctx["gate_reason"] == REASON_INSUFFICIENT
-        assert ctx["tool_slug"] == "pxdesign"
+        assert ctx["tool_slug"] == "boltzgen"
 
 
 class TestRequiresWalletBlocksAtMoment3:
@@ -446,7 +458,7 @@ class TestRequiresWalletBlocksAtMoment3:
             REASON_PER_TOOL_CAP,
         )
 
-        @requires_wallet(tool_slug="pxdesign")
+        @requires_wallet(tool_slug="boltzgen")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run")
 
@@ -497,7 +509,7 @@ class TestRequiresWalletBlocksAtMoment3:
             REASON_SELF_SERVE_CEILING,
         )
 
-        @requires_wallet(tool_slug="pxdesign")
+        @requires_wallet(tool_slug="boltzgen")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run")
 
@@ -615,7 +627,7 @@ class TestRequiresWalletReserveLost:
         from app import requires_wallet
         from shared.wallet import PreflightResult, REASON_OK
 
-        @requires_wallet(tool_slug="pxdesign")
+        @requires_wallet(tool_slug="boltzgen")
         def handler():  # pragma: no cover
             raise AssertionError("handler must not run when hold is None")
 
@@ -1011,7 +1023,7 @@ def test_guard_decides_a_short_gate_on_the_hold():
     from app import requires_wallet
     from shared.wallet import REASON_INSUFFICIENT, PreflightResult
 
-    @requires_wallet(tool_slug="pxdesign")
+    @requires_wallet(tool_slug="boltzgen")
     def handler():  # pragma: no cover
         raise AssertionError("handler should not run when blocked")
 
