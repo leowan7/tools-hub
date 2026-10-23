@@ -2295,6 +2295,7 @@ def send_signup_credit_expiring_email(
     """One-time reminder that unspent signup credit is about to expire.
 
     Trigger: ``cron.signup_credit.run``, which claims the send first.
+    Raises ``RecipientRejected`` when Resend refuses the address.
     """
     email = _resolve_user_email(user_id)
     if not email:
@@ -2320,6 +2321,7 @@ def send_signup_credit_expiring_email(
         html_body=html,
         log_tag=f"signup_credit_expiring user={user_id}",
         unsubscribe_link=unsub,
+        raise_on_rejected_recipient=True,
     )
 
 
