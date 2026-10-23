@@ -150,6 +150,10 @@ RUN cd /opt/proteina && bash env/download_startup.sh --pmpnn --ligmpnn
 # required; 2.2.1's own metadata says biotite==1.4.0.
 RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "atomworks==2.2.1" "hydride==1.2.3"
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "certifi==2026.10.23"
+
 # PIN dm-haiku — DO NOT REMOVE (added 2026-08-04, after a fresh build of THIS
 # Dockerfile came out broken while the already-deployed image built from it on
 # 2026-07-16 kept working. That is what "not reproducible" looked like.)

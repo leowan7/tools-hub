@@ -50,6 +50,12 @@ RUN /root/.local/bin/uv pip install --python /usr/bin/python3 --no-cache gemmi r
     || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --no-cache gemmi requests \
     || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --break-system-packages --no-cache gemmi requests
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN /root/.local/bin/uv pip install --python /usr/bin/python3 --no-cache "certifi==2026.10.23" \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --no-cache "certifi==2026.10.23" \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --break-system-packages --no-cache "certifi==2026.10.23"
+
 # Self-verifying build gates (HARD-fail, loud+safe, so drift surfaces at build
 # rather than on a paying run):
 #  1. the runtime interpreter run_pipeline.py uses can import opendde + both deps;
