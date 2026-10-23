@@ -95,7 +95,7 @@ def test_public_pages_quote_the_minimum_and_no_signup_credit(route):
         assert phrase not in body.lower(), f"{route} still promises {phrase!r}"
 
 
-def test_legal_terms_promise_new_accounts_no_credit():
+def test_legal_terms_make_no_statement_about_new_account_credit():
     with _client() as c:
         body = c.get("/terms").get_data(as_text=True)
     assert "New accounts receive" not in body
