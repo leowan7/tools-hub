@@ -1,8 +1,8 @@
 # Boltz-2 $0 balance stop test, re-run (2026-10-23)
 
 **PASS.** The run was stopped when the wallet reached $0.00 after 8 of its 16
-designs. The 8 delivered designs are kept, scored and downloadable on the job
-page, and the ledger shows four run debits totalling $1.10, the whole balance.
+designs. The 8 delivered designs are kept, scored and listed on the job page
+(downloads offered, none opened), and the ledger shows four run debits totalling $1.10, the whole balance.
 This is the first tool on which the live-charging $0 stop has been seen to fire.
 
 This re-runs the failed 2026-10-22 test (`docs/qa/ZERO-STOP-BOLTZ2-2026-10-22.md`)
