@@ -95,11 +95,11 @@ def test_public_pages_quote_the_minimum_and_no_signup_credit(route):
         assert phrase not in body.lower(), f"{route} still promises {phrase!r}"
 
 
-def test_legal_terms_drop_the_pre_cutover_sentence():
+def test_legal_terms_say_nothing_about_new_accounts_or_the_cutover():
     with _client() as c:
-        body = c.get("/terms").get_data(as_text=True)
-    assert "New accounts receive" not in body
-    assert "receive none" not in body
+        body = c.get("/terms").get_data(as_text=True).lower()
+    assert "new accounts" not in body
+    assert "october 23" not in body
 
 
 # ---------------------------------------------------------------------------
