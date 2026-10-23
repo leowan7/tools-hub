@@ -29,7 +29,6 @@ from flask import (
 )
 
 from shared.auth import login_required
-from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
 
 logger = logging.getLogger(__name__)
 
@@ -337,10 +336,8 @@ def signup():
             next=next_url,
         )
 
-    # The wallet signup credit is granted lazily when the user_wallets
-    # row is first created on sign-in
-    # (shared.wallet._create_wallet_with_signup_credit). No legacy
-    # credits-ledger grant on this path.
+    # The user_wallets row is created lazily on first sign-in
+    # (shared.wallet._create_wallet), at a $0 balance.
 
     log_event(
         event_type="signup_completed",
@@ -374,13 +371,7 @@ def signup():
         error=None,
         email=email,
         next=next_url,
-        # Quote the grant, not a retyped figure: this line told every new
-        # user "$5" for the whole time the wallet was depositing $15.
-        success_msg=(
-            f"Account created with ${SIGNUP_CREDIT_USD:.0f} of compute "
-            f"credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} days. Sign in "
-            "to get started."
-        ),
+        success_msg="Account created. Sign in to get started.",
     )
 
 # ------------------------------------------------------------------

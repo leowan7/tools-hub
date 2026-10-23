@@ -187,7 +187,7 @@ class TestWalletTopupTemplate:
             html = render_template(
                 "wallet/topup.html",
                 wallet=_wallet_fixture(),
-                min_topup_usd=Decimal("20.00"),
+                min_topup_usd=Decimal("5.00"),
                 next_url=None,
                 topup_action_url="/account/wallet/checkout",
                 topup_error=None,
@@ -207,7 +207,7 @@ class TestWalletTopupTemplate:
                 "wallet/topup.html",
                 wallet=_wallet_fixture(balance=2.00),
                 deficit_usd=Decimal("15.50"),
-                min_topup_usd=Decimal("20.00"),
+                min_topup_usd=Decimal("5.00"),
                 next_url="/tools/mpnn",
                 return_tool="mpnn",
                 gate_reason="insufficient_balance",
@@ -643,9 +643,9 @@ class TestPricingTemplate:
         assert "Fund your wallet" in html
 
     def test_pricing_renders_for_anonymous_user(self, app):
-        """No session.user_email => signup CTA references the wallet grant."""
+        """No session.user_email => signup CTA quotes the minimum top-up."""
         with app.test_request_context("/pricing"):
             html = render_template("pricing.html")
         assert "Your wallet is your budget" in html
-        from shared.wallet import SIGNUP_CREDIT_USD
-        assert f"Start with ${SIGNUP_CREDIT_USD:.0f} in your wallet, usable for 30 days" in html
+        from shared.wallet import MIN_TOPUP_USD
+        assert f"Start with as little as ${MIN_TOPUP_USD:.0f}" in html

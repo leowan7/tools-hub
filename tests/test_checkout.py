@@ -10,7 +10,7 @@ Coverage
 --------
 
 * ``create_topup_session`` returns ``{"id", "url"}`` on success.
-* Amounts below ``WALLET_MIN_TOPUP_USD`` are rejected.
+* Amounts below ``shared.wallet.MIN_TOPUP_USD`` are rejected.
 * Amounts above ``WALLET_MAX_TOPUP_USD`` are rejected.
 * The Session is created with ``automatic_tax.enabled=true``.
 * ``success_url`` and ``cancel_url`` are derived from the env base URL
@@ -152,7 +152,6 @@ def _wallet_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin env vars so tests are independent of the developer's shell."""
     monkeypatch.setenv("STRIPE_WALLET_TOPUP_PRODUCT_ID", PRODUCT_ID)
     monkeypatch.setenv("APP_BASE_URL", BASE_URL)
-    monkeypatch.setenv("WALLET_MIN_TOPUP_USD", "20")
     monkeypatch.setenv("WALLET_MAX_TOPUP_USD", "5000")
     # Ensure the alias hierarchy in _base_url resolves to APP_BASE_URL.
     # PUBLIC_BASE_URL wins if set; APP_URL is the legacy fallback.
@@ -217,7 +216,7 @@ def test_create_topup_session_uses_inline_price_data(
 
 def test_amount_below_minimum_is_rejected(fake_stripe: _FakeStripeModule) -> None:
     session, err = checkout.create_topup_session(
-        USER_ID, USER_EMAIL, Decimal("5.00")
+        USER_ID, USER_EMAIL, Decimal("4.99")
     )
     assert session is None
     assert err is not None
@@ -227,7 +226,7 @@ def test_amount_below_minimum_is_rejected(fake_stripe: _FakeStripeModule) -> Non
 
 def test_amount_at_minimum_is_accepted(fake_stripe: _FakeStripeModule) -> None:
     session, err = checkout.create_topup_session(
-        USER_ID, USER_EMAIL, Decimal("20.00")
+        USER_ID, USER_EMAIL, Decimal("5.00")
     )
     assert err is None and session is not None
     assert fake_stripe.create_calls == 1
@@ -473,13 +472,15 @@ def test_stripe_create_failure_returns_error(
 # ---------------------------------------------------------------------------
 
 
-def test_default_min_topup_falls_back_to_module(
+def test_min_topup_ignores_the_retired_env_override(
     fake_stripe: _FakeStripeModule, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("WALLET_MIN_TOPUP_USD", raising=False)
+    """A leftover Railway WALLET_MIN_TOPUP_USD must not move the floor."""
+    monkeypatch.setenv("WALLET_MIN_TOPUP_USD", "20")
     from shared.wallet import MIN_TOPUP_USD
 
-    # An amount one cent below the module default must be rejected.
+    session, err = checkout.create_topup_session(USER_ID, USER_EMAIL, MIN_TOPUP_USD)
+    assert err is None and session is not None
     below = (MIN_TOPUP_USD - Decimal("0.01")).quantize(Decimal("0.01"))
     session, err = checkout.create_topup_session(USER_ID, USER_EMAIL, below)
     assert session is None and err is not None and "minimum" in err.lower()

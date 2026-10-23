@@ -479,3 +479,23 @@ blueprints/wallet.py:1068:         amount = MIN_TOPUP_USD
 blueprints/auth.py:380:             f"Account created with ${SIGNUP_CREDIT_USD:.0f} of compute "
 blueprints/auth.py:381:             f"credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} days. Sign in "
 ```
+
+## Decisions (Leo, 2026-10-23, relayed by the hub lead session)
+
+Answers to the open questions, verbatim: "1. keep their minimums. 2. let free
+credits exprei 3. plain welcome - show me your draft 4. yes. 5. stay at 20 min."
+
+1. Tools keep their start minimums. Copy names BindCraft, BoltzGen, ESMFold2
+   design and OpenDDE as needing a larger balance, with no figures.
+2. Credit granted before 2026-10-23 runs to its expiry date. No new grants.
+3. A plain welcome email on wallet creation. Leo edited the draft and approved
+   this text (the template adds a full stop after "at a small scale"):
+   "Your account is ready. A $5 balance is enough to start structure
+   prediction, ProteinMPNN sequence design and most binder design tools at a
+   small scale. Epitope Scout and Developability Scout are free and do not
+   touch your balance, so you can triage a target before you pay for
+   anything. [Browse the catalog] Top up when you are ready:
+   tools.ranomics.com/account/wallet/topup. Reply to this email if you get
+   stuck. The Ranomics team". Subject: "Welcome to Ranomics tools".
+4. Add a $5 chip on the top-up page.
+5. Auto reload keeps a $20 minimum (MIN_AUTO_RELOAD_USD).

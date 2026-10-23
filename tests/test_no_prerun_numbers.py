@@ -44,17 +44,15 @@ def _visible(page: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def _allowed_money(flask_app) -> tuple[str, ...]:
+def _allowed_money() -> tuple[str, ...]:
     from shared.wallet import MIN_TOPUP_USD  # noqa: PLC0415
 
-    credit = flask_app.jinja_env.globals["signup_credit"]
-    # Longest first, so "$20.00" is not left as ".00" by "$20".
-    return (f"${credit(True)}", f"${credit()}",
-            f"${MIN_TOPUP_USD}", f"${MIN_TOPUP_USD:.0f}")
+    # Longest first, so "$5.00" is not left as ".00" by "$5".
+    return (f"${MIN_TOPUP_USD}", f"${MIN_TOPUP_USD:.0f}")
 
 
 def _hits(flask_app, text: str) -> list[str]:
-    for allowed in _allowed_money(flask_app) + _ALLOWED_TIME:
+    for allowed in _allowed_money() + _ALLOWED_TIME:
         text = text.replace(allowed, "")
     found = []
     for rx in (_MONEY, _TIME):

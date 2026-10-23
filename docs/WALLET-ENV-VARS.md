@@ -45,7 +45,6 @@ you want to deviate.
 
 | Var | Default | Lever |
 |---|---|---|
-| `WALLET_MIN_TOPUP_USD` | `20` | Floor on a single top up |
 | `WALLET_MAX_TOPUP_USD` | `5000` | Ceiling on a single top up |
 | `WALLET_DEFAULT_DAILY_CAP_USD` | `200` | Display value in setup emails |
 
@@ -62,7 +61,6 @@ you want to deviate.
 | `RESEND_API_KEY` | none | `shared/email.py` (every sender) | none | Every email send is skipped silently and a `logger.info` is emitted; no exception is raised |
 | `RESEND_FROM_TRANSACTIONAL` | `EMAIL_FROM` (legacy) | `shared/email.py` (every sender) | `Ranomics Tools <noreply@tools.ranomics.com>` (from `shared/email.py:DEFAULT_FROM`) | Falls back to the default from address |
 | `SUPPORT_EMAIL` | none | `shared/email.py` | `support@ranomics.com` | Falls back to the default support address |
-| `WALLET_MIN_TOPUP_USD` | none | `billing/checkout.py` | `20.00` (from `shared.wallet.MIN_TOPUP_USD`) | Falls back to the constant |
 | `WALLET_MAX_TOPUP_USD` | none | `billing/checkout.py` | `5000.00` (constant inside `billing/checkout.py`) | Falls back to the constant |
 | `WALLET_DEFAULT_DAILY_CAP_USD` | none | `shared/email.py` (welcome email body only) | `200` | Falls back; this is display only, the actual default cap is set in `shared/wallet.py` |
 | `SLACK_SALES_WEBHOOK_URL` | `WALLET_FUNNEL_ALERT_SLACK_WEBHOOK_URL` (per plan Railway table) | `shared/email.py:alert_sales_slack`, `alert_sales_slack_high` | none | Slack post is skipped silently; only a `logger.info` is emitted |
@@ -103,8 +101,9 @@ them requires a code change and a deploy, not a Railway edit.
 | Constant | Defined in | Value | Why not an env var |
 |---|---|---|---|
 | `WALLET_MARKUP` | `shared/wallet.py:73` and `shared/wallet_estimates.py:46` | `Decimal("1.70")` | Pricing margin. Lives in code so the wallet model and the estimate preview cannot diverge under runtime config. Also duplicated in two modules; both must change together. |
-| `MIN_TOPUP_USD` | `shared/wallet.py:76` | `Decimal("20.00")` | Default for the optional `WALLET_MIN_TOPUP_USD` override |
-| `SIGNUP_CREDIT_USD` | `shared/wallet.py` | `Decimal("20.00")` | The wallet credit applied at signup, and the only home for that number. There is no env override: `WALLET_SIGNUP_CREDIT_USD` was removed 2026-08-18 because it changed only the welcome email, never the grant, so its sole effect was to let the email disagree with the balance. It did — preview kept `=5` after the grant went to $15. Delete it from any environment that still sets it. Raised $15 -> $20 on 2026-09-10: the credit is sized against the largest CUSHIONED HOLD of any tool's smallest real run, not the largest displayed price -- pricing on the price is what let proteina and opendde sit at $15.00 holds against a $15.00 credit, refusing any new user who had spent a cent. `tests/test_signup_credit_covers_smallest_run.py` enforces the rule, but note its own docstring is explicit that at one unit the binding clamp is `base_hard_cap_usd`, so it catches a cap or credit change and NOT a change to the cushion, markup, rate card or worst-case floor. |
+| `MIN_TOPUP_USD` | `shared/wallet.py` | `Decimal("5.00")` | The floor on a single top up. There is no env override: `WALLET_MIN_TOPUP_USD` was removed 2026-10-23, when the floor dropped to $5. Delete it from any environment that still sets it. |
+| `MIN_AUTO_RELOAD_USD` | `shared/wallet.py` | `Decimal("20.00")` | The floor on an auto reload amount, kept separate from the top-up minimum. |
+| `SIGNUP_CREDIT_USD` | removed 2026-10-23 | none | New accounts start at $0 and no credit is granted. Credit granted before that date keeps its expiry date. `WALLET_SIGNUP_CREDIT_USD` was removed earlier, on 2026-08-18; delete it from any environment that still sets it. |
 | `SELF_SERVE_CEILING_USD` | `shared/wallet.py:170` | `Decimal("1000.00")` | Ceiling above which a job estimate routes to the Binder Pilot pitch instead of letting the self serve flow proceed |
 | `DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD` | `shared/wallet.py:85` | `Decimal("1000.00")` | Per user policy, set per row in the wallet table |
 
@@ -151,7 +150,6 @@ SLACK_SALES_WEBHOOK_URL=
 SLACK_OPS_WEBHOOK_URL=
 
 # Optional policy overrides; leave blank to use defaults
-WALLET_MIN_TOPUP_USD=
 WALLET_MAX_TOPUP_USD=
 WALLET_DEFAULT_DAILY_CAP_USD=
 ```

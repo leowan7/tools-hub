@@ -284,10 +284,10 @@ def test_iggm_start_minimum_is_its_base_cap_whatever_the_run_asks_for():
     assert IGGM_START == TOOL_SPECS["iggm"].base_hard_cap_usd
 
 
-def test_the_signup_credit_still_admits_an_iggm_run():
-    from shared.wallet import SIGNUP_CREDIT_USD
+def test_the_minimum_topup_admits_an_iggm_run():
+    from shared.wallet import MIN_TOPUP_USD
 
-    assert IGGM_START < SIGNUP_CREDIT_USD
+    assert IGGM_START < MIN_TOPUP_USD
 
 
 def test_iggm_below_its_start_minimum_is_refused():
@@ -299,18 +299,18 @@ def test_iggm_below_its_start_minimum_is_refused():
 
 def test_proteina_starts_at_one_dollar():
     from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
-    from shared.wallet import SIGNUP_CREDIT_USD
+    from shared.wallet import MIN_TOPUP_USD
     from shared.wallet_guard import live_due_usd
 
     for params in ({}, {"num_designs": 1}, {"num_designs": 8}):
         assert live_start_usd("proteina", params) == PROTEINA_START
     one_shard = runtime_estimate_min(TOOL_RULES["proteina"], 120, 8) * 60
     assert live_due_usd("proteina", one_shard, gpu_class_for_job("proteina"), {})         == Decimal("0.9437")
-    assert PROTEINA_START < SIGNUP_CREDIT_USD
+    assert PROTEINA_START < MIN_TOPUP_USD
 
 
 def test_pxdesign_starts_at_two_dollars():
-    from shared.wallet import SIGNUP_CREDIT_USD
+    from shared.wallet import MIN_TOPUP_USD
     from shared.wallet_guard import live_due_usd
 
     for params in ({}, {"num_designs": 1}, {"num_designs": 8}):
@@ -318,7 +318,7 @@ def test_pxdesign_starts_at_two_dollars():
     # The longest one-design smoke run on record, 1051 GPU-s
     # (docs/VALIDATION-LOG.md, row 2026-04-29).
     assert live_due_usd("pxdesign", 1051, gpu_class_for_job("pxdesign"), {})         == Decimal("1.8367")
-    assert PXDESIGN_START < SIGNUP_CREDIT_USD
+    assert PXDESIGN_START < MIN_TOPUP_USD
 
 
 def test_pxdesign_start_minimum_does_not_scale():
@@ -830,11 +830,11 @@ def test_cancel_bills_each_seed_over_its_own_beats():
 
 
 def test_esmfold2_start_minimum_covers_the_most_one_seed_can_owe():
-    from shared.wallet import SIGNUP_CREDIT_USD
+    from shared.wallet import MIN_TOPUP_USD
 
     assert ESMFOLD2_START == TOOL_SPECS[ESM2].base_hard_cap_usd
     assert live_due_usd(ESM2, 5400, gpu_class_for_job(ESM2, None), {"n_seeds": 1}) == ESMFOLD2_START
-    assert ESMFOLD2_START > SIGNUP_CREDIT_USD
+    assert ESMFOLD2_START > MIN_TOPUP_USD
 
 
 @pytest.mark.parametrize("tool", sorted(LIVE_ALL_PRESETS))

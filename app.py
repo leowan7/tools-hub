@@ -659,22 +659,18 @@ def create_app() -> Flask:
         return _public_tool_context(adapter)
     flask_app.jinja_env.globals["tool_public_context"] = _tool_public_context
 
-    # Signup credit, sourced from shared.wallet so the grant and every piece
-    # of copy quoting it move together. It was hardcoded as "$5" in ~18
-    # templates including legal/terms.html, which is how copy drifts away
-    # from the amount actually granted.
-    #   signup_credit()      -> "5" for prose ("start with $5 in your wallet")
-    #   signup_credit(True)  -> "5.00" where an exact figure reads better
-    def _signup_credit(exact: bool = False) -> str:
-        from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+    # Top-up floors, sourced from shared.wallet so the amount Checkout and the
+    # auto-reload route enforce and every page quoting it move together.
+    #   min_topup        -> "5"  (MIN_TOPUP_USD)
+    #   min_auto_reload  -> "20" (MIN_AUTO_RELOAD_USD)
+    from shared.wallet import (  # noqa: PLC0415
+        MIN_AUTO_RELOAD_USD,
+        SIGNUP_CREDIT_EXPIRY_DAYS,
+    )
 
-        if exact:
-            return f"{SIGNUP_CREDIT_USD:.2f}"
-        return f"{SIGNUP_CREDIT_USD:.0f}"
-
-    flask_app.jinja_env.globals["signup_credit"] = _signup_credit
-    from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS  # noqa: PLC0415
-
+    flask_app.jinja_env.globals["min_topup"] = f"{MIN_TOPUP_USD:.0f}"
+    flask_app.jinja_env.globals["min_auto_reload"] = f"{MIN_AUTO_RELOAD_USD:.0f}"
+    # Still read by the ledger legend for grants made before 2026-10-23.
     flask_app.jinja_env.globals["signup_credit_expiry_days"] = SIGNUP_CREDIT_EXPIRY_DAYS
 
     # Left-rail groups. Jinja globals rather than a context processor

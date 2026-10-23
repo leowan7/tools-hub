@@ -171,7 +171,11 @@ class TestEstimateEndpointShape:
         # Measured against what submit reserves (the hold), not the price.
         assert Decimal(body["required_usd"]) >= Decimal(body["estimate_usd"])
         assert Decimal(body["deficit_usd"]) == Decimal(body["required_usd"]) - 5
-        assert Decimal(body["rounded_topup_usd"]) >= Decimal("20")
+        from shared.wallet import MIN_TOPUP_USD
+
+        rounded = Decimal(body["rounded_topup_usd"])
+        assert rounded >= max(MIN_TOPUP_USD, Decimal(body["deficit_usd"]))
+        assert rounded % 5 == 0
 
     def test_balance_covering_price_but_not_hold_is_short(self, client):
         """Enough for the shown price, not the hold: the form must still gate.

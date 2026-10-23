@@ -6,7 +6,7 @@
 
    Expected context (Agent E):
      wallet                  current wallet dict (balance, auto_reload_*)
-     min_topup_usd           usually Decimal("20.00")
+     min_topup_usd           shared.wallet.MIN_TOPUP_USD
      next_url                optional return path; when present this is a
                              "top up then run the job" gate from a tool form,
                              so the form forwards it through Checkout
@@ -98,8 +98,9 @@
   {# Defensive: not every route passes min_topup_usd. Treat undefined and
      none the same way. #}
   {% set _min_raw = min_topup_usd|default(none, true) %}
-  {% set _min = (_min_raw|float) if _min_raw is not none else 20 %}
+  {% set _min = (_min_raw|float) if _min_raw is not none else min_topup|float %}
   {% set _suggested = [
+    {'value': 5,    'label': '$5'},
     {'value': 20,   'label': '$20'},
     {'value': 50,   'label': '$50'},
     {'value': 200,  'label': '$200'},
@@ -112,8 +113,7 @@
     <p class="subtitle">
       Minimum top up is ${{ '%.0f'|format(_min) }}. Tax is added at checkout
       where applicable. Top ups are non refundable. Money you add does not
-      expire; the free signup credit expires {{ signup_credit_expiry_days }}
-      days after signup.
+      expire.
     </p>
   </div>
 
@@ -295,7 +295,7 @@
           <div class="field-group">
             <label for="auto_reload_amount_usd" class="field-label">Reload amount ($)</label>
             <input type="number" id="auto_reload_amount_usd" name="auto_reload_amount_usd"
-                   class="field-input" min="{{ '%.0f'|format(_min) }}" step="0.01" style="max-width: 200px;"
+                   class="field-input" min="{{ min_auto_reload }}" step="0.01" style="max-width: 200px;"
                    value="{{ display_ledger_usd(wallet.auto_reload_amount_usd if wallet and wallet.auto_reload_amount_usd is not none else 50) }}">
             <div class="field-helper">How much we add per auto reload.</div>
           </div>

@@ -78,7 +78,7 @@
               <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Wallet balance too low</td>
               <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
                 The estimated cost of the job is above your available balance.
-                Top up your wallet, the minimum top-up is $20, then resubmit.
+                Top up your wallet, the minimum top-up is ${{ min_topup }}, then resubmit.
                 You can also pick a smaller preset to lower the estimate.
                 <br><a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a>
                 &middot;

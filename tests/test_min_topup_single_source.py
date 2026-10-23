@@ -1,14 +1,16 @@
-"""The signup credit is quoted in one place and rendered from it.
+"""The minimum top-up is quoted in one place and rendered from it.
 
-The grant amount was hardcoded as the literal "$5" in ~18 templates,
-including legal/terms.html. Raising the grant meant editing all of them,
-and missing one leaves the site advertising an amount it does not pay --
-in the legal terms, an amount it has promised.
+Every page that names the minimum renders the ``min_topup`` jinja global,
+which app.py formats from shared.wallet.MIN_TOPUP_USD. Checkout reads the
+same constant (billing/checkout.py ``_default_min_topup_usd``), with no
+environment override, so the figure a page prints is the floor Checkout
+enforces.
 
-So these tests do not check for "$15". They check the *structural*
-property that makes the amount safe to change: copy renders from
-shared.wallet.SIGNUP_CREDIT_USD via the ``signup_credit`` jinja global,
-and no template hardcodes a dollar figure for it.
+These tests check that structural property rather than "$5": copy renders
+from the constant, no template or Python string retypes the figure, and no
+module reads it from the environment. They also check that no public page
+still promises a signup credit, which new accounts stopped receiving on
+2026-10-23.
 """
 
 from __future__ import annotations
@@ -22,27 +24,24 @@ from unittest import mock
 import pytest
 
 from app import create_app
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import MIN_AUTO_RELOAD_USD, MIN_TOPUP_USD
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO_ROOT / "templates"
 
-# The one regex both the template and the Python guards use. It matches a
-# dollar figure standing in signup-credit context, and only there: a
-# genuinely different $5 (LOW_BALANCE_EMAIL_THRESHOLD in _header.html and
-# send_low_balance.html, the top-up denominations in topup.html, the hold
-# rounding worked example in launch.html, "the nearest $5" in wallet.py)
-# never reaches one of these phrases.
-#
-# There is deliberately NO per-file allowlist. The previous version had one,
-# and templates/tools/_preview.html sat on it carrying two live "$5" strings
-# -- one of them feeding the FAQPage JSON-LD -- for the whole time the wallet
-# was granting $15. An exclusion list is how this guard fails.
-SIGNUP_MONEY = re.compile(
-    # "New accounts start with a $5 wallet balance"
+# A dollar figure standing in minimum-top-up or signup-credit context. A
+# different $5 (LOW_BALANCE_EMAIL_THRESHOLD, the top-up chip labels in
+# topup.html, "the nearest $5" in wallet.py) never reaches one of these
+# phrases. There is deliberately no per-file allowlist.
+MONEY_COPY = re.compile(
+    # "Start with as little as $5", "New accounts start with a $5 balance"
     r"start(?:s|ing)?\s+with\s+(?:an?\s+)?\$\d"
+    r"|as\s+little\s+as\s+\$\d"
+    # "Top up from $5", "minimum top-up is $5"
+    r"|top[\s-]?up\s+from\s+\$\d"
+    r"|minimum\s+top[\s-]?up(?:\s+is)?\s+\$\d"
     # "$5 of balance", but not "a $9.1800 balance against ..."
     r"|\$\d[\d,.]*\s+of\s+balance"
     # "$5 in your wallet", "$5 starting balance", "$5 of compute credit"
@@ -52,90 +51,60 @@ SIGNUP_MONEY = re.compile(
     re.IGNORECASE,
 )
 
+# Pages a new visitor reads before paying.
+_PUBLIC_ROUTES = ("/", "/pricing", "/login", "/help/faq", "/help/getting-started")
+
 
 def _templates():
     for p in TEMPLATES.rglob("*.html"):
         yield p
 
 
-def test_no_template_hardcodes_the_signup_amount():
+def _client():
+    app = create_app()
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def test_no_template_hardcodes_the_amount():
     offenders = []
     for p in _templates():
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if SIGNUP_MONEY.search(line):
+            if MONEY_COPY.search(line):
                 offenders.append(f"{p.relative_to(TEMPLATES)}:{i}: {line.strip()}")
     assert not offenders, (
-        "these quote a hardcoded signup credit instead of rendering "
-        "{{ signup_credit() }}; change the grant and they silently lie:\n  "
-        + "\n  ".join(offenders)
+        "these hardcode a minimum top-up or signup credit instead of "
+        "rendering {{ min_topup }}:\n  " + "\n  ".join(offenders)
     )
 
 
-def test_global_reflects_the_constant():
-    app = create_app()
-    fn = app.jinja_env.globals["signup_credit"]
-    assert fn() == f"{SIGNUP_CREDIT_USD:.0f}"
-    assert fn(True) == f"{SIGNUP_CREDIT_USD:.2f}"
+def test_globals_reflect_the_constants():
+    globals_ = create_app().jinja_env.globals
+    assert globals_["min_topup"] == f"{MIN_TOPUP_USD:.0f}"
+    assert globals_["min_auto_reload"] == f"{MIN_AUTO_RELOAD_USD:.0f}"
+    assert "signup_credit" not in globals_
 
 
-def test_rendered_pages_quote_the_real_grant():
-    """End to end: the number a visitor reads is the number granted."""
-    app = create_app()
-    app.config["TESTING"] = True
-    expected = f"${SIGNUP_CREDIT_USD:.0f}"
-    with app.test_client() as c:
-        for route in ("/", "/pricing", "/login"):
-            body = c.get(route).get_data(as_text=True)
-            assert expected in body, f"{route} does not quote {expected}"
-
-
-def test_legal_terms_quote_the_real_grant():
-    """Terms state a courtesy balance -- it must be the amount actually paid."""
-    app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as c:
-        body = c.get("/terms").get_data(as_text=True)
-    assert f"${SIGNUP_CREDIT_USD:.2f} USD" in body
-
-
-@pytest.mark.parametrize("route", ["/", "/pricing"])
-def test_no_stale_five_dollar_promise(route):
-    """Guard the specific way this broke: the old literal surviving."""
-    app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as c:
+@pytest.mark.parametrize("route", _PUBLIC_ROUTES)
+def test_public_pages_quote_the_minimum_and_no_signup_credit(route):
+    """End to end: a visitor reads the real minimum and no free credit."""
+    with _client() as c:
         body = c.get(route).get_data(as_text=True)
-    if SIGNUP_CREDIT_USD != 5:
-        assert "$5 in your wallet" not in body
-        assert "$5 in their wallet" not in body
+    assert f"${MIN_TOPUP_USD:.0f}" in body, f"{route} does not quote the minimum"
+    for phrase in ("signup credit", "free credit", "signup balance", "compute credit"):
+        assert phrase not in body.lower(), f"{route} still promises {phrase!r}"
+
+
+def test_legal_terms_say_new_accounts_get_no_credit():
+    with _client() as c:
+        body = c.get("/terms").get_data(as_text=True)
+    assert "new accounts receive none" in body
 
 
 # ---------------------------------------------------------------------------
-# Python sources.
-#
-# Everything above this line checks templates. That was the first hole: when
-# the grant went 5.00 -> 15.00, shared/email.py was still reading a separate
-# WALLET_SIGNUP_CREDIT_USD env var for the welcome email, defaulting to the
-# old figure, and the template-only guard passed the whole time.
-#
-# The second hole was subtler and shipped further. The first Python guard
-# looked for exactly one spelling -- os.environ.get / os.getenv with a
-# constant first positional argument -- across exactly five roots. It missed
-# os.environ[...] subscripts, a key built by concatenation, a key held in a
-# variable, os.getenv(key=..., default=...), a renamed parallel constant,
-# and, most of all, a plain hardcoded "$5" in prose. That last one is how
-# blueprints/auth.py told every new user "$5 of compute credit" while the
-# wallet deposited $15, and how three tools/*/meta.py FAQ answers put "$5"
-# into FAQPage JSON-LD.
-#
-# So these do not look for a spelling. They assert the property:
-#   1. no Python source names a signup-credit environment variable,
-#   2. no Python source outside shared/wallet.py holds the figure in a
-#      second constant,
-#   3. no Python source retypes the figure into user-facing prose.
-# All three walk every Python file in the repo, not a curated root list --
-# billing/checkout.py already reads os.environ for a different wallet knob,
-# so "the modules that read env vars" is not a closed set.
+# Python sources: no module reads the figure from the environment, holds it
+# in a second constant, or retypes it into user-facing prose. They walk every
+# tracked Python file, not a curated root list.
 # ---------------------------------------------------------------------------
 
 # The only directory held back. Everything tracked is walked, including
@@ -144,22 +113,16 @@ def test_no_stale_five_dollar_promise(route):
 _SKIP_DIRS = {"tests"}
 
 # The single home. Everything else must derive from it.
-_GRANT_HOME = "shared/wallet.py"
+_HOME = "shared/wallet.py"
 
-# An environment-variable name for the signup credit. Env names are upper
-# snake case, which is also what keeps the codebase's own lower case
-# "signup_credit" identifiers (the jinja global, the ledger row kind) out.
+# An environment-variable name. Env names are upper snake case, which keeps
+# the lower case "signup_credit" identifiers (the ledger row kind) out.
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
-# A second constant holding the figure: a signup-credit-ish name bound to a
-# literal amount. A name bound to a derived value -- f"${SIGNUP_CREDIT_USD:.0f}"
-# in tools/*/meta.py -- is fine and does not match, because the value is not
-# a literal.
-_PARALLEL_NAME = re.compile(
-    r"^_?(?:SIGNUP|WELCOME|NEW_?ACCOUNT|STARTING|INITIAL|FREE|BONUS|GRANT)"
-    r"[A-Z0-9_]*CREDIT[A-Z0-9_]*$"
-    r"|^_?CREDIT[A-Z0-9_]*(?:SIGNUP|WELCOME|GRANT)[A-Z0-9_]*$"
-)
+# A second constant holding the figure: a minimum-top-up name bound to a
+# literal amount. A name bound to a derived value -- f"${MIN_TOPUP_USD:.0f}"
+# in tools/*/meta.py -- does not match, because the value is not a literal.
+_PARALLEL_NAME = re.compile(r"^_?(?:MIN(?:IMUM)?_?TOP_?UP|TOP_?UP_?MIN)[A-Z0-9_]*$")
 
 
 def _python_sources():
@@ -239,19 +202,13 @@ def _is_literal_amount(node) -> bool:
 
 
 def test_the_guard_walks_every_module_that_could_drift():
-    """A guard over zero files passes. Assert the walk is real.
-
-    The previous version listed five roots by hand and was green while
-    tools/*/meta.py and billing/checkout.py sat outside it -- and
-    billing/checkout.py already reads os.environ for a wallet knob, so
-    that omission was the whole class.
-    """
+    """A guard over zero files passes. Assert the walk is real."""
     walked = {rel for rel, _ in _parsed_sources()}
     assert len(walked) > 100, len(walked)
     for expected in (
         "app.py",
         "gunicorn.conf.py",
-        _GRANT_HOME,
+        _HOME,
         "shared/email.py",
         "blueprints/auth.py",
         "billing/checkout.py",
@@ -266,13 +223,11 @@ def test_the_guard_walks_every_module_that_could_drift():
     assert not any(rel.startswith("tests/") for rel in walked)
 
 
-def test_no_python_source_names_a_signup_credit_env_var():
-    """No module reads the grant from the environment, however spelled.
+def test_no_python_source_names_a_minimum_topup_or_signup_credit_env_var():
+    """Neither figure is read from the environment, however spelled.
 
-    Asserted over the name rather than the call: a string that looks like a
-    signup-credit env var has no legitimate reason to exist in this repo, so
-    os.environ[K], os.getenv(key=K), K = "..." then os.getenv(K), and
-    "WALLET_SIGNUP" + "_CREDIT_USD" all fail on the same line of code.
+    Asserted over the name rather than the call, so os.environ[K],
+    os.getenv(key=K) and "WALLET_MIN" + "_TOPUP_USD" all fail.
     """
     offenders = []
     for rel, tree in _parsed_sources():
@@ -280,19 +235,19 @@ def test_no_python_source_names_a_signup_credit_env_var():
             value = _fold(node)
             if value is None or not _ENV_NAME.fullmatch(value):
                 continue
-            if "SIGNUP" in value and "CREDIT" in value:
+            if ("SIGNUP" in value and "CREDIT" in value) or "MIN_TOPUP" in value:
                 offenders.append(f"{rel}:{node.lineno} names {value!r}")
     assert not offenders, (
-        "the signup credit must come from shared.wallet.SIGNUP_CREDIT_USD, "
-        "not an environment variable:\n  " + "\n  ".join(sorted(set(offenders)))
+        f"the minimum top-up must come from {_HOME}, not an environment "
+        "variable:\n  " + "\n  ".join(sorted(set(offenders)))
     )
 
 
-def test_no_python_source_defines_a_parallel_signup_credit_constant():
+def test_no_python_source_defines_a_parallel_minimum_topup_constant():
     """The figure lives in one binding. A second one is a second truth."""
     offenders = []
     for rel, tree in _parsed_sources():
-        if rel == _GRANT_HOME:
+        if rel == _HOME:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
@@ -308,18 +263,16 @@ def test_no_python_source_defines_a_parallel_signup_credit_constant():
                 if _is_literal_amount(value):
                     offenders.append(f"{rel}:{node.lineno} binds {name}")
     assert not offenders, (
-        "these hold the signup credit as their own literal instead of "
-        f"importing it from {_GRANT_HOME}:\n  " + "\n  ".join(offenders)
+        "these hold the minimum top-up as their own literal instead of "
+        f"importing it from {_HOME}:\n  " + "\n  ".join(offenders)
     )
 
 
-def test_no_python_source_hardcodes_the_signup_amount():
-    """The one that actually caught things: a retyped "$5" in prose.
+def test_no_python_source_hardcodes_the_amount():
+    """Same regex as the template guard, over every Python string constant.
 
-    Same regex as the template guard, run over string constants so a
-    hardcoded figure in blueprints/auth.py's signup flash message or in a
-    tools/*/meta.py FAQ answer -- which reaches FAQPage JSON-LD -- fails
-    exactly like a hardcoded figure in a template does.
+    A tools/*/meta.py FAQ answer reaches FAQPage JSON-LD, and the signup
+    flash in blueprints/auth.py reaches every new user.
     """
     offenders = []
     for rel, tree in _parsed_sources():
@@ -328,23 +281,16 @@ def test_no_python_source_hardcodes_the_signup_amount():
                 continue
             if not isinstance(node.value, str):
                 continue
-            match = SIGNUP_MONEY.search(node.value)
+            match = MONEY_COPY.search(node.value)
             if match:
                 offenders.append(f"{rel}:{node.lineno}: {match.group(0)!r}")
     assert not offenders, (
-        "these quote a hardcoded signup credit instead of formatting "
-        "shared.wallet.SIGNUP_CREDIT_USD; change the grant and they "
-        "silently lie:\n  " + "\n  ".join(offenders)
+        "these hardcode a minimum top-up or signup credit instead of "
+        "formatting shared.wallet.MIN_TOPUP_USD:\n  " + "\n  ".join(offenders)
     )
 
 
-def test_signup_credit_email_states_the_real_grant():
-    """The welcome email quotes the amount the wallet actually grants.
-
-    The goal-level version of the test above: even if some future override
-    is reintroduced by a route this guard does not walk, the email itself
-    must still agree with the balance.
-    """
+def test_welcome_email_states_the_minimum_and_no_credit():
     import shared.email as email_mod
 
     captured = {}
@@ -359,8 +305,35 @@ def test_signup_credit_email_states_the_real_grant():
             email_mod, "_resolve_user_email", return_value="x@example.com"
         ),
     ):
-        assert email_mod.send_signup_credit_email(user_id="u1") is True
+        assert email_mod.send_welcome_email(user_id="u1") is True
 
-    expected = f"${SIGNUP_CREDIT_USD:.0f}"
-    assert expected in captured["subject"], captured["subject"]
-    assert expected in captured["html"]
+    assert f"${MIN_TOPUP_USD:.0f}" in captured["html"]
+    assert "credit" not in captured["subject"].lower()
+    assert "credit" not in captured["html"].lower()
+
+
+def test_auto_reload_amount_keeps_its_own_floor(monkeypatch):
+    """Auto reload clamps to MIN_AUTO_RELOAD_USD, not the $5 top-up minimum."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    assert MIN_AUTO_RELOAD_USD > MIN_TOPUP_USD
+    client = mock.MagicMock()
+    with _client() as c:
+        with c.session_transaction() as sess:
+            sess["user_id"] = "u-1"
+            sess["user_email"] = "u@example.com"
+        with (
+            mock.patch(
+                "blueprints.wallet.load_user_context",
+                return_value=SimpleNamespace(user_id="u-1", email="u@example.com"),
+            ),
+            mock.patch("shared.credits.get_service_client", return_value=client),
+        ):
+            resp = c.post(
+                "/account/wallet/auto-reload",
+                data={"auto_reload_amount_usd": str(MIN_TOPUP_USD)},
+            )
+    assert resp.status_code == 302
+    row = client.table.return_value.update.call_args.args[0]
+    assert row["auto_reload_amount_usd"] == float(MIN_AUTO_RELOAD_USD)

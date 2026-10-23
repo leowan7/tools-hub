@@ -1,4 +1,4 @@
-"""Which tools the signup credit admits at their SMALLEST REAL RUN, and which it does not.
+"""Which tools a minimum top-up admits at their SMALLEST REAL RUN, and which it does not.
 
 What admits a job is the CUSHIONED HOLD: ``shared/wallet_guard`` reserves
 ``cushioned_hold_usd`` via ``shared.wallet.reserve_hold``, which refuses on
@@ -8,18 +8,17 @@ A live-charging run reserves no hold; what admits it is ``live_start_usd``
 (``shared/wallet_guard.py`` ``requires_wallet``, the ``0 < balance <
 live_start_usd`` refusal), so that is the figure measured for it here.
 
-History: this file used to assert the credit admitted EVERY tool's smallest run,
-which is why the credit went $15 -> $20 on 2026-09-10. On 2026-09-28 Leo cut the
-credit to $5 on purpose (the 2026-09-28 funnel review, section 7, which is not
-in this repository: at $20 nobody ever ran out). At $5 the binder design tools and OpenDDE need a top-up, and the copy
-now says so (templates/pricing.html, templates/help/getting_started.html,
-templates/email/send_signup_credit.html). This file pins that split, so a price,
-cap or credit change that moves a tool across it fails here and sends someone to
-re-read that copy.
+History: this file used to measure the signup credit. On 2026-10-23 new
+accounts stopped receiving a credit and the minimum top-up became the entry
+amount, so it now measures ``MIN_TOPUP_USD``. The copy that names the tools a
+minimum top-up cannot start (templates/pricing.html,
+templates/help/getting_started.html, templates/help/faq.html) names exactly
+NEEDS_TOPUP. This file pins that split, so a price, cap or minimum change that
+moves a tool across it fails here and sends someone to re-read that copy.
 
-A tool is "needs a top-up" when its smallest-run hold leaves less than $1.00 of
-the credit: a hold EQUAL to the credit admits a user who has spent nothing
-and refuses one who has spent a cent.
+A tool "needs a larger balance" when its smallest-run hold leaves less than
+$1.00 of the minimum top-up: a hold EQUAL to it admits a user who has spent
+nothing and refuses one who has spent a cent.
 
 At one unit of the scaling parameter ``compute_hard_cap`` clamps its ratio to
 1.0, so for the capped tools the hold is ``base_hard_cap_usd``; see
@@ -33,7 +32,7 @@ from decimal import Decimal
 import pytest
 
 from shared import wallet_estimates as we
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import MIN_TOPUP_USD
 from shared.wallet_guard import live_charging_enabled, live_start_usd
 
 # Both p90 regimes are evaluated and the LARGER hold is used: the historical-p90
@@ -42,8 +41,8 @@ _P90_REGIMES = {"bootstrap": None, "p90_shrunk": 120.0}
 
 _HEADROOM = Decimal("1.00")
 
-# Tools a brand-new user cannot run from the signup credit alone. The copy
-# listed in the module docstring names exactly this group.
+# Tools a minimum top-up cannot start. The copy listed in the module
+# docstring names exactly this group.
 NEEDS_TOPUP = {
     "bindcraft",
     "boltzgen",
@@ -54,17 +53,18 @@ NEEDS_TOPUP = {
 # estimates were cut to measured runtimes (TOOL_SPECS in
 # shared/wallet_estimates.py). The copy ("most binder design runs ... need a
 # top-up") was read against this set then. rfdiffusion (#427) left it when it
-# went live: the credit covers its live_start_usd. bindcraft went live in #431
+# went live: $5 covers its live_start_usd. bindcraft went live in #431
 # and stays, because its live_start_usd is its $8.00 cap. Leo, 2026-10-16: the
 # copy stays as it is.
 # pxdesign left this set when Leo set its live start minimum at $2.00 on
-# 2026-10-21 (shared/wallet_guard.py::live_start_usd): the credit admits a
+# 2026-10-21 (shared/wallet_guard.py::live_start_usd): $5 admits a
 # pxdesign run, where its cushioned hold refused one -- that hold is $9.4371
 # with no p90 history (cushioned_hold_usd(None, "pxdesign", {"num_designs": 1}),
 # live charging off), NOT the $13.00 base cap, which is only its ceiling. The
-# threshold that puts pxdesign back is not the credit but the credit less
+# threshold that puts pxdesign back is not MIN_TOPUP_USD but MIN_TOPUP_USD less
 # _HEADROOM: any start minimum above $4.00, the $13.00 cap among them, and this
-# set goes with it. The copy has not been re-read against pxdesign leaving.
+# set goes with it. Since 2026-10-23 the pricing, getting started and FAQ copy
+# names exactly this set as needing more than the minimum top-up.
 
 
 def _smallest_run_params(spec: we.ToolSpec) -> dict:
@@ -91,26 +91,26 @@ def _worst_hold(slug: str, monkeypatch) -> tuple[Decimal, str]:
 
 
 @pytest.mark.parametrize("slug", sorted(set(we.TOOL_SPECS) - NEEDS_TOPUP))
-def test_signup_credit_covers_smallest_run(slug: str, monkeypatch) -> None:
-    """Every tool outside NEEDS_TOPUP runs one unit from the credit, with $1 spare."""
+def test_min_topup_covers_smallest_run(slug: str, monkeypatch) -> None:
+    """Every tool outside NEEDS_TOPUP runs one unit from a minimum top-up, with $1 spare."""
     hold, regime = _worst_hold(slug, monkeypatch)
-    assert hold + _HEADROOM <= SIGNUP_CREDIT_USD, (
+    assert hold + _HEADROOM <= MIN_TOPUP_USD, (
         f"{slug} ({regime}): the smallest real run holds {hold}, leaving under "
-        f"{_HEADROOM} of the {SIGNUP_CREDIT_USD} signup credit. Either add it to "
-        f"NEEDS_TOPUP and fix the copy that says the credit covers it, or lower "
+        f"{_HEADROOM} of the {MIN_TOPUP_USD} minimum top-up. Either add it to "
+        f"NEEDS_TOPUP and fix the copy that says a minimum top-up starts it, or lower "
         f"its base_hard_cap_usd."
     )
 
 
-def test_needs_topup_is_exactly_the_tools_the_credit_cannot_run(monkeypatch) -> None:
+def test_needs_topup_is_exactly_the_tools_the_minimum_cannot_run(monkeypatch) -> None:
     """Both directions: a NEEDS_TOPUP tool that became affordable fails too."""
     short = set()
     for slug in we.TOOL_SPECS:
         hold, _ = _worst_hold(slug, monkeypatch)
-        if hold + _HEADROOM > SIGNUP_CREDIT_USD:
+        if hold + _HEADROOM > MIN_TOPUP_USD:
             short.add(slug)
     assert short == NEEDS_TOPUP, (
-        f"tools the {SIGNUP_CREDIT_USD} credit cannot run moved: now {sorted(short)}. "
+        f"tools a {MIN_TOPUP_USD} minimum top-up cannot run moved: now {sorted(short)}. "
         "Update NEEDS_TOPUP and the copy named in this module's docstring."
     )
 

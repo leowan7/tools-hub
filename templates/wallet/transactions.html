@@ -29,7 +29,7 @@
   <div class="hero">
     <h1>Transaction history</h1>
     <p class="subtitle">
-      Every ledger entry: signup credit, top ups, holds, charges, releases.
+      Every ledger entry: top ups, holds, charges, releases and any signup credit.
       The balance after column shows what you had right after each entry
       cleared.
     </p>
@@ -213,9 +213,8 @@
         {% endif %}
       {% else %}
         <p class="wallet-section-body">
-          No transactions match this filter. New users start with one
-          signup credit entry and the rest of the ledger fills as you run
-          jobs or top up.
+          No transactions match this filter. The ledger fills as you top up
+          and run jobs.
         </p>
       {% endif %}
     </div>
@@ -229,7 +228,7 @@
     <div class="panel-body">
       <dl class="wallet-tx-legend">
         <dt><span class="wallet-tx-kind wallet-tx-kind-signup_credit">signup credit</span></dt>
-        <dd>One time ${{ signup_credit() }} signup balance on first account creation, usable for {{ signup_credit_expiry_days }} days.</dd>
+        <dd>One time starting balance given to accounts created before October 23, 2026, usable for {{ signup_credit_expiry_days }} days. New accounts get none.</dd>
 
         <dt><span class="wallet-tx-kind wallet-tx-kind-signup_credit_expiry">signup credit expiry</span></dt>
         <dd>The part of the signup balance still unspent {{ signup_credit_expiry_days }} days after it was granted, removed. Money you added is never touched.</dd>
