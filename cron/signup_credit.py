@@ -159,9 +159,9 @@ def run(*, now: Optional[datetime] = None) -> dict:
             except Exception:
                 logger.warning("signup_credit: claim release failed for %s", uid, exc_info=True)
     if len(refused) >= 2 and not summary["reminded"]:
-        # Every send refused looks like a sender-side fault (e.g. an unverified
-        # sending domain), so fail the run and let those addresses retry.
-        logger.error("signup_credit: every attempted reminder was refused")
+        # Several refusals and no send looks like a sender-side fault (e.g. an
+        # unverified sending domain), so fail the run and let those addresses retry.
+        logger.error("signup_credit: %d reminders refused and none sent", len(refused))
         summary["errors"] += 1
         for uid in refused:
             try:
