@@ -74,8 +74,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
 
     An address Resend refuses counts under ``invalid_recipients``, not
     ``errors``, and keeps its claim, so it is not retried. Two or more
-    refusals with no reminder sent and no other error count one error and
-    release those claims.
+    refusals with no reminder sent count one error and release those claims.
     """
     from shared import wallet  # noqa: PLC0415
     from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
@@ -159,7 +158,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
                 _release_reminder(client, uid, now_iso)
             except Exception:
                 logger.warning("signup_credit: claim release failed for %s", uid, exc_info=True)
-    if len(refused) >= 2 and not summary["reminded"] and not summary["errors"]:
+    if len(refused) >= 2 and not summary["reminded"]:
         # Every send refused looks like a sender-side fault (e.g. an unverified
         # sending domain), so fail the run and let those addresses retry.
         logger.error("signup_credit: every attempted reminder was refused")

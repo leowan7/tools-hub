@@ -412,6 +412,18 @@ def test_every_reminder_refused_is_an_error_and_releases_the_claims(db, resend):
     assert db.wallet("second")["signup_credit_reminder_sent_at"] is None
 
 
+def test_every_reminder_refused_releases_the_claims_despite_an_expiry_error(db, resend, monkeypatch):
+    for uid in (UID, "second"):
+        resend.refused[uid] = _Resp(422, {"name": "validation_error", "message": _MESSAGE_422})
+    db.new_wallet("expired")  # already past expiry
+    monkeypatch.setattr(wallet, "expire_signup_credit", lambda _uid: "error")
+    result = _cli(["credit:expire"])
+    assert result.exit_code == 1, result.output
+    assert "invalid_recipients=2 errors=2" in result.output
+    assert db.wallet()["signup_credit_reminder_sent_at"] is None
+    assert db.wallet("second")["signup_credit_reminder_sent_at"] is None
+
+
 @pytest.mark.parametrize("resp", [
     _Resp(500, {"message": "internal"}),
     _Resp(429, {"message": "rate limited"}),

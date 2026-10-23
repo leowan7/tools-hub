@@ -89,7 +89,9 @@ source and env vars):
   `signup_credit_expiry` ledger row. Money the user added is never
   removed. Wallets with a job still holding funds are skipped and
   retried on the next run. An address Resend refuses is counted under
-  `invalid_recipients`, not as an error, and is not emailed again. Prints
+  `invalid_recipients`, not as an error, and is not emailed again, unless
+  two or more reminders were refused and none sent: that is one error and
+  those addresses are retried. Prints
   `credit:expire reminded=N expired=N skipped=N invalid_recipients=N errors=N`.
 - `reengagement:send` (`cron/reengagement.py`) emails users with a
   balance who have not run anything for 14 days, at most once per 30
