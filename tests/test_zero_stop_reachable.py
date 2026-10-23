@@ -3,9 +3,10 @@
 The meter stops a run when what it owes passes the balance
 (shared/jobs.py::meter_live_runs, ``debit["short"] > 0``). What it owes is
 clamped to ``compute_hard_cap`` of the stored params (shared/wallet.py::live_due_usd),
-and the run starts only on a balance of at least ``live_start_usd``. So the stop
-can fire only when the cap clears the start minimum by more than one 60 s
-heartbeat's charge. Each case builds the job's inputs the way submit stores them
+and the start gate refuses a positive balance below ``live_start_usd``
+(shared/wallet_guard.py, ``0 < pre.balance_usd < live_start_usd``). So a run
+admitted at the start minimum hits the stop only when the cap clears that
+minimum by more than one 60 s heartbeat's charge. Each case builds the job's inputs the way submit stores them
 (the adapter's ``validate``; a proteina child as compute_campaigns._dispatch_chunk
 rebuilds it) and runs the meter on a balance of start minimum plus one heartbeat.
 """
