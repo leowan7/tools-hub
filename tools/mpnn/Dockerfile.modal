@@ -78,6 +78,10 @@ RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 # ships NumPy-2-compatible bindings) lands in this image.
 RUN python3 -m pip install --no-cache-dir requests biopython "numpy<2"
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN python3 -m pip install --no-cache-dir "certifi==2026.10.23"
+
 # ---------- Bake a small smoke fixture ----------
 # 1HEW (~130 residues, single chain) ships in tools-hub/static/example/.
 # Smoke preset runs against this so we can ship without needing PD-L1 or

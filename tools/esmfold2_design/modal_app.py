@@ -366,6 +366,9 @@ image = (
         f"&& test -f /opt/binder_design.py "
         f"&& rm -rf /tmp/esm.tar.gz /tmp/esm-{_ESM_GIT_SHA}",
     )
+    # certifi: the requirements.txt floor (#452, eMudhra key compromise). Its
+    # own layer, so the micromamba and pip layers above keep their build cache.
+    .pip_install("certifi==2026.10.23")
     .env({
         "HF_HOME": "/models",
         "HF_XET_HIGH_PERFORMANCE": "1",

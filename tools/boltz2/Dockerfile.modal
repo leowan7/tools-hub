@@ -64,6 +64,10 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir "boltz==2.2.1" "torch==2.4.0" "requests==2.32.3" \
         "numpy==1.26.4" "pandas==2.3.2" "rdkit==2025.3.6" "types-requests==2.32.4.20250809"
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN python3 -m pip install --no-cache-dir "certifi==2026.10.23"
+
 # Enforces the two load-bearing claims at build time: that torch still matches
 # torchvision, and that nothing boltz imports needs cuequivariance. The op probe
 # fails on an ABI mismatch; `boltz --help` imports boltz.main, which imports

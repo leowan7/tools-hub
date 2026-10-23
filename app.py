@@ -1075,6 +1075,7 @@ def create_app() -> Flask:
         print(
             f"credit:expire reminded={summary['reminded']} "
             f"expired={summary['expired']} skipped={summary['skipped']} "
+            f"invalid_recipients={summary['invalid_recipients']} "
             f"errors={summary['errors']}",
             flush=True,
         )
