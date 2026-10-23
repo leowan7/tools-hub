@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
-from shared.wallet import SIGNUP_CREDIT_USD
+from shared.wallet import MIN_TOPUP_USD
 
 from shared import email as email_mod
 
@@ -47,9 +47,9 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("RESEND_API_KEY", "test-key-xxx")
     monkeypatch.setenv("EMAIL_FROM", "Ranomics Tools <noreply@tools.ranomics.com>")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://tools.ranomics.com")
-    # No WALLET_SIGNUP_CREDIT_USD here on purpose: the signup-credit email
-    # now reads shared.wallet.SIGNUP_CREDIT_USD directly, so there is no
-    # env override left to set. Setting one would prove nothing.
+    # No WALLET_MIN_TOPUP_USD here on purpose: the welcome email reads
+    # shared.wallet.MIN_TOPUP_USD directly, so there is no env override left
+    # to set. Setting one would prove nothing.
     monkeypatch.setenv("SUPPORT_EMAIL", "support@ranomics.com")
     # Marketing senders refuse to send without an unsubscribe link, which is
     # signed with this key (shared.email.unsubscribe_url).
@@ -151,26 +151,26 @@ def _assert_dash_free(body_html: str, what: str) -> None:
 # ===========================================================================
 
 
-class TestSignupCredit:
+class TestWelcome:
     def test_renders_and_sends(self, env, resolve_email, mock_resend):
-        ok = email_mod.send_signup_credit_email(user_id=TEST_USER_ID)
+        ok = email_mod.send_welcome_email(user_id=TEST_USER_ID)
         assert ok is True
-        _assert_resend_call_shape(mock_resend, "signup_credit")
+        _assert_resend_call_shape(mock_resend, "welcome")
         body = mock_resend["json"]
-        # Subject and body quote the grant. Assert against the constant, not
-        # a literal: this test hardcoded "$5" and so kept passing while the
-        # grant moved to $15 and the email still advertised the old figure.
-        expected = f"${SIGNUP_CREDIT_USD:.0f}"
-        assert expected in body["subject"]
-        assert "compute credit" in body["subject"].lower()
-        # Body must contain the credit amount and the catalog URL.
-        assert expected in body["html"]
+        assert "credit" not in body["subject"].lower()
+        # Body quotes the minimum top-up from the constant, and the catalog URL.
+        assert f"${MIN_TOPUP_USD:.0f}" in body["html"]
+        assert "credit" not in body["html"].lower()
         assert "tools.ranomics.com" in body["html"]
-        _assert_dash_free(body["html"], "signup_credit")
+        assert body["subject"] == "Welcome to Ranomics tools"
+        # Leo's approved text names no tool that needs a larger balance.
+        for name in ("BindCraft", "BoltzGen", "ESMFold2", "OpenDDE"):
+            assert name not in body["html"], name
+        _assert_dash_free(body["html"], "welcome")
 
     def test_no_email_returns_false(self, env, mock_resend):
         with patch.object(email_mod, "_resolve_user_email", return_value=None):
-            ok = email_mod.send_signup_credit_email(user_id=TEST_USER_ID)
+            ok = email_mod.send_welcome_email(user_id=TEST_USER_ID)
         assert ok is False
         # Resend should not have been called.
         assert mock_resend == {}
@@ -371,7 +371,7 @@ class TestResendContract:
     from/to/subject/html shape."""
 
     SENDER_CALLS = [
-        ("send_signup_credit_email",
+        ("send_welcome_email",
          {"user_id": TEST_USER_ID}),
         ("send_topup_confirmation_email",
          {"user_id": TEST_USER_ID, "amount_usd": 20, "new_balance_usd": 25}),

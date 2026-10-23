@@ -9,9 +9,6 @@ Lifecycle
 ---------
 ::
 
-    record_signup_credit()                  # one-time SIGNUP_CREDIT_USD grant
-        |
-        v
     top_up_wallet()                         # Stripe Checkout success webhook
         |
         v
@@ -73,8 +70,16 @@ logger = logging.getLogger(__name__)
 # Multiplier applied to raw Modal compute cost when charging the user.
 WALLET_MARKUP = Decimal("1.70")
 
-# Minimum top-up amount allowed via Stripe Checkout.
-MIN_TOPUP_USD = Decimal("20.00")
+# Minimum top-up amount allowed via Stripe Checkout. Templates read it through
+# the ``min_topup`` jinja global (app.py); Python copy imports it. The top-up
+# page's $5 preset chip is a literal (tests/test_min_topup_single_source.py
+# exempts chip labels).
+MIN_TOPUP_USD = Decimal("5.00")
+
+# Floor on the auto-reload amount, enforced in
+# blueprints.wallet.wallet_auto_reload. Kept at $20 when MIN_TOPUP_USD went to
+# $5 (Leo, 2026-10-23; docs/SCOPE-START-WITH-5-2026-10-23.md, Decisions).
+MIN_AUTO_RELOAD_USD = Decimal("20.00")
 
 # DB default for the (now inert) daily_spend_cap_usd column. Phase 2
 # fund-and-drain retired the daily cap (migration 0035 dropped the block
@@ -85,80 +90,10 @@ DEFAULT_DAILY_CAP_USD = Decimal("200.00")
 # Default monthly auto-reload safety cap.
 DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD = Decimal("1000.00")
 
-# Signup credit grant amount.
-#
-# Raised 5.00 -> 15.00 (2026-08-18). The tool pages now recommend a named
-# "pilot" as a new user's first run, and the pricier pilots cost well over $5
-# -- so a $5 grant meant the very first action the site recommended cost more
-# than the balance it had just advertised, and a new user's real first step was
-# a top-up. 15.00 still clears the most expensive pilot: the priciest are
-# proteina and pxdesign at $12.58, leaving $2.42. The 2026-09-01 gpu_class
-# corrections moved the band (bindcraft $4.37 -> $6.29, pxdesign $8.74 ->
-# $12.58, boltzgen $8.74 -> $6.07). esmfold2-design's pilot is $9.86, under
-# both. opendde is the one expensive tool with no PILOT at all ($14.79 a run;
-# see the note in tools/opendde/meta.py for why it publishes no pilot card).
-# (That paragraph is kept for the history. Its SIZING RULE was wrong -- see
-# below.)
-#
-# Raised 15.00 -> 20.00 (2026-09-10). This is a LIVE DEFECT FIX, not a
-# precaution, and an earlier draft of this comment got that backwards by
-# telling the story as if esmfold2-design's session-ceiling change had created
-# the problem. Measured at the commit before that change, with the credit at
-# $15.00, the 1-unit cushioned holds were:
-#
-#     proteina         $15.0000    headroom $0.0000
-#     opendde          $15.0000    headroom $0.0000
-#     esmfold2-design  $14.7921    headroom $0.2079
-#
-# proteina and opendde were ALREADY at exactly zero headroom in production,
-# refusing any new user who had spent a single cent. esmfold2-design was the
-# one that still had room, and it joined them when its ceiling moved
-# 3600 -> 5400 s and its floor reached the $15/seed cap.
-#
-# WHY THE OLD RULE MISSED IT. It sized the credit against the displayed PILOT
-# PRICE. What admits a job is the CUSHIONED HOLD, and on any tool carrying a
-# worst_case_gpu_seconds floor the hold sits well above the price:
-# esmfold2-design displays $9.87 (raw estimate $9.8614; the panel ceils to
-# cents, templates/wallet/_partials.html fmtUp) and holds $15.00. A credit that
-# clears every price can still refuse those tools outright.
-#
-# WHERE THE REFUSAL ACTUALLY HAPPENS, since this is easy to get wrong: the
-# guard calls wallet_preflight on the point ESTIMATE first
-# (shared/wallet_guard.py), which passes. It then calls reserve_hold with the
-# cushioned hold, and reserve_hold runs its OWN wallet_preflight on THAT amount
-# and returns None -- so the refusal is in Python and the SQL is never reached.
-# (try_hold_for_job does carry a balance check of its own, but the live
-# definition is migration 0035, not the 0020 an earlier draft of this comment
-# cited.) The guard then re-preflights against the held amount to render an
-# honest deficit. Note hold >= estimate always, but NOT strictly: both are
-# clamped by the same compute_hard_cap, so they are EQUAL whenever the estimate
-# saturates the cap -- boltzgen at its own documented pool size
-# (num_designs=200) quotes $300.00 and holds $300.00.
-#
-# THE OLD RULE was that this constant must clear the largest 1-unit hold of
-# every tool, which is why it went to 20.00. That rule is retired; see below.
-# Past one unit no credit could cover a scaled-up submit anyway: af2's batch
-# holds $39.32 at MAX_BATCH=50 records. Note the panel quotes the PRICE while
-# the HOLD is what refuses -- a price/hold split in blueprints/wallet.py that
-# this constant cannot fix.
-#
-# Cut 20.00 -> 5.00 (2026-09-28, Leo). At $20 nobody had ever run out of free
-# credit (the 2026-09-28 funnel review, section 7; that document is not in
-# this repository), so the credit never led anyone
-# to a top-up. At $5 the structure prediction and sequence tools still run
-# from the credit with $1.00 spare, and the binder design tools with a hold
-# over $4.00 (plus opendde) need a top-up; the copy says so.
-# ``tests/test_signup_credit_covers_smallest_run.py`` pins which tools fall on
-# each side (its NEEDS_TOPUP set), so a price, cap or credit change that moves
-# one fails there. Existing grants are not touched: expiry reads the
-# signup_credit ledger row, not this constant.
-#
-# This number is user-visible in ~18 places. Do NOT hardcode it in copy:
-# templates read it through the ``signup_credit`` jinja global and Python
-# callers import this constant, both sourced from here. There is no env
-# override -- WALLET_SIGNUP_CREDIT_USD was removed 2026-08-18 because it
-# changed only the welcome email, never the grant.
-SIGNUP_CREDIT_USD = Decimal("5.00")
+# No signup credit is granted from 2026-10-23 (Leo: "we are removing free
+# credits, start with as little as 5 dollars"). Grants made before then keep
+# their signup_credit ledger row and are still removed by
+# expire_signup_credit() below.
 
 # Unspent signup credit is removed this many days after the grant. The same
 # 30 is the column default in supabase/migrations/0043_signup_credit_expiry.sql;
@@ -252,7 +187,7 @@ def _round_up_topup_amount(deficit: Decimal) -> Decimal:
     """Round the deficit up to the nearest $5, with a floor of MIN_TOPUP_USD.
 
     Mirrors the formula in the plan's Moment 2 spec:
-    ``ceil((estimate - balance) / 5) * 5`` with a $20 minimum.
+    ``ceil((estimate - balance) / 5) * 5`` with a ``MIN_TOPUP_USD`` minimum.
 
     Lives here (not in the route layer) so both the wallet-gate renderer
     (:func:`shared.wallet_guard._render_topup_gate`) and the reactive
@@ -327,8 +262,7 @@ def compute_charge_usd(gpu_seconds: float, gpu_class: Optional[str] = None) -> D
 def get_or_create_wallet(user_id: str) -> Optional[dict]:
     """Return the ``user_wallets`` row for ``user_id``, creating it if absent.
 
-    Idempotent. On a fresh row the helper grants the signup credit by
-    calling :func:`record_signup_credit`.
+    Idempotent. On a fresh row the helper sends the welcome email.
     """
     client = get_service_client()
     if client is None:
@@ -344,7 +278,7 @@ def get_or_create_wallet(user_id: str) -> Optional[dict]:
         existing = getattr(response, "data", None)
         if existing:
             return existing
-        return _create_wallet_with_signup_credit(client, user_id)
+        return _create_wallet(client, user_id)
     except Exception:
         logger.warning(
             "get_or_create_wallet failed for %s", user_id, exc_info=True
@@ -371,8 +305,8 @@ def _wallet(user_id: str) -> Optional[dict]:
         return None
 
 
-def _create_wallet_with_signup_credit(client, user_id: str) -> Optional[dict]:
-    """Insert a fresh wallet row + the signup credit ledger entry."""
+def _create_wallet(client, user_id: str) -> Optional[dict]:
+    """Insert a fresh wallet row at a $0 balance and send the welcome email."""
     try:
         response = (
             client.table("user_wallets")
@@ -391,7 +325,7 @@ def _create_wallet_with_signup_credit(client, user_id: str) -> Optional[dict]:
         )
         data = getattr(response, "data", None) or []
         if not data:
-            logger.error("_create_wallet_with_signup_credit: empty insert response.")
+            logger.error("_create_wallet: empty insert response.")
             return None
         wallet = data[0]
     except Exception:
@@ -399,62 +333,8 @@ def _create_wallet_with_signup_credit(client, user_id: str) -> Optional[dict]:
             "Could not create wallet row for %s", user_id, exc_info=True
         )
         return None
-    record_signup_credit(user_id)
+    _send_email_safe("send_welcome_email", user_id=user_id)
     return _wallet(user_id) or wallet
-
-
-def record_signup_credit(user_id: str) -> bool:
-    """Grant the one-time signup credit. Idempotent on ``user_id``.
-
-    Inserts a ``signup_credit`` ledger row with a synthetic unique key
-    so a duplicate call returns without crediting twice.
-    """
-    client = get_service_client()
-    if client is None:
-        return False
-    synthetic_event_id = f"signup_credit:{user_id}"
-    try:
-        dup = (
-            client.table("wallet_transactions")
-            .select("id")
-            .eq("stripe_event_id", synthetic_event_id)
-            .limit(1)
-            .execute()
-        )
-        if getattr(dup, "data", None):
-            logger.info("record_signup_credit: idempotent skip for %s", user_id)
-            return True
-    except Exception:
-        logger.warning(
-            "record_signup_credit: dup check failed for %s", user_id, exc_info=True
-        )
-        # Continue. The SQL helper will fail loudly if there is a real conflict.
-    try:
-        client.rpc(
-            "credit_wallet",
-            {
-                "p_user_id": user_id,
-                "p_amount_usd": float(SIGNUP_CREDIT_USD),
-                "p_kind": "signup_credit",
-                "p_stripe_event_id": synthetic_event_id,
-                "p_stripe_payment_intent_id": None,
-            },
-        ).execute()
-        try:
-            from shared.email import send_signup_credit_email  # noqa: PLC0415
-            send_signup_credit_email(user_id=user_id)
-        except Exception:  # pragma: no cover (email is best-effort)
-            logger.warning(
-                "record_signup_credit: email dispatch failed for %s",
-                user_id, exc_info=True,
-            )
-        return True
-    except Exception:
-        logger.error(
-            "record_signup_credit: credit_wallet failed for %s",
-            user_id, exc_info=True,
-        )
-        return False
 
 
 # ---------------------------------------------------------------------------

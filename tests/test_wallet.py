@@ -44,7 +44,6 @@ from shared.wallet import (
     REASON_PER_TOOL_CAP,
     REASON_SELF_SERVE_CEILING,
     REASON_WALLET_FROZEN,
-    SIGNUP_CREDIT_USD,
     SELF_SERVE_CEILING_USD,
     WALLET_MARKUP,
     auto_reload_if_needed,
@@ -53,7 +52,6 @@ from shared.wallet import (
     freeze_wallet_on_dispute,
     get_or_create_wallet,
     gpu_usd_per_second,
-    record_signup_credit,
     release_hold,
     requires_wallet,
     reserve_hold,
@@ -544,46 +542,28 @@ def test_compute_charge_usd_applies_markup():
     )
 
 
-# --- Wallet bootstrap + signup credit --------------------------------------
+# --- Wallet bootstrap --------------------------------------------------------
 
 
-def test_get_or_create_wallet_creates_with_signup_credit(store, fake_client, email_log):
+def test_get_or_create_wallet_creates_at_zero_with_no_credit(store, fake_client, email_log):
     wallet_row = get_or_create_wallet(USER_A)
     assert wallet_row is not None
     assert wallet_row["user_id"] == USER_A
-    # Signup credit landed
-    txs = [
-        tx for tx in store.tables["wallet_transactions"]
-        if tx["user_id"] == USER_A and tx["kind"] == "signup_credit"
+    assert Decimal(str(wallet_row["balance_usd"])) == Decimal("0")
+    assert not [
+        tx for tx in store.tables["wallet_transactions"] if tx["user_id"] == USER_A
     ]
-    assert len(txs) == 1
-    assert Decimal(str(txs[0]["amount_usd"])) == SIGNUP_CREDIT_USD
-    # Balance reflects the credit
-    assert Decimal(str(wallet_row["balance_usd"])) == SIGNUP_CREDIT_USD
+    assert [name for name, _ in email_log] == ["send_welcome_email"]
 
 
-def test_get_or_create_wallet_idempotent(store, fake_client):
+def test_get_or_create_wallet_idempotent(store, fake_client, email_log):
     first = get_or_create_wallet(USER_A)
     second = get_or_create_wallet(USER_A)
     assert first is not None and second is not None
     # No duplicate wallet row
     assert len([r for r in store.tables["user_wallets"] if r["user_id"] == USER_A]) == 1
-    # No duplicate signup credit
-    credits = [
-        tx for tx in store.tables["wallet_transactions"]
-        if tx["user_id"] == USER_A and tx["kind"] == "signup_credit"
-    ]
-    assert len(credits) == 1
-
-
-def test_record_signup_credit_idempotent(store):
-    record_signup_credit(USER_A)
-    record_signup_credit(USER_A)
-    credits = [
-        tx for tx in store.tables["wallet_transactions"]
-        if tx["user_id"] == USER_A and tx["kind"] == "signup_credit"
-    ]
-    assert len(credits) == 1
+    # One welcome email, sent on creation only
+    assert [name for name, _ in email_log] == ["send_welcome_email"]
 
 
 # --- Top-ups ---------------------------------------------------------------
@@ -1830,14 +1810,14 @@ def test_low_balance_email_fires_once_on_crossing(store, email_log):
 
 
 def test_low_balance_email_not_sent_to_a_wallet_already_below(store, email_log):
-    # A fresh $5 signup-credit wallet after its first cent of spend.
+    # A $5 wallet after its first cent of spend.
     _seed_wallet(store, USER_A, balance=Decimal("4.90"))
     _run_job(USER_A)
     assert _low_balance_emails(email_log) == 0
 
 
-def test_low_balance_email_sent_once_to_a_fresh_signup_wallet(store, email_log):
-    # A new account starts at exactly the threshold: warned after its first run, not after later ones.
+def test_low_balance_email_sent_once_to_a_wallet_at_the_threshold(store, email_log):
+    # A wallet at exactly the threshold: warned after its first run, not after later ones.
     _seed_wallet(store, USER_A, balance=Decimal("5.00"))
     _run_job(USER_A)
     assert _low_balance_emails(email_log) == 1
@@ -1858,21 +1838,22 @@ def test_preflight_email_fires_on_cap_block(store, email_log):
 
 
 def test_round_up_topup_amount_boundaries():
-    """_round_up_topup_amount: ceil to nearest $5, floored at MIN_TOPUP_USD ($20).
+    """_round_up_topup_amount: ceil to nearest $5, floored at MIN_TOPUP_USD ($5).
 
     Guards the Commit-0 relocation of this helper from app.py into shared.wallet.
     """
     from shared.wallet import MIN_TOPUP_USD, _round_up_topup_amount
 
-    assert MIN_TOPUP_USD == Decimal("20.00")
+    assert MIN_TOPUP_USD == Decimal("5.00")
     # deficit <= 0 short-circuits straight to the floor
-    assert _round_up_topup_amount(Decimal("0")) == Decimal("20.00")
-    assert _round_up_topup_amount(Decimal("-5")) == Decimal("20.00")
-    # small deficits round up to $5 then get floored to the $20 minimum
-    assert _round_up_topup_amount(Decimal("0.01")) == Decimal("20.00")
-    assert _round_up_topup_amount(Decimal("5.00")) == Decimal("20.00")
-    assert _round_up_topup_amount(Decimal("20.00")) == Decimal("20.00")
+    assert _round_up_topup_amount(Decimal("0")) == Decimal("5.00")
+    assert _round_up_topup_amount(Decimal("-5")) == Decimal("5.00")
+    # small deficits round up to the $5 minimum
+    assert _round_up_topup_amount(Decimal("0.01")) == Decimal("5.00")
+    assert _round_up_topup_amount(Decimal("5.00")) == Decimal("5.00")
     # above the floor: ceil to the next $5
+    assert _round_up_topup_amount(Decimal("5.01")) == Decimal("10.00")
+    assert _round_up_topup_amount(Decimal("20.00")) == Decimal("20.00")
     assert _round_up_topup_amount(Decimal("20.01")) == Decimal("25.00")
     assert _round_up_topup_amount(Decimal("22.00")) == Decimal("25.00")
     assert _round_up_topup_amount(Decimal("25.00")) == Decimal("25.00")

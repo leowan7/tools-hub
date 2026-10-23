@@ -25,7 +25,6 @@ from app import create_app
 from shared import wallet
 from shared.wallet import (
     SIGNUP_CREDIT_EXPIRY_DAYS,
-    SIGNUP_CREDIT_USD,
     unspent_signup_credit,
 )
 
@@ -33,6 +32,9 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 UID = "11111111-1111-1111-1111-111111111111"
+# The last signup grant size (2026-09-28 to 2026-10-23); earlier accounts got
+# $15 or $20. New accounts get none. The tests only need a fixed grant.
+SIGNUP_CREDIT_USD = Decimal("5.00")
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +617,7 @@ def test_gotrue_client_gets_the_bounded_timeout():
 
 
 # ---------------------------------------------------------------------------
-# Copy: every template mention of the credit amount states the expiry nearby
+# Copy: every template line showing a credit amount states the expiry nearby
 # ---------------------------------------------------------------------------
 
 _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
@@ -623,16 +625,18 @@ _NEAR = 3
 _EXPIRY_WORDS = ("signup_credit_expiry_days", "expires")
 
 
-def test_every_signup_credit_mention_states_the_expiry():
-    missing = []
+def test_every_signup_credit_amount_states_the_expiry():
+    missing, seen = [], 0
     for path in sorted(_TEMPLATES.rglob("*.html")):
         if path.parts[-2] == "email":
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
-            if "signup_credit(" not in line:
+            if "grant_usd" not in line:
                 continue
+            seen += 1
             window = "\n".join(lines[max(0, i - _NEAR):i + _NEAR + 1])
             if not any(w in window for w in _EXPIRY_WORDS):
                 missing.append(f"{path.relative_to(_TEMPLATES)}:{i + 1}")
+    assert seen, "no template shows a credit amount; this guard checks nothing"
     assert missing == []

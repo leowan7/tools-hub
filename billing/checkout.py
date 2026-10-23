@@ -4,7 +4,7 @@ Replaces the prior Workspace SKU Checkout flow (2026-05-11 era, archived
 2026-05-14 with the wallet pivot). The wallet model has a single Stripe
 product (``Tools-Hub Wallet Top-Up`` is the dashboard product name) with
 no fixed Price. Each Checkout Session passes an inline ``price_data``
-with the user supplied amount, so the same product covers $20 and
+with the user supplied amount, so the same product covers $5 and
 $5,000 top ups alike.
 
 Lifecycle of one top up
@@ -56,8 +56,6 @@ Optional environment variables
 
 ::
 
-    WALLET_MIN_TOPUP_USD             defaults to ``20.00`` per
-                                     ``shared.wallet.MIN_TOPUP_USD``
     WALLET_MAX_TOPUP_USD             defaults to ``5000.00``. Caps the
                                      largest single Checkout amount.
                                      Auto reload monthly caps are
@@ -148,27 +146,14 @@ def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
 
 
 def _default_min_topup_usd() -> Decimal:
-    """Return the configured floor for a single top up, in USD.
+    """Return the floor for a single top up: ``shared.wallet.MIN_TOPUP_USD``.
 
-    Falls back to ``shared.wallet.MIN_TOPUP_USD`` (currently $20) if the
-    env var is unset or malformed.
+    There is no env override, so the floor Checkout enforces is the one the
+    pages print.
     """
-    raw = os.environ.get("WALLET_MIN_TOPUP_USD", "").strip()
-    if raw:
-        try:
-            return Decimal(raw)
-        except (InvalidOperation, ValueError):
-            logger.warning(
-                "WALLET_MIN_TOPUP_USD=%r is not a valid decimal; "
-                "falling back to module default.",
-                raw,
-            )
-    try:
-        from shared.wallet import MIN_TOPUP_USD  # noqa: PLC0415
+    from shared.wallet import MIN_TOPUP_USD  # noqa: PLC0415
 
-        return MIN_TOPUP_USD
-    except Exception:
-        return Decimal("20.00")
+    return MIN_TOPUP_USD
 
 
 def _default_max_topup_usd() -> Decimal:

@@ -27,6 +27,7 @@ from flask import (
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.wallet import (
+    MIN_AUTO_RELOAD_USD,
     MIN_TOPUP_USD,
     SELF_SERVE_CEILING_USD,
     _round_up_topup_amount,
@@ -1060,12 +1061,12 @@ def wallet_auto_reload():
 
     # Clamp to plan documented safe bounds. Threshold must be at
     # least $5 (below that auto reload runs constantly); amount must
-    # be at least the minimum top up; monthly cap must be at least
+    # be at least MIN_AUTO_RELOAD_USD; monthly cap must be at least
     # $100 so a typo cannot disable the safety net entirely.
     if threshold < Decimal("5"):
         threshold = Decimal("5")
-    if amount < MIN_TOPUP_USD:
-        amount = MIN_TOPUP_USD
+    if amount < MIN_AUTO_RELOAD_USD:
+        amount = MIN_AUTO_RELOAD_USD
     if monthly_cap < Decimal("100"):
         monthly_cap = Decimal("100")
 

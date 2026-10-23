@@ -42,7 +42,7 @@ _PARTIALS_FLAG_USES = ("var deficit = parseFloat(data.deficit_usd || 0)",
                        "data.estimate_usd === undefined")
 _GONE_LABELS = ("Estimated cost", "Held to start", "You need",
                 "wallet-topup-suggested-covers")
-_PRESETS = ("$2,500", "$500", "$200", "$50")
+_PRESETS = ("$2,500", "$500", "$200", "$50", "$20")
 
 
 def _script(rel: str) -> str:
@@ -61,11 +61,11 @@ def _short_wallet(balance=5.0):
     }
 
 
-def _figures(flask_app, page: str, *extra_allowed: str) -> list[str]:
+def _figures(page: str, *extra_allowed: str) -> list[str]:
     for gone in _GONE_LABELS:
         assert gone not in page, gone
     text = _visible(page)
-    for allowed in extra_allowed + _allowed_money(flask_app):
+    for allowed in extra_allowed + _allowed_money():
         text = text.replace(allowed, "")
     return [text[max(0, m.start() - 60):m.end() + 20]
             for m in _MONEY.finditer(text)]
@@ -103,7 +103,7 @@ def test_tool_form_gate_markup_shows_only_the_balance(all_tools_app):
         ).render()
     assert "data-gate-balance" in page
     page = re.sub(r"(data-gate-balance[^>]*>)[^<]*<", r"\1<", page)
-    assert not _figures(flask_app, page, "$5.00")
+    assert not _figures(page, "$5.00")
 
 
 def test_topup_page_from_the_gate_link_shows_no_run_figure(all_tools_app):
@@ -120,7 +120,7 @@ def test_topup_page_from_the_gate_link_shows_no_run_figure(all_tools_app):
         resp = client.get("/account/wallet/topup?tool=bindcraft")
     assert resp.status_code == 200
     page = resp.get_data(as_text=True)
-    assert not _figures(flask_app, page, "$5.00", "$10.00", "$1,000.00",
+    assert not _figures(page, "$5.00", "$10.00", "$1,000.00",
                         *_PRESETS)
 
 
@@ -149,5 +149,5 @@ def test_server_gate_render_shows_no_run_figure(all_tools_app, reason, says):
     assert ("Top up to run your job" in page) == (reason == "insufficient_balance")
     assert ("/campaigns/new" in page) == reason.endswith("_exceeded")
     stop = ("balance reaches $0.",) if reason == "wallet_empty" else ()
-    assert not _figures(flask_app, page, "$5.00", "$10.00", "$1,000.00",
+    assert not _figures(page, "$5.00", "$10.00", "$1,000.00",
                         *_PRESETS, *stop)

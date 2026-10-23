@@ -1321,8 +1321,7 @@ def job_refold(job_id: str):
     Each spawned job runs in the destination tool's "standalone"
     preset with the candidate's binder sequence as a single-monomer
     FASTA. Per-job wallet billing happens on the existing
-    completion-side path (charge_for_job); a fresh signup credit
-    covers a top-5 refold many times over.
+    completion-side path (charge_for_job).
     """
     from shared.refold import (  # noqa: PLC0415
         DEFAULT_REFOLD_N, MAX_REFOLD_N, can_refold,
