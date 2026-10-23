@@ -98,6 +98,10 @@ del mdl; del tok"
 
 RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN python3 -m pip install --no-cache-dir "certifi==2026.10.23"
+
 # ---------- Bake a small smoke fixture ----------
 # Human ubiquitin (76 aa monomer, UniProt P0CG47). Tiny, well-folded,
 # ideal for a sub-minute ESMFold smoke run.

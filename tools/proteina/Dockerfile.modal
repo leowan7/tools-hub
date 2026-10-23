@@ -215,6 +215,10 @@ RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "atom
 # still pass. Fix the fetch, do not silence it.
 RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "dm-haiku==0.0.16"
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "certifi==2026.10.23"
+
 # Point the generator + reward stack at the runtime-mounted Volumes. modal_app
 # mounts proteina-weights -> /opt/proteina/ckpts and proteina-rewards ->
 # /opt/proteina/rewards; these ENV vars must stay in lockstep with those mounts.
