@@ -949,38 +949,253 @@ def test_the_cross_bucket_line_states_the_limits_the_adapter_enforces():
     assert _scfv(target_mode="preset", target_name="egfr")[1] is None
 
 
-def test_the_chooser_is_not_size_aware_and_this_pins_where_that_shows():
-    """The chooser offers a tool whose own preflight refuses that size.
+# ---------------------------------------------------------------------------
+# 5. "Its target can be up to N residues."
+#
+# The chooser answers before any upload, so it cannot FILTER on size. What it
+# can do -- and what every other clause in this file already does -- is state
+# the limit the gate enforces, derived from the enforcing envelope rather than
+# typed. These tests drive the real preflight at the stated number and one
+# residue past it, so the sentence can be neither looser nor stricter than the
+# refusal.
+#
+# ``_pdb(residues=n)`` is counted by preflight as n-1 residues (measured, not
+# assumed: see the assertion in test_the_size_fixture_counts_one_short), so a
+# target counted at exactly ``limit`` is built by asking for ``limit + 1``.
+# ---------------------------------------------------------------------------
 
-    ``TWO_CHAIN`` above was dropped to 140 aa so the multi-chain assertion
-    stays about multi-chain support. That keeps this file honest but it also
-    moved the only chooser/preflight agreement check entirely below the size
-    at which the disagreement starts, so the gap became untested as well as
-    unfixed. This pins it at 238 aa: it asserts the gap EXISTS, so the day the
-    chooser learns about size (``shared/tool_chooser.py`` reads ToolRules only
-    for ``hotspots_required`` and the two multi-chain flags) this fails and is
-    deleted rather than quietly kept.
-
-    Not a refusal to fix: the fix is a chooser that filters on size, which
-    needs a target size the chooser does not have -- it answers before any
-    upload. Filed in docs/qa/RUNTIME-CEILING-2026-09-30.md.
-    """
-    # Two 120-residue chains, which preflight counts as 238 aa, not 240 -- the
-    # two are not the same number and only the counted one matters here. I
-    # have not traced where the other two go. Measured by calling
-    # preflight_for_tool on this fixture: residue_count 238,
-    # runtime_cap_target_aa 153, so it is over the limit, which is the point.
-    big = _pdb("AB", residues=120)
-    picks = tool_chooser.recommend(
-        "target-structure", shape="unsure", chemistry="multi-chain",
-    )
-    slugs = [p["slug"] for p in picks]
-    assert "boltzgen" in slugs, slugs
+def _counted_residues(slug: str, residues: int) -> int:
+    """What preflight says it counted, read out of its own refusal copy."""
     verdict = preflight_for_tool(
-        "boltzgen", big, target_chain="A,B", hotspots=["A10", "B10"],
+        slug, _pdb("A", residues=residues), target_chain="A",
+        hotspots=["A10"],
+    )
+    match = re.search(r"have (\d+) residues", verdict.reason or "")
+    return int(match.group(1)) if match else -1
+
+
+def test_the_size_fixture_counts_one_short():
+    """Pin the fixture's own off-by-one, which the tests below rely on.
+
+    Asking for 700 residues yields a target preflight counts as 699. Nothing
+    here depends on WHY (untraced); it is pinned so that if the fixture or the
+    cleanup changes, the two tests below fail here rather than silently
+    asserting about the wrong size.
+    """
+    assert _counted_residues("rfdiffusion", 700) == 699
+
+
+@pytest.mark.parametrize(
+    "slug", sorted(set(TOOL_RULES) & set(tool_chooser._FACTS))
+)
+def test_the_size_clause_names_a_size_preflight_accepts(slug):
+    """At the stated ceiling preflight is READY; one residue past it refuses.
+
+    This is the whole point of the clause: a visitor who brings a target of
+    exactly the size the card names must not be turned away at the form.
+
+    Driven at the count a submit that touches nothing carries, since
+    ``_check_size_envelope``'s runtime branch only evaluates when a count
+    reaches it: omitting one would assert about a request the form never
+    sends, and would pass for bindcraft at a size a default submit refuses.
+    """
+    limit = tool_chooser.target_size_ceiling_aa(slug)
+    assert limit, f"{slug} has preflight rules but no derived size ceiling"
+    designs = tool_chooser._FORM_DEFAULT_DESIGNS.get(slug)
+
+    at_limit = preflight_for_tool(
+        slug, _pdb("A", residues=limit + 1), target_chain="A",
+        hotspots=["A10"], num_designs=designs,
+    )
+    assert at_limit.kind is VerdictKind.READY, (
+        f"{slug}: the chooser names {limit} residues but preflight refuses "
+        f"that size: {at_limit.reason!r}"
+    )
+
+    past_limit = preflight_for_tool(
+        slug, _pdb("A", residues=limit + 2), target_chain="A",
+        hotspots=["A10"], num_designs=designs,
+    )
+    assert past_limit.kind is not VerdictKind.READY, (
+        f"{slug}: preflight accepts {limit + 1} residues, so the chooser's "
+        f"{limit} is stricter than the gate and turns away a run that works"
+    )
+
+
+@pytest.mark.parametrize(
+    "slug", sorted(set(TOOL_RULES) & set(tool_chooser._FACTS))
+)
+def test_the_size_clause_reaches_the_card(slug):
+    """The derived number is actually in the sentence the visitor reads."""
+    line = tool_chooser.prerequisite_line(slug)
+    limit = tool_chooser.target_size_ceiling_aa(slug)
+    assert str(limit) in line, (
+        f"{slug}: prerequisite line states no size limit: {line!r}"
+    )
+
+
+def test_the_runtime_ceiling_is_what_binds_boltzgen_not_its_size_cap():
+    """boltzgen's stated ceiling comes from the timeout, not ``hard_cap``.
+
+    This is the mis-recommendation the chooser shipped with: boltzgen's
+    ``hard_cap_target_aa`` is 600, but its container runs a pinned pool of
+    ``runtime_fixed_designs`` designs against ``runtime_ceiling_s``, and that
+    product overruns long before 600 aa. A visitor following the
+    recommendation with a 400 aa target was refused at the form. Both numbers
+    are read off the envelope here rather than typed, so re-anchoring the
+    runtime curve moves this test with it.
+    """
+    env = TOOL_RULES["boltzgen"].size
+    assert env.runtime_fixed_designs, "boltzgen's pool is no longer pinned"
+    ceiling = tool_chooser.target_size_ceiling_aa("boltzgen")
+    assert ceiling < env.hard_cap_target_aa, (
+        "boltzgen's runtime ceiling no longer binds below its size cap; the "
+        "chooser should state hard_cap_target_aa again"
+    )
+    # The size its own size cap would have advertised is in fact refused.
+    refused = preflight_for_tool(
+        "boltzgen", _pdb("A", residues=env.hard_cap_target_aa),
+        target_chain="A", hotspots=["A10"],
+    )
+    assert refused.kind is not VerdictKind.READY
+
+
+def test_a_user_set_design_count_can_refuse_below_the_stated_ceiling():
+    """Why the clause carries a caveat for tools whose count is a knob.
+
+    bindcraft declares a ``runtime_ceiling_s`` but NOT a pinned pool, so the
+    size that fits falls as the count rises. The card states the size that
+    fits the form's default count -- below its 500 aa cap, which is what makes
+    the caveat sentence necessary rather than decorative. Pinned here by
+    driving preflight one design above that default against a target the
+    stated ceiling allows.
+    """
+    env = TOOL_RULES["bindcraft"].size
+    assert env.runtime_ceiling_s and not env.runtime_fixed_designs
+    limit = tool_chooser.target_size_ceiling_aa("bindcraft")
+    assert limit < env.hard_cap_target_aa, (
+        "bindcraft's runtime bound no longer bites below its size cap, so the "
+        "card may as well state the cap"
+    )
+
+    with_count = preflight_for_tool(
+        "bindcraft", _pdb("A", residues=limit + 1), target_chain="A",
+        hotspots=["A10"],
+        num_designs=tool_chooser._FORM_DEFAULT_DESIGNS["bindcraft"] + 1,
+    )
+    assert with_count.kind is not VerdictKind.READY, (
+        "bindcraft now accepts the stated ceiling above its default design "
+        "count, so the design-count caveat states a limit nothing enforces"
+    )
+    assert tool_chooser.size_depends_on_design_count("bindcraft") is True
+
+
+def test_the_form_default_design_count_is_what_the_adapter_applies():
+    """``_FORM_DEFAULT_DESIGNS`` matches the validator that applies it.
+
+    The chooser's bindcraft ceiling is the size that fits this count, so a
+    default raised in the adapter without this map would put a number on the
+    card that the form refuses. Driven through the real validator with no
+    ``num_designs``, reading the count back off the job spec it builds.
+    """
+    import tools.bindcraft as bindcraft_adapter
+
+    spec, error = bindcraft_adapter.validate(
+        {"preset": "pilot", "target_chain": "A", "hotspot_residues": "A10"},
+        {},
+    )
+    assert error is None, error
+    assert spec is not None
+    assert (
+        spec["num_designs"] == tool_chooser._FORM_DEFAULT_DESIGNS["bindcraft"]
+    )
+
+
+@pytest.mark.parametrize(
+    "slug,binder_max",
+    [
+        # Each tool's maximum binder length, read off the adapter validator
+        # that enforces it: tools/rfdiffusion/__init__.py caps at 150 and
+        # tools/proteina/__init__.py at 300. bindcraft is NOT here: its
+        # ceiling is the runtime-bound 396, and 396 + its 150 aa maximum stays
+        # inside the 600 budget, so the gate cannot fire for it. Its card
+        # still quotes the budget, which
+        # test_every_quoted_budget_is_the_enforced_one checks is the real
+        # number; this test is only about the tools where it bites.
+        ("rfdiffusion", 150),
+        ("proteina", 300),
+    ],
+)
+def test_the_combined_budget_can_refuse_below_the_stated_ceiling(
+    slug, binder_max
+):
+    """Why the clause names the target+binder budget as well as the ceiling.
+
+    ``_check_size_envelope``'s ``over_combined`` branch refuses on
+    ``target_aa + binder_max_aa`` against ``hard_cap_combined_aa``. For these
+    two tools that sum busts the budget BELOW the target ceiling once the
+    visitor picks a long binder -- proteina's 620 budget leaves only 320 aa of
+    target at its 300 aa maximum, against a 500 aa cap. A card naming the
+    ceiling alone is therefore looser than the gate, which is the same leak as
+    boltzgen's: a recommendation the form then refuses.
+    """
+    ceiling = tool_chooser.target_size_ceiling_aa(slug)
+    verdict = preflight_for_tool(
+        slug, _pdb("A", residues=ceiling + 1), target_chain="A",
+        hotspots=["A10"], binder_max_aa=binder_max,
     )
     assert verdict.kind is not VerdictKind.READY, (
-        "boltzgen now accepts a 238 aa two-chain target, so the size gap this "
-        "test pins is closed -- delete this test and restore TWO_CHAIN to the "
-        "120-residue default in the multi-chain assertion above"
+        f"{slug} now accepts its full target ceiling alongside a {binder_max} "
+        f"aa binder, so the combined-budget clause states a limit nothing "
+        f"enforces"
     )
+    budget = TOOL_RULES[slug].size.hard_cap_combined_aa
+    assert str(budget) in tool_chooser.prerequisite_line(slug)
+
+
+@pytest.mark.parametrize(
+    "slug",
+    sorted(
+        (set(TOOL_RULES) & set(tool_chooser._FACTS))
+        - tool_chooser._NO_BINDER_LENGTH_FIELD
+    ),
+)
+def test_every_quoted_budget_is_the_enforced_one(slug):
+    """A card quoting a budget quotes ``hard_cap_combined_aa``, not a guess."""
+    budget = TOOL_RULES[slug].size.hard_cap_combined_aa
+    assert str(budget) in tool_chooser.prerequisite_line(slug)
+
+
+def test_the_budget_clause_is_withheld_where_no_binder_length_is_sent():
+    """rfantibody has no binder-length field, so its budget never evaluates.
+
+    ``shared/pdb_intake.py::_parse_preflight_size_params`` returns None for
+    rfantibody's inputs -- it carries ``cdr_lengths``, not any of the input
+    keys that helper reads -- and ``_check_size_envelope``
+    skips ``over_combined`` entirely when ``binder_max_aa`` is None. Stating
+    its 720 aa budget would claim a gate that cannot fire. Driven through the
+    real helper so the exception is pinned to the enforcer, not to this list.
+    """
+    from shared.pdb_intake import _parse_preflight_size_params
+
+    binder_max, _ = _parse_preflight_size_params(
+        {"cdr_lengths": "H1:8,H2:7,H3:10-16"}
+    )
+    assert binder_max is None
+    assert "rfantibody" in tool_chooser._NO_BINDER_LENGTH_FIELD
+
+    budget = TOOL_RULES["rfantibody"].size.hard_cap_combined_aa
+    line = tool_chooser.prerequisite_line("rfantibody")
+    assert str(budget) not in line, line
+    # The ceiling is still stated; only the budget half is withheld.
+    assert str(tool_chooser.target_size_ceiling_aa("rfantibody")) in line
+
+
+@pytest.mark.parametrize("slug", sorted(tool_chooser._NO_BINDER_LENGTH_FIELD))
+def test_every_no_binder_length_slug_has_preflight_rules(slug):
+    """The exception set only excuses tools the budget clause would reach.
+
+    A slug with no ToolRules entry gets no size clause at all, so listing it
+    here would be inert -- the kind of guard that certifies nothing.
+    """
+    assert slug in TOOL_RULES
