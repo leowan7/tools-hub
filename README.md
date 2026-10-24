@@ -102,8 +102,9 @@ two-row hold + partial-release pattern on `wallet_transactions`; see
 the `docs/HANDOFF-WALLET-PIVOT-SESSION-*.md` series for the ledger shape
 and migration history.
 
-- Minimum top-up: `$20` (`MIN_TOPUP_USD` in `shared/wallet.py`). Smaller
-  amounts are rejected at the form and the server.
+- Minimum top-up: `$5` (`MIN_TOPUP_USD` in `shared/wallet.py`). Smaller
+  amounts are rejected at the form and the server. New accounts start at
+  `$0` with no signup credit.
 - Stripe is the payment provider; live keys are read from environment.
 - Backing tables live in the shared Supabase project: `wallets`,
   `wallet_transactions`, `tool_jobs` (whose `inputs._wallet.hold_tx_id`

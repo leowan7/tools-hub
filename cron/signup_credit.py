@@ -70,15 +70,20 @@ def _release_reminder(client, user_id: str, now_iso: str) -> None:
 
 
 def run(*, now: Optional[datetime] = None) -> dict:
-    """Send due reminders and expire due credit. Never raises."""
+    """Send due reminders and expire due credit. Never raises.
+
+    An address Resend refuses counts under ``invalid_recipients``, not
+    ``errors``, and keeps its claim, so it is not retried. Two or more
+    refusals with no reminder sent count one error and release those claims.
+    """
     from shared import wallet  # noqa: PLC0415
     from shared.credits import get_service_client, list_all_auth_users  # noqa: PLC0415
-    from shared.email import send_signup_credit_expiring_email  # noqa: PLC0415
+    from shared.email import RecipientRejected, send_signup_credit_expiring_email  # noqa: PLC0415
     from shared.jobs import _email_pref_enabled  # noqa: PLC0415
 
     now = now or datetime.now(timezone.utc)
     now_iso = now.isoformat()
-    summary = {"reminded": 0, "expired": 0, "skipped": 0, "errors": 0}
+    summary = {"reminded": 0, "expired": 0, "skipped": 0, "invalid_recipients": 0, "errors": 0}
     client = get_service_client()
     if client is None:
         logger.warning("signup_credit: no service client; nothing done")
@@ -91,6 +96,7 @@ def run(*, now: Optional[datetime] = None) -> dict:
         summary["errors"] += 1
         return summary
 
+    refused: list[str] = []
     users = None  # auth users by id, listed on the first reminder due; False if that failed
     for w in due:
         uid = w.get("user_id")
@@ -140,10 +146,24 @@ def run(*, now: Optional[datetime] = None) -> dict:
                 summary["reminded"] += 1
                 continue
             summary["errors"] += 1
+        except RecipientRejected:
+            summary["invalid_recipients"] += 1
+            refused.append(uid)
+            continue
         except Exception:
             logger.error("signup_credit: reminder failed for %s", uid, exc_info=True)
             summary["errors"] += 1
         if claimed:
+            try:
+                _release_reminder(client, uid, now_iso)
+            except Exception:
+                logger.warning("signup_credit: claim release failed for %s", uid, exc_info=True)
+    if len(refused) >= 2 and not summary["reminded"]:
+        # Several refusals and no send looks like a sender-side fault (e.g. an
+        # unverified sending domain), so fail the run and let those addresses retry.
+        logger.error("signup_credit: %d reminders refused and none sent", len(refused))
+        summary["errors"] += 1
+        for uid in refused:
             try:
                 _release_reminder(client, uid, now_iso)
             except Exception:

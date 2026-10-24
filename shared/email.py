@@ -42,7 +42,7 @@ import requests
 from shared import metric_glossary as _metric_glossary
 from shared.run_notices import run_notices, stopped_for_balance
 from shared.tool_meta import preset_label
-from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
+from shared.wallet import MIN_TOPUP_USD
 
 logger = logging.getLogger(__name__)
 
@@ -1908,7 +1908,7 @@ def _money(amount, direction: str = "nearest") -> str:
 
     Returns the integer form when the value is whole (e.g. "5"), else two
     decimals (e.g. "12.50"). Used in template variables so the rendered email
-    body says "$5" instead of "$5.00" for the signup credit case.
+    body says "$5" instead of "$5.00" for the minimum top-up.
     """
     if direction not in _MONEY_DIRECTIONS:
         raise ValueError(
@@ -2245,43 +2245,29 @@ def notify_operator_new_submission(
 # ---------------------------------------------------------------------------
 
 
-def send_signup_credit_email(
+def send_welcome_email(
     *,
     user_id: str,
     **_extra: Any,
 ) -> bool:
-    """Welcome plus signup credit confirmation.
+    """Welcome email, no credit.
 
     Trigger: first time a ``user_wallets`` row is created. Caller dedupes.
     """
     email = _resolve_user_email(user_id)
     if not email:
-        logger.info(
-            "send_signup_credit_email: no email for user %s; skipping", user_id
-        )
+        logger.info("send_welcome_email: no email for user %s; skipping", user_id)
         return False
-    # State the credit the wallet actually grants, by reading the grant.
-    # This used to read a separate WALLET_SIGNUP_CREDIT_USD env var, which
-    # could only ever make the email disagree with the balance -- and did:
-    # preview kept =5 after the grant went to 15.
-    #
-    # "nearest": a fixed advertised amount, neither a balance nor a cost.
-    credit_usd = _money(SIGNUP_CREDIT_USD, "nearest")
-    base_url = _base_url()
-    subject = (
-        f"${credit_usd} in compute credit added to your Ranomics tools account"
-    )
     html = _render_template(
-        "send_signup_credit.html",
-        base_url=base_url,
-        credit_usd=credit_usd,
-        expiry_days=SIGNUP_CREDIT_EXPIRY_DAYS,
+        "send_welcome.html",
+        base_url=_base_url(),
+        min_topup=_money(MIN_TOPUP_USD, "nearest"),
     )
     return _post_resend(
         to_email=email,
-        subject=subject,
+        subject="Welcome to Ranomics tools",
         html_body=html,
-        log_tag=f"signup_credit user={user_id}",
+        log_tag=f"welcome user={user_id}",
     )
 
 
@@ -2295,6 +2281,7 @@ def send_signup_credit_expiring_email(
     """One-time reminder that unspent signup credit is about to expire.
 
     Trigger: ``cron.signup_credit.run``, which claims the send first.
+    Raises ``RecipientRejected`` when Resend refuses the address.
     """
     email = _resolve_user_email(user_id)
     if not email:
@@ -2320,6 +2307,7 @@ def send_signup_credit_expiring_email(
         html_body=html,
         log_tag=f"signup_credit_expiring user={user_id}",
         unsubscribe_link=unsub,
+        raise_on_rejected_recipient=True,
     )
 
 

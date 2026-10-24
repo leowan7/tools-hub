@@ -14,7 +14,7 @@
    rule, and the two too-large refusals. The script flips visibility based
    on the live estimate returned by GET /api/wallet/estimate (Agent E).
    The top-up gate reads ``deficit_usd`` only to decide whether to show, and
-   prints no figure but the balance and the $20 minimum; nothing in this file
+   prints no figure but the balance and the minimum top-up; nothing in this file
    reads ``rounded_topup_usd``
    (tests/test_no_prerun_numbers_logged_in.py).
 
@@ -29,7 +29,7 @@
          "balance_usd":             "12.3400",
          "balance_after_usd":       "12.2900",
          "deficit_usd":             "0.0000",       # max(estimate - balance, 0)
-         "rounded_topup_usd":       "20.00",        # ceil(deficit/5)*5, min 20
+         "rounded_topup_usd":       "5.00",         # ceil(deficit/5)*5, min MIN_TOPUP_USD
          "scaled_hard_cap_usd":     "8.0000",       # per parameters
          "soft_block":              false,          # >= 0.8 * scaled cap
          "hard_block":              false,          # > scaled cap
@@ -138,7 +138,7 @@
       </a>
       <span class="wallet-topup-gate-helper">
         Opens checkout in a new tab and keeps this form as it is. Come back
-        here and run the job once your balance updates. Minimum top up $20;
+        here and run the job once your balance updates. Minimum top up ${{ min_topup }};
         tax added at checkout where applicable.
       </span>
     </div>

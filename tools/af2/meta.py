@@ -19,12 +19,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from shared.wallet import SIGNUP_CREDIT_EXPIRY_DAYS, SIGNUP_CREDIT_USD
+from shared.wallet import MIN_TOPUP_USD
 
-# The signup credit is quoted in SEO copy that reaches JSON-LD structured
-# data, so it is read from the grant rather than retyped. It was hardcoded
-# as "$5" here and stayed that way when the grant went to $15.
-_SIGNUP_CREDIT: str = f"${SIGNUP_CREDIT_USD:.0f}"
+# The minimum top-up is quoted in SEO copy that reaches JSON-LD structured
+# data, so it is read from the constant rather than retyped.
+_MIN_TOPUP: str = f"${MIN_TOPUP_USD:.0f}"
 
 paper_citation: str = "Jumper et al., Nature 2021 (AF2); Mirdita et al., Nature Methods 2022 (ColabFold)"
 paper_url: str = "https://www.nature.com/articles/s41586-021-03819-2"
@@ -56,9 +55,8 @@ seo_faq: list[dict] = [
         "q": "How much does an AlphaFold2 multimer run cost?",
         "a": (
             "You pay for the GPU time your run uses, from your "
-            "wallet. New accounts start with "
-            f"{_SIGNUP_CREDIT} of credit, usable for {SIGNUP_CREDIT_EXPIRY_DAYS} "
-            "days."
+            f"wallet. You can top up from {_MIN_TOPUP}, which is enough "
+            "to start a run."
         ),
     },
 ]

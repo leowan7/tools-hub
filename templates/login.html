@@ -43,7 +43,7 @@
       <!-- Sign-in panel -->
       <div id="panel-signin" class="form-panel {% if mode != 'signup' and mode != 'reset' and mode != 'update_password' %}active{% endif %}">
         <p class="auth-intro">
-          Sign in to your wallet. New accounts start with ${{ signup_credit() }} of balance, usable for {{ signup_credit_expiry_days }} days.
+          Sign in to your wallet. Top up from ${{ min_topup }}.
         </p>
         {% if success_msg %}
           <div class="success-box">{{ success_msg }}</div>
@@ -77,7 +77,7 @@
       <!-- Sign-up panel -->
       <div id="panel-signup" class="form-panel {% if mode == 'signup' %}active{% endif %}">
         <p class="auth-intro">
-          Start with ${{ signup_credit() }} in your wallet, usable for {{ signup_credit_expiry_days }} days. Your balance
+          Start with as little as ${{ min_topup }} in your wallet. Your balance
           is your cap, design count is unlimited, no subscriptions.
         </p>
         {% if error and mode == 'signup' %}

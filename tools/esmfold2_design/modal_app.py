@@ -116,8 +116,8 @@ _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 #   * The 1-seed HOLD rises $14.79 -> $15.00, which was EXACTLY the old
 #     shared/wallet.SIGNUP_CREDIT_USD, taking headroom against the free credit
 #     to zero. SIGNUP_CREDIT_USD was raised to $20.00 in the same change to
-#     restore it; see the sizing rule there, which this bug corrected (the
-#     credit must clear the largest 1-unit HOLD, not the largest PRICE).
+#     restore it. The constant and its sizing rule were removed on
+#     2026-10-23, when new accounts stopped receiving a signup credit.
 #   * Unbilled H100 on a failed child rises 3600 s -> 5400 s ($8.70 -> $13.05
 #     raw), and a full-session seed now recovers cost at an effective 1.15x
 #     rather than the intended 1.70x markup. Revenue crosses below raw Modal
@@ -366,6 +366,9 @@ image = (
         f"&& test -f /opt/binder_design.py "
         f"&& rm -rf /tmp/esm.tar.gz /tmp/esm-{_ESM_GIT_SHA}",
     )
+    # certifi: the requirements.txt floor (#452, eMudhra key compromise). Its
+    # own layer, so the micromamba and pip layers above keep their build cache.
+    .pip_install("certifi==2026.10.23")
     .env({
         "HF_HOME": "/models",
         "HF_XET_HIGH_PERFORMANCE": "1",

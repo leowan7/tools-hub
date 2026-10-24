@@ -329,14 +329,14 @@ def test_help_index_step_count_matches_the_guide(app):
     )
 
 
-def test_pilots_over_the_signup_credit_are_all_binder_design(app):
-    """Step 4 says the credit covers structure prediction and sequence runs,
-    and that most binder design runs need a top-up.
+def test_pilots_over_the_minimum_topup_are_all_binder_design(app):
+    """Step 4 says a minimum top-up starts structure prediction and
+    ProteinMPNN sequence design, and that some binder design tools need more.
 
-    The credit is $5 (cut from $20 on 2026-09-28). Every pilot priced above it
-    must be a binder-design tool, or step 4's "covers structure prediction and
-    sequence runs" is false. OpenDDE publishes no pilot card, so it cannot show
-    up here; tests/test_signup_credit_covers_smallest_run.py covers it by hold.
+    Every pilot priced above ``MIN_TOPUP_USD`` must be a binder-design tool,
+    or step 4's structure prediction and sequence design line is false.
+    OpenDDE publishes no pilot card, so it cannot show up here;
+    tests/test_signup_credit_covers_smallest_run.py covers it by hold.
     Since 2026-09-30 esmfold2-design is in that same position, for a different
     reason -- its pilot was withdrawn, not never written.
 
@@ -346,13 +346,13 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
     """
     from shared.tool_meta import meta_for  # noqa: PLC0415
     from shared.tools_catalog import _TOOL_CATEGORIES  # noqa: PLC0415
-    from shared.wallet import SIGNUP_CREDIT_USD  # noqa: PLC0415
+    from shared.wallet import MIN_TOPUP_USD  # noqa: PLC0415
     from shared.wallet_estimates import estimated_cost_for_tool  # noqa: PLC0415
 
     client = app.test_client()
-    assert "signup_credit()" not in client.get(
+    assert f"${MIN_TOPUP_USD:.0f}" in client.get(
         "/help/getting-started"
-    ).get_data(as_text=True), "signup_credit() did not render"
+    ).get_data(as_text=True), "step 4 does not quote the minimum top-up"
 
     prices = {}
     for adapter in tool_base.all_adapters():
@@ -365,14 +365,14 @@ def test_pilots_over_the_signup_credit_are_all_binder_design(app):
     # the floor in test_getting_started_names_the_pilot_card_cta_that_exists).
     assert len(prices) >= 9, f"only {len(prices)} pilot prices found"
 
-    over = {s: p for s, p in prices.items() if p > SIGNUP_CREDIT_USD}
-    assert over, "no pilot costs more than the credit; step 4's top-up line is stale"
+    over = {s: p for s, p in prices.items() if p > MIN_TOPUP_USD}
+    assert over, "no pilot costs more than the minimum top-up; step 4's larger-balance line is stale"
     not_binder = {
         s: p for s, p in over.items()
         if _TOOL_CATEGORIES.get(s) != "Make new binders for my target"
     }
     assert not not_binder, (
-        f"the ${SIGNUP_CREDIT_USD} signup credit no longer covers {not_binder}; "
-        "step 4 of /help/getting-started says it covers structure prediction "
-        "and sequence runs"
+        f"a ${MIN_TOPUP_USD} minimum top-up no longer covers {not_binder}; "
+        "step 4 of /help/getting-started says it starts structure prediction "
+        "and sequence design"
     )

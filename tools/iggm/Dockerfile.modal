@@ -76,5 +76,9 @@ RUN pip install --no-cache-dir \
         -f https://data.pyg.org/whl/torch-2.0.1+cu117.html \
     && pip install --no-cache-dir "setuptools<81" requests
 
+# certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
+# layer, so every layer above keeps its build cache.
+RUN python3 -m pip install --no-cache-dir "certifi==2026.10.23"
+
 RUN mkdir -p /opt/IgGM/checkpoints
 WORKDIR /opt/IgGM

@@ -135,19 +135,20 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     Leo, 2026-10-16 (PR #431): the signup credit stays refused, as it was under
     the up-front hold, which was $8.00 on a 2-design run
     (docs/qa/BINDCRAFT-LIVE-STEP1-2026-10-14.md, "STEP 2 retry").
-    tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that.
+    tests/test_signup_credit_covers_smallest_run.py::NEEDS_TOPUP pins that the
+    $5 minimum top-up cannot start it either.
 
     iggm's figure is its base cap too, ``TOOL_SPECS["iggm"].base_hard_cap_usd``.
     Leo, 2026-10-16: "use the $3.00 start minimum". It is far above what a
     short iggm run bills -- the paid cancel test charged $0.05 for 37 GPU-s
     (docs/qa/IGGM-LIVE-STEP1-2026-10-16.md, "STEP 2") -- and unlike bindcraft's
-    it is below ``SIGNUP_CREDIT_USD``, which therefore still admits an iggm run;
-    ::test_the_signup_credit_still_admits_an_iggm_run pins that.
+    it is below ``MIN_TOPUP_USD``, so a minimum top-up admits an iggm run;
+    ::test_the_minimum_topup_admits_an_iggm_run pins that.
 
     proteina's figure is a flat $1.00. Leo, 2026-10-19: "lets just say 1
     dollar to start a run as the minimum". The ``_PROTEINA`` runtime model's
     8-design run at the 120-aa pivot is $0.94, and $1.00 is below
-    ``SIGNUP_CREDIT_USD``; ::test_proteina_starts_at_one_dollar pins both.
+    ``MIN_TOPUP_USD``; ::test_proteina_starts_at_one_dollar pins both.
 
     pxdesign's figure is a flat $2.00. Leo, 2026-10-21: "$2 flat for
     pxdesign". Derivation: a pxdesign run streams its
@@ -160,7 +161,7 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     delivered nothing). At the longest of them,
     ``live_due_usd("pxdesign", 1051, "A100-80GB")``
     is $1.84, so $2.00 is the next round figure above it, and it is below
-    ``SIGNUP_CREDIT_USD``; ::test_pxdesign_starts_at_two_dollars pins both.
+    ``MIN_TOPUP_USD``; ::test_pxdesign_starts_at_two_dollars pins both.
     Known limits of the figure: it assumes PXDesign converts and validates
     samples incrementally, so that a one-design run's length is also the time
     to the first design of a larger run. If instead it finishes all sampling

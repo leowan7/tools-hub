@@ -25,7 +25,6 @@ from app import create_app
 from shared import wallet
 from shared.wallet import (
     SIGNUP_CREDIT_EXPIRY_DAYS,
-    SIGNUP_CREDIT_USD,
     unspent_signup_credit,
 )
 
@@ -33,6 +32,9 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 UID = "11111111-1111-1111-1111-111111111111"
+# The last signup grant size (2026-09-28 to 2026-10-23); earlier accounts got
+# $15 or $20. New accounts get none. The tests only need a fixed grant.
+SIGNUP_CREDIT_USD = Decimal("5.00")
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +355,91 @@ def test_failed_reminder_is_retried(db, monkeypatch):
     assert db.wallet()["signup_credit_reminder_sent_at"] is None
 
 
+_MESSAGE_422 = ("Invalid `to` field. Please use our testing email address "
+                "instead of domains like `example.com`.")
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body, self.text = status, body, str(body)
+
+    def json(self):
+        return self._body
+
+
+@pytest.fixture
+def resend(db, monkeypatch):
+    """Two due wallets; Resend answers ``refused[uid]`` for those users, 200 otherwise."""
+    from shared import email
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    monkeypatch.setattr(email, "_resolve_user_email", lambda uid: f"{uid}@example.com")
+    # The CLI runs at the real clock, so the wallets are due relative to it.
+    for uid in (UID, "second"):
+        db.new_wallet(uid, expires_at=datetime.now(timezone.utc) + timedelta(days=4))
+    db.auth = SimpleNamespace(admin=_Admin([_user(UID, NOW.isoformat()),
+                                            _user("second", NOW.isoformat())]))
+    refused, sent = {}, []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        uid = json["to"][0].split("@")[0]
+        if uid in refused:
+            return refused[uid]
+        sent.append(uid)
+        return _Resp(200, {"id": "resend-1"})
+
+    monkeypatch.setattr(email.requests, "post", fake_post)
+    return SimpleNamespace(refused=refused, sent=sent)
+
+
+def test_one_refused_address_exits_zero_and_keeps_its_claim(db, resend):
+    resend.refused[UID] = _Resp(422, {"name": "validation_error", "message": _MESSAGE_422})
+    result = _cli(["credit:expire"])
+    assert result.exit_code == 0, result.output
+    assert "reminded=1 expired=0 skipped=0 invalid_recipients=1 errors=0" in result.output
+    assert resend.sent == ["second"]
+    assert db.wallet()["signup_credit_reminder_sent_at"] is not None
+    result = _cli(["credit:expire"])  # next day's run does not retry the refused address
+    assert result.exit_code == 0, result.output
+    assert "reminded=0 expired=0 skipped=0 invalid_recipients=0 errors=0" in result.output
+
+
+def test_every_reminder_refused_is_an_error_and_releases_the_claims(db, resend):
+    for uid in (UID, "second"):
+        resend.refused[uid] = _Resp(422, {"name": "validation_error", "message": _MESSAGE_422})
+    result = _cli(["credit:expire"])
+    assert result.exit_code == 1, result.output
+    assert "reminded=0 expired=0 skipped=0 invalid_recipients=2 errors=1" in result.output
+    assert db.wallet()["signup_credit_reminder_sent_at"] is None
+    assert db.wallet("second")["signup_credit_reminder_sent_at"] is None
+
+
+def test_every_reminder_refused_releases_the_claims_despite_an_expiry_error(db, resend, monkeypatch):
+    for uid in (UID, "second"):
+        resend.refused[uid] = _Resp(422, {"name": "validation_error", "message": _MESSAGE_422})
+    db.new_wallet("expired")  # already past expiry
+    monkeypatch.setattr(wallet, "expire_signup_credit", lambda _uid: "error")
+    result = _cli(["credit:expire"])
+    assert result.exit_code == 1, result.output
+    assert "invalid_recipients=2 errors=2" in result.output
+    assert db.wallet()["signup_credit_reminder_sent_at"] is None
+    assert db.wallet("second")["signup_credit_reminder_sent_at"] is None
+
+
+@pytest.mark.parametrize("resp", [
+    _Resp(500, {"message": "internal"}),
+    _Resp(429, {"message": "rate limited"}),
+    _Resp(422, {"name": "validation_error", "message": "Invalid `from` field."}),
+])
+def test_other_send_failure_is_an_error_and_releases_the_claim(db, resend, resp):
+    resend.refused[UID] = resp
+    result = _cli(["credit:expire"])
+    assert result.exit_code == 1, result.output
+    assert "reminded=1 expired=0 skipped=0 invalid_recipients=0 errors=1" in result.output
+    assert db.wallet()["signup_credit_reminder_sent_at"] is None
+    assert db.wallet("second")["signup_credit_reminder_sent_at"] is not None
+
+
 def test_reminder_claim_is_won_once():
     from cron.signup_credit import _claim_reminder
     d = _Db()
@@ -530,7 +617,7 @@ def test_gotrue_client_gets_the_bounded_timeout():
 
 
 # ---------------------------------------------------------------------------
-# Copy: every template mention of the credit amount states the expiry nearby
+# Copy: every template line showing a credit amount states the expiry nearby
 # ---------------------------------------------------------------------------
 
 _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
@@ -538,16 +625,18 @@ _NEAR = 3
 _EXPIRY_WORDS = ("signup_credit_expiry_days", "expires")
 
 
-def test_every_signup_credit_mention_states_the_expiry():
-    missing = []
+def test_every_signup_credit_amount_states_the_expiry():
+    missing, seen = [], 0
     for path in sorted(_TEMPLATES.rglob("*.html")):
         if path.parts[-2] == "email":
             continue
         lines = path.read_text(encoding="utf-8").splitlines()
         for i, line in enumerate(lines):
-            if "signup_credit(" not in line:
+            if "grant_usd" not in line:
                 continue
+            seen += 1
             window = "\n".join(lines[max(0, i - _NEAR):i + _NEAR + 1])
             if not any(w in window for w in _EXPIRY_WORDS):
                 missing.append(f"{path.relative_to(_TEMPLATES)}:{i + 1}")
+    assert seen, "no template shows a credit amount; this guard checks nothing"
     assert missing == []

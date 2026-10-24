@@ -104,10 +104,11 @@
         <p class="help-step-body">
           Submitting is the first point that needs an account. Billing is a
           USD wallet and that balance is your spend cap — no subscription,
-          no monthly minimum, and a new account starts with
-          ${{ signup_credit() }} already in it, enough for many structure
-          predictions and sequence runs; most binder design runs cost more
-          than that and need a top-up. Any of it left unspent expires {{ signup_credit_expiry_days }} days after sign-up. A hold is placed against
+          no monthly minimum, and you can top up from ${{ min_topup }}. A
+          ${{ min_topup }} balance is enough to start structure prediction,
+          ProteinMPNN sequence design and most binder design tools; BindCraft,
+          BoltzGen, ESMFold2 design and OpenDDE need a larger balance to
+          start. A hold is placed against
           your wallet while the job runs and the final charge settles against
           the compute actually used. See
           <a href="{{ url_for('public.pricing') }}">pricing</a> for how holds
