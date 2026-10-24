@@ -837,6 +837,25 @@ def test_esmfold2_start_minimum_covers_the_most_one_seed_can_owe():
     assert ESMFOLD2_START > MIN_TOPUP_USD
 
 
+# Leo, 2026-10-24: "scale the $15 by seeds".
+@pytest.mark.parametrize("params, seeds", [
+    ({"n_seeds": 1}, 1),
+    ({"n_seeds": 4}, 4),
+    ({"parameters": {"n_seeds": 4}}, 4),
+    ({}, 1),
+    ({"n_seeds": "abc"}, 1),
+    ({"n_seeds": float("nan")}, 1),
+    ({"n_seeds": 0}, 1),
+    ({"n_seeds": 65}, 64),
+    ({"n_seeds": 10**9}, 64),
+])
+def test_esmfold2_start_minimum_scales_with_seeds(params, seeds):
+    from tools.esmfold2_design import N_SEEDS_MAX
+
+    assert N_SEEDS_MAX == 64
+    assert live_start_usd(ESM2, params) == ESMFOLD2_START * seeds
+
+
 @pytest.mark.parametrize("tool", sorted(LIVE_ALL_PRESETS))
 def test_run_stops_when_the_balance_runs_short(tool):
     store, wallet = _Jobs(_job_row(tool=tool)), _Wallet("0.05")
