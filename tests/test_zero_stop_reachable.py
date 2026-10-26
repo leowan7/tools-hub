@@ -57,7 +57,9 @@ CASES = [
     pytest.param("iggm", {**IGGM_FORM, "num_samples": "2"}, id="iggm-2-samples"),
     pytest.param("esmfold2-design", ESM2_FORM, id="esmfold2-design-1-seed",
                  marks=pytest.mark.xfail(strict=True, reason=f"esmfold2-design: {_CAP_IS_START}")),
-    pytest.param("esmfold2-design", {**ESM2_FORM, "n_seeds": "2"}, id="esmfold2-design-2-seeds"),
+    # The start minimum is $15 per seed (Leo, 2026-10-24), so it equals the cap at any seed count.
+    pytest.param("esmfold2-design", {**ESM2_FORM, "n_seeds": "2"}, id="esmfold2-design-2-seeds",
+                 marks=pytest.mark.xfail(strict=True, reason=f"esmfold2-design: {_CAP_IS_START}")),
 ]
 
 

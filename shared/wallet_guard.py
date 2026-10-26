@@ -41,6 +41,7 @@ from shared.wallet_estimates import (
     estimated_cost_for_tool,
     gpu_class_for_job,
 )
+from tools.esmfold2_design import N_SEEDS_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ REASON_WALLET_EMPTY = "wallet_empty"
 # its designs in tools/esmfold2_design/run_pipeline.py::_shape_designs, which
 # runs only after ``designer.design`` returns the seed's whole batch, so a
 # stop before then keeps none of that seed's designs. Its start minimum (see
-# live_start_usd) keeps a one-seed run clear of the balance stop.
+# live_start_usd) keeps a run of any seed count clear of the balance stop.
 # pxdesign uploads each finished design on its 60 s heartbeat tick, in the
 # llm-proteinDesigner repo (docker/pxdesign/run_pipeline.py::_DesignStreamer,
 # branch feat/pxdesign-stream-designs), which no test here can read;
@@ -176,24 +177,29 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     every one of them on a $2.00 balance. That is what save-as-you-go is for --
     the meter stops the run at $0 and the user keeps the designs already
     streamed -- so it is sound only once the streaming container is deployed;
-    until then a stopped run delivers nothing for the money. Non-scaling is the
-    shape of every live figure here, not something peculiar to pxdesign:
-    esmfold2-design's paragraph below records the same gap, and no candidate
+    until then a stopped run delivers nothing for the money. Most live figures
+    here do not scale, so this is not peculiar to pxdesign, and no candidate
     flat figure closes it -- even the $13.00 base cap is under a 24-design
     pilot's $75.50. Only the scaled cap ($156.00 at 24) would, which is what
     the cushioned hold did. ::test_pxdesign_start_minimum_does_not_scale pins
-    the figures. Scaling it is Leo's call, as it is for esmfold2-design.
+    the figures. Scaling it is Leo's call; for esmfold2-design he chose to
+    scale (below).
 
-    esmfold2-design's figure is its base cap, the most ``live_due_usd`` charges
-    one seed, so a one-seed run started at that balance owes no more than it
-    had. Leo approved $15 on PR #440 review (2026-10-19). It does not scale
-    with ``n_seeds``: a run of n seeds is metered for n GPUs, so while all n
-    run, $15 lasts 1/n as long as it does for one seed, and the meter stops it at $0
-    whether or not a seed has streamed its designs yet. Scaling it to n seeds
-    is waiting on Leo.
+    esmfold2-design's figure is its base cap per seed, ``n_seeds`` times
+    ``TOOL_SPECS["esmfold2-design"].base_hard_cap_usd``. The base cap is the
+    most ``live_due_usd`` charges one seed, and a run of n seeds is metered for
+    n GPUs at once, so a flat figure would last 1/n as long and could stop the
+    run at $0 before any seed streamed its designs. Leo approved $15 on PR #440
+    review (2026-10-19), then, 2026-10-24: "scale the $15 by seeds".
+    ``n_seeds`` is read top-level, then under ``parameters``, as the
+    estimator's ``_effective_scaling_value`` reads it. A missing or
+    non-numeric value counts as 1, and it is clamped to 1..``N_SEEDS_MAX``
+    (::test_esmfold2_start_minimum_scales_with_seeds).
     """
-    if tool_slug in ("bindcraft", "esmfold2-design", "iggm"):
+    if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
+    if tool_slug == "esmfold2-design":
+        return TOOL_SPECS[tool_slug].base_hard_cap_usd * _esmfold2_seeds(params)
     if tool_slug == "proteina":
         return PROTEINA_START_USD
     if tool_slug == "pxdesign":
@@ -204,6 +210,18 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
+
+
+def _esmfold2_seeds(params: dict) -> int:
+    value = params.get("n_seeds")
+    nested = params.get("parameters")
+    if value is None and isinstance(nested, dict):
+        value = nested.get("n_seeds")
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        n = 1
+    return min(max(n, 1), N_SEEDS_MAX)
 
 
 def _balance(user_id: str) -> Decimal:
