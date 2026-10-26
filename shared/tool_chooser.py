@@ -41,7 +41,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shared.pdb_preflight_rules import TOOL_RULES
+from shared.pdb_preflight_rules import (
+    TOOL_RULES,
+    largest_target_aa_within_ceiling,
+)
 from shared.tool_meta import meta_for
 from shared.tools_catalog import _build_tools_catalog
 from tools import base as tool_base
@@ -374,6 +377,125 @@ def supports_multi_chain(slug: str) -> bool:
     )
 
 
+# The design count a tool's form submits when the visitor changes nothing.
+# Typed, because the default is a literal in the adapter validator
+# (``tools/bindcraft/__init__.py``'s ``form.get("num_designs") or "4"``) with
+# no constant to import, and pinned by tests/test_tool_chooser.py::
+# test_the_form_default_design_count_is_what_the_adapter_applies, which drives
+# that real validator with no count and reads the number back off the job spec.
+# Only tools whose runtime bound moves with the count need an entry; see
+# :func:`target_size_ceiling_aa`.
+_FORM_DEFAULT_DESIGNS: dict[str, int] = {"bindcraft": 4}
+
+
+def target_size_ceiling_aa(slug: str) -> int:
+    """Largest target chain size this tool's preflight will accept.
+
+    Derived from the enforcing envelope, not typed, because two different
+    gates in ``shared/pdb_preflight.py::_check_size_envelope`` can refuse on
+    size and the LOWER one is what the customer meets:
+
+    * ``hard_cap_target_aa`` — the residue ceiling, refused outright.
+    * ``runtime_ceiling_s`` — the wall-clock the container is killed at. Over
+      it the run returns nothing and is refunded, so preflight refuses it too.
+      Inverted back to a target size by
+      ``shared/pdb_preflight_rules.py::largest_target_aa_within_ceiling``.
+
+    The runtime bound is read at the count the run will actually carry: the
+    pool pinned in the wrapper (``runtime_fixed_designs``) where there is one,
+    otherwise the count the form submits untouched
+    (``_FORM_DEFAULT_DESIGNS``). Quoting the size cap instead would restate
+    bindcraft's 500 aa when a default 4-design submit is refused above 396,
+    which is the same over-promise this function exists to close.
+    :func:`size_depends_on_design_count` says on the card that asking for more
+    lowers it further.
+
+    boltzgen is why this exists: its cap is 600 aa, its pinned 200-design pool
+    overruns 6600 s above ~153 aa, and the chooser recommended it to targets
+    in between, which the form then refused. 0 for a tool preflight does not
+    gate on size at all.
+    """
+    rules = TOOL_RULES.get(slug)
+    if rules is None:
+        return 0
+    env = rules.size
+    ceiling = env.hard_cap_target_aa
+    if env.runtime_ceiling_s:
+        designs = env.runtime_fixed_designs or _FORM_DEFAULT_DESIGNS.get(slug)
+        if designs:
+            fits = largest_target_aa_within_ceiling(rules, designs)
+            if fits:
+                ceiling = min(ceiling, fits)
+    return ceiling
+
+
+def size_depends_on_design_count(slug: str) -> bool:
+    """True when asking for more designs lowers the size that fits.
+
+    A tool declaring ``runtime_ceiling_s`` without a pinned pool
+    (``runtime_fixed_designs``) is refused on runtime at a size that depends
+    on the count the form sends, so :func:`target_size_ceiling_aa` states the
+    size that fits the form's own default count and the card has to say that
+    a larger count fits less. bindcraft is the one such tool today; pinned by
+    tests/test_tool_chooser.py::
+    test_a_user_set_design_count_can_refuse_below_the_stated_ceiling, which
+    drives preflight above that default.
+    """
+    rules = TOOL_RULES.get(slug)
+    if rules is None:
+        return False
+    env = rules.size
+    return bool(env.runtime_ceiling_s and not env.runtime_fixed_designs)
+
+
+# Tools whose form sends no binder length, so the combined-budget gate cannot
+# fire for them and the card must not quote the budget.
+# ``shared/pdb_preflight.py::_check_size_envelope`` evaluates ``over_combined``
+# only when ``binder_max_aa`` is not None, and
+# ``shared/pdb_intake.py::_parse_preflight_size_params`` returns None for
+# rfantibody: it carries ``cdr_lengths``, which is none of the input keys
+# that helper reads. Typed because the field's absence
+# lives in the adapter and the form, not in the envelope the rest of this
+# clause is derived from -- the same shape of exception as
+# ``_ADAPTER_MULTI_CHAIN_REFUSALS`` above. Pinned by
+# tests/test_tool_chooser.py::
+# test_the_budget_clause_is_withheld_where_no_binder_length_is_sent, which
+# drives that real helper.
+_NO_BINDER_LENGTH_FIELD: frozenset[str] = frozenset({"rfantibody"})
+
+
+def _size_clause(slug: str) -> str:
+    """One sentence naming the target sizes preflight accepts, or "".
+
+    Three enforced numbers, each read off the envelope that enforces it:
+
+    * the floor, by ``shared/pdb_preflight.py``'s ``kept <
+      rules.min_target_aa`` refusal;
+    * the ceiling, by :func:`target_size_ceiling_aa`;
+    * the combined target+binder budget, by ``_check_size_envelope``'s
+      ``over_combined`` branch. Stated because for rfdiffusion, bindcraft and
+      proteina it bites BELOW the ceiling once a long binder is picked --
+      proteina's 620 budget leaves 320 aa of target at its 300 aa maximum
+      against a 500 aa cap -- so the ceiling alone is looser than the gate.
+    """
+    rules = TOOL_RULES.get(slug)
+    ceiling = target_size_ceiling_aa(slug)
+    if rules is None or not ceiling:
+        return ""
+    sentence = (
+        f" Its target can be {rules.min_target_aa} to {ceiling} residues"
+    )
+    if size_depends_on_design_count(slug):
+        sentence += ", and fewer the more designs you ask for"
+    sentence += "."
+    if slug not in _NO_BINDER_LENGTH_FIELD:
+        sentence += (
+            f" Target plus binder together must stay within "
+            f"{rules.size.hard_cap_combined_aa} residues."
+        )
+    return sentence
+
+
 def has_example(slug: str) -> bool:
     """True when /tools/<slug> renders a worked example to link to.
 
@@ -465,14 +587,24 @@ def prerequisite_line(slug: str) -> str:
     Composed from ``needs_structure`` and ``needs_hotspots`` plus the
     adapter-level refusals above, so it cannot state a requirement the
     submit gate does not enforce, nor omit one it does.
+
+    The size clause is appended to EVERY branch rather than only the composed
+    one, because a card that names what to bring but not how big it may be
+    sends a visitor with an oversized target to a form that refuses them,
+    which is the leak this clause closes. Of the two early returns below only
+    the proteina branch carries a clause today -- proteina is in TOOL_RULES
+    and esmfold2-design, the one slug in _ADAPTER_INPUT_LIMITS, is not, so
+    :func:`_size_clause` returns "" there and that append is inert until a
+    sequence-input tool gains preflight rules.
     """
+    size = _size_clause(slug)
     if slug in _CURATED_DEFAULT_TARGETS:
-        return _CURATED_DEFAULT_TARGETS[slug]
+        return _CURATED_DEFAULT_TARGETS[slug] + size
     if slug in _ADAPTER_INPUT_LIMITS:
         # A sequence-input tool: nothing below would compose a line for
         # it (needs_structure and needs_hotspots are both False), and an
         # empty line on a card is read as "bring nothing".
-        return _ADAPTER_INPUT_LIMITS[slug]
+        return _ADAPTER_INPUT_LIMITS[slug] + size
     parts: list[str] = []
     if needs_structure(slug):
         # The structure a backbone-only tool wants is the customer's own
@@ -492,8 +624,11 @@ def prerequisite_line(slug: str) -> str:
     if slug in _ADAPTER_RESIDUE_REFUSALS:
         parts.append(_ADAPTER_RESIDUE_REFUSALS[slug])
     if not parts:
-        return ""
-    return "You will need " + " and ".join(parts) + "."
+        # A tool that demands nothing can still have a size envelope: the
+        # clause stands on its own rather than being dropped with the empty
+        # "You will need" sentence.
+        return size.lstrip()
+    return "You will need " + " and ".join(parts) + "." + size
 
 
 def refuses_without_residues(slug: str) -> bool:
