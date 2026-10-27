@@ -2592,7 +2592,8 @@ def send_campaign_finished_email(
     """A compute campaign reached a terminal state.
 
     Trigger: :func:`shared.compute_campaigns._notify_campaign_finished`, called
-    by the driver that won the terminal CAS. ``final_status`` is one of
+    by whichever caller won the terminal CAS (the driver's finalize or the
+    cron paused sweep). ``final_status`` is one of
     ``completed``, ``completed_with_failures`` or ``failed``. Counts are
     sub-jobs (batches), never designs.
     """
