@@ -26,7 +26,6 @@ import pytest
 
 from tests.test_export_page_parity import _example, _pdb, _stored, _wire, client  # noqa: F401
 from tests.test_target_export import _agg, _ctx, _login
-from tests.test_worked_examples import tools_app  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -178,15 +177,3 @@ def test_an_esmfold_single_fold_exports_its_sequence(client, monkeypatch):  # no
     row = next(csv.DictReader(io.StringIO(
         client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
     assert row["sequence"] == "MKWAG"
-
-
-def test_the_staff_shortlist_says_where_a_structure_only_sequence_is(tools_app):
-    """The staff panel builds its cells without reading structures
-    (blueprints/admin.py _shortlist_tables), so a structure-only row has no
-    sequence there; the cell points at the file instead of showing a dash."""
-    flask_app, _ = tools_app
-    src = (flask_app.jinja_loader.get_source(
-        flask_app.jinja_env, "admin/campaign_detail.html")[0])
-    assert "r.sequence or '—'" not in src
-    assert "in structure" in src
-

@@ -236,6 +236,14 @@ def test_the_staff_copy_of_a_job_csv_carries_the_same_sequences(client, monkeypa
         ("MKWMKW", "MKC"), ("MKWMKW", "WCA")]
     assert seen == [("u-1", _JID, "d0.pdb"), ("u-1", _JID, "d1.pdb")]
 
+def test_a_structure_only_design_points_at_its_structure_not_a_dash(client):
+    """The panel reads no structures (blueprints/admin.py _shortlist_tables),
+    so a design whose sequence is only in its file says where it is. Not the
+    Export CSV: that reads at most 200 structures per job."""
+    job, _files = _two_chain_job()
+    html = _get(client, _campaign(), {_JID: job}).get_data(as_text=True)
+    assert "in the structure file (Download)" in _row(html, "d0")
+
 
 def test_a_design_structure_downloads_by_stored_index(client):
     pdb = b"ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 0.88           C\n"
