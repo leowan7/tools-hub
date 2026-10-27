@@ -148,12 +148,12 @@ def _start_beat(env: dict) -> None:
     body = {"job_id": job_id, "stage": "starting"}
     if env.get("SEED_NAME"):
         body.update(seed=env["SEED_NAME"], job_token=env.get("JOB_TOKEN", ""))
-    beat_url = urllib.parse.urlunparse(
-        urllib.parse.urlparse(url)._replace(path="/webhooks/heartbeat"))
-    req = urllib.request.Request(
-        beat_url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
     try:
+        beat_url = urllib.parse.urlunparse(
+            urllib.parse.urlparse(url)._replace(path="/webhooks/heartbeat"))
+        req = urllib.request.Request(
+            beat_url, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10).close()
     except Exception as exc:  # noqa: BLE001
         print(f"[start_beat] heartbeat failed: {exc}", flush=True)

@@ -1183,6 +1183,7 @@ def test_start_beat_survives_a_failed_post():
     exec(compile(ast.Module([_start_beat_source("af2")[1]], []), "modal_app", "exec"), ns)
     with patch("urllib.request.urlopen", side_effect=OSError("down")):
         ns["_start_beat"]({"WEBHOOK_URL": "https://hub/x", "JOB_ID": "j1"})
+    ns["_start_beat"]({"WEBHOOK_URL": "not a url", "JOB_ID": "j1"})
 
 
 def test_webhook_that_lands_during_the_cancel_wins():
