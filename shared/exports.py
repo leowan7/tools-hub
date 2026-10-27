@@ -472,6 +472,67 @@ def _is_reserved_seq_name(name: str) -> bool:
 _MAX_STRUCTURE_READS = 200
 # Concurrent structure downloads per export request (:func:`_read_chains`).
 _STRUCTURE_READ_THREADS = 16
+# A row's chains, once read, kept on the row itself as
+# ``[[chain_id, sequence], ...]`` in extractor order, so an export reads no
+# structure for it and spends none of ``_MAX_STRUCTURE_READS`` on it. Written
+# when a job finishes (``shared.jobs._slim_result_for_persist``) and by
+# scripts/backfill_chain_sequences.py. A list of pairs, not a ``{chain: seq}``
+# object: tool_jobs.result is jsonb (supabase/migrations/0005_tool_jobs.sql),
+# and jsonb reorders object keys by length then bytes.
+STORED_CHAINS = "chain_sequences"
+# Characters of chain sequence :func:`store_chain_sequences` adds to one
+# result before it stops; rows past it keep reading their structure at export
+# time. Chosen, not measured: _slim_result_for_persist's docstring records a
+# multi-MB result failing its write, at a size nobody wrote down. A 116-residue
+# target plus a ~125-residue heavy chain is ~250 characters a row, so this is
+# ~8,000 such rows.
+_MAX_STORED_CHAIN_CHARS = 2_000_000
+
+
+def stored_chains(cand) -> Optional[list[tuple[str, str]]]:
+    """The row's :data:`STORED_CHAINS` as ``[(chain_id, sequence), ...]``,
+    or ``None`` when it has none or the value is not a list of string
+    pairs."""
+    value = cand.get(STORED_CHAINS) if isinstance(cand, Mapping) else None
+    if not isinstance(value, list) or not all(
+            isinstance(p, list) and len(p) == 2
+            and all(isinstance(x, str) for x in p) for p in value):
+        return None
+    return [(c, s) for c, s in value]
+
+
+def store_chain_sequences(
+    candidates, *, fetch_bytes=None, default_job_id=None,
+) -> tuple[list, int]:
+    """``(rows, filled)``: a copy of ``candidates`` in which each dict row
+    that stores no sequence and no :data:`STORED_CHAINS` gets them, read from
+    its structure the way the exports read it (:func:`_structure_bytes`,
+    :func:`structure_chain_sequences`). Without ``fetch_bytes`` only inline
+    ``pdb_content_b64`` is read. A row whose bytes are missing or do not
+    parse is left as it was; one that parses to no chain stores ``[]``.
+    Stops adding once :data:`_MAX_STORED_CHAIN_CHARS` would be passed. Rows
+    that change are new dicts; ``candidates`` is not mutated."""
+    rows = list(candidates)
+    todo = []
+    for i, cand in enumerate(rows):
+        if (not isinstance(cand, dict) or _candidate_sequence(cand)
+                or stored_chains(cand) is not None):
+            continue
+        key = export_key(cand, i)
+        if _would_read(cand, key, default_job_id):
+            todo.append((i, cand, key))
+    results = _read_chains([(c, k) for _i, c, k in todo],
+                           fetch_bytes, default_job_id)
+    spent = filled = 0
+    for (i, cand, _key), (had_data, chains) in zip(todo, results):
+        if not had_data or chains is None:
+            continue
+        spent += sum(len(c) + len(s) for c, s in chains)
+        if spent > _MAX_STORED_CHAIN_CHARS:
+            break
+        rows[i] = {**cand, STORED_CHAINS: [[c, s] for c, s in chains]}
+        filled += 1
+    return rows, filled
 
 
 def _would_read(cand: dict, key: dict, default_job_id) -> bool:
@@ -536,8 +597,10 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     the id unstripped, so a blank chain id reads ``_chain `` there and
     ``sequence_chain`` here.
 
-    Reads a row's structure only when the row stores no sequence field --
-    the same condition, and the same :func:`_structure_bytes` call, as the
+    A row that stores :data:`STORED_CHAINS` takes its columns from them and
+    reads nothing; an empty list there gets "no sequence in structure".
+    Otherwise it reads a row's structure only when the row stores no
+    sequence field -- the same condition, and the same :func:`_structure_bytes` call, as the
     FASTA's structure fallback in :func:`candidates_to_fasta`, so a job's CSV
     download costs no more storage reads than its FASTA download.
     tests/test_export_page_parity.py
@@ -585,15 +648,19 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     Modelled on the ``provenance`` column in :func:`export_key`: per row, and
     absent from the file entirely when no row needs it.
 
-    ponytail: every structure is downloaded on every export -- capped at
-    ``_MAX_STRUCTURE_READS`` reads, ``_STRUCTURE_READ_THREADS`` at a time, in
-    :func:`_read_chains`, which the FASTA shares. The upgrade that retires
-    the cap is to store each design's sequence on its row when the job
-    finishes, so no export reads a structure.
+    ponytail: a row with no stored chains is downloaded on every export --
+    capped at ``_MAX_STRUCTURE_READS`` reads, ``_STRUCTURE_READ_THREADS`` at
+    a time, in :func:`_read_chains`, which the FASTA shares. Such rows are
+    ones whose job finished with no inline structure, or before chains were
+    stored; scripts/backfill_chain_sequences.py fills them.
     """
-    to_read = []
+    to_read, settled = [], []
     for cand, key, row in zip(cands, keys, rows):
         if row.get("sequence"):
+            continue
+        stored = stored_chains(cand)
+        if stored is not None:
+            settled.append((row, (True, stored)))
             continue
         # Rows :func:`_structure_bytes` would not read anything for are settled
         # before the budget, not out of it: counting those as reads let a
@@ -615,7 +682,8 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
         to_read.append((cand, key, row))
     results = _read_chains([(c, k) for c, k, _ in to_read],
                            fetch_bytes, default_job_id)
-    for (_cand, _key, row), (had_data, chains) in zip(to_read, results):
+    settled += [(row, res) for (_c, _k, row), res in zip(to_read, results)]
+    for row, (had_data, chains) in settled:
         if not chains:
             row[_SEQ_NOTE] = ("structure unavailable" if not had_data
                               else "structure did not parse" if chains is None
@@ -912,12 +980,14 @@ def candidates_to_fasta(
     it with ``score_legends.resolve_mode``.
 
     ``fetch_bytes`` (with ``default_job_id``) turns on the STRUCTURE
-    FALLBACK: a row carrying no sequence field is read from its structure --
+    FALLBACK: a row carrying no sequence field and no :data:`STORED_CHAINS`
+    is read from its structure --
     the same bytes :func:`candidates_to_zip` would archive -- and written as
     one record per protein chain, id suffixed ``_chain<X>``. Every chain,
     because this function is not told which chain is the design, so a complex's
-    target chain repeats once per design. Without ``fetch_bytes`` such a row
-    is skipped. With ``max_reads``, reads past it are skipped too, counted in a
+    target chain repeats once per design. A row with stored chains is
+    written from them the same way, with or without ``fetch_bytes``. Without
+    ``fetch_bytes`` a row with neither is skipped. With ``max_reads``, reads past it are skipped too, counted in a
     leading ``#`` line; the campaign and target routes pass
     ``_MAX_STRUCTURE_READS``, the job route passes none.
 
@@ -959,9 +1029,12 @@ def candidates_to_fasta(
     cands = _dict_candidates(candidates)
     keys = [export_key(cand, i) for i, cand in enumerate(cands)]
     # The CSV's read set (_add_chain_columns).
+    stored = {i: chains for i, cand in enumerate(cands)
+              if not _candidate_sequence(cand)
+              and (chains := stored_chains(cand)) is not None}
     to_read = [] if fetch_bytes is None else [
         i for i, cand in enumerate(cands)
-        if not _candidate_sequence(cand)
+        if not _candidate_sequence(cand) and i not in stored
         and _would_read(cand, keys[i], default_job_id)]
     unread = 0 if max_reads is None else len(to_read[max_reads:])
     to_read = to_read[:max_reads]
@@ -972,6 +1045,8 @@ def candidates_to_fasta(
         seq = _candidate_sequence(cand)
         if seq:
             records = [("", seq)]
+        elif i in stored:
+            records = [(f"_chain{cid}", chain_seq) for cid, chain_seq in stored[i]]
         elif i in read:
             chains = read[i][1]
             unparsed += chains is None
