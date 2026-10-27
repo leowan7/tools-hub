@@ -853,9 +853,10 @@ def _target_export(target_id: str, fmt: str):
     """
     from flask import Response  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
-        candidates_to_csv, candidates_to_fasta, candidates_to_zip,
-        zip_unresolved_message,
+        _MAX_STRUCTURE_READS, candidates_to_csv, candidates_to_fasta,
+        candidates_to_zip, zip_unresolved_message,
     )
+    from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
     from shared.storage import download_output  # noqa: PLC0415
 
     ctx = load_user_context()
@@ -959,7 +960,10 @@ def _target_export(target_id: str, fmt: str):
 
     if fmt == "csv":
         return Response(
-            candidates_to_csv(candidates),
+            candidates_to_csv(
+                candidates,
+                fetch_bytes=_storage_fetcher(ctx.user_id, "target_export_csv"),
+            ),
             mimetype="text/csv",
             headers={
                 "Content-Disposition":
@@ -974,7 +978,11 @@ def _target_export(target_id: str, fmt: str):
         # carries its own ``_source_tool`` / ``_source_preset`` (the latter
         # holding the run's MODE for a moded tool) and
         # ``shared.exports._bar_scope`` reads them per record.
-        body = candidates_to_fasta(candidates)
+        body = candidates_to_fasta(
+            candidates,
+            fetch_bytes=_storage_fetcher(ctx.user_id, "target_export_fasta"),
+            max_reads=_MAX_STRUCTURE_READS,
+        )
         if not body:
             # "No sequences found" is a claim about the target. Under `partial`
             # it is a claim about a read that did not happen.

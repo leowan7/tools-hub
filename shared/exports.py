@@ -459,21 +459,43 @@ def _is_reserved_seq_name(name: str) -> bool:
     """A column name :func:`sequence_columns` owns, so no metric may use it."""
     return name == _SEQ_NOTE or name.startswith(_SEQ_CHAIN_PREFIX)
 # Once this many structures have been read, the remaining rows that would need
-# one get a note instead of a read -- counted in reads, not rows. The loop is
-# sequential, and the web tier kills a request at gunicorn's ``timeout`` (120s
-# by default) under sync workers, taking the worker down with it -- see
-# gunicorn.conf.py. Chosen, not computed: per-download latency is unmeasured
-# here, and parse alone measured 0.46s / 2.15s for 50 / 500 rows of a CA-only
-# PDB, so most of the 120s is left for the downloads. Above every row count the
-# 2026-10-01 live check saw (50, 40, 10, 8) and above the two form caps that
-# sit below it -- boltzgen's ``budget`` 50 and iggm's ``num_samples`` 100 -- so
-# for those two it is unreachable. Forms that DO admit more rows than this,
-# each in its tools/<pkg>/__init__.py: bindcraft 500, rfantibody / pxdesign /
-# rfdiffusion 1000, and esmfold's 500-record batch, whose rows are read here
-# like any other: ``_run_batch_folds``'s ``design_entry`` in
-# tools/esmfold/run_pipeline.py carries no sequence field. Not a survey of all
-# 14 tools; those are the ones checked.
+# one get a note instead of a read -- counted in reads, not rows. The web tier
+# kills a request at gunicorn's ``timeout`` (120s by default) under sync
+# workers, taking the worker down with it -- see gunicorn.conf.py. Chosen, not
+# computed: per-download latency is unmeasured here. Above the two form caps
+# that sit below it -- boltzgen's ``budget`` 50 and iggm's ``num_samples`` 100
+# -- so for those two it is unreachable. Forms that DO admit more rows than
+# this, each in its tools/<pkg>/__init__.py: bindcraft 500, pxdesign /
+# rfdiffusion 1000, rfantibody 1000 backbones at five candidates each
+# (tools/rfantibody/meta.py), and esmfold's 500-record batch. A campaign or a
+# target merges many runs, so it can pass it with any tool.
 _MAX_STRUCTURE_READS = 200
+# Concurrent structure downloads per export request (:func:`_read_chains`).
+_STRUCTURE_READ_THREADS = 16
+
+
+def _would_read(cand: dict, key: dict, default_job_id) -> bool:
+    """Whether :func:`_structure_bytes` would read anything for this row:
+    inline content, or a ``pdb_key`` and a job id to fetch it from."""
+    return bool(cand.get("pdb_content_b64") or (
+        (key.get("source_job") or default_job_id) and key["pdb_key"]))
+
+
+def _read_chains(pairs, fetch_bytes, default_job_id) -> list:
+    """``[(data_was_read, chains), ...]`` for each ``(cand, key)``, in order:
+    :func:`_structure_bytes` then :func:`structure_chain_sequences`, run on a
+    thread pool so the reads are not one sequential download each. Each
+    worker returns only the chains, so the bytes are not all held at once."""
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    def one(pair):
+        data = _structure_bytes(pair[0], pair[1], fetch_bytes, default_job_id)
+        return bool(data), (structure_chain_sequences(data) if data else [])
+
+    if not pairs:
+        return []
+    with ThreadPoolExecutor(max_workers=_STRUCTURE_READ_THREADS) as pool:
+        return list(pool.map(one, pairs))
 
 
 def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
@@ -563,43 +585,39 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     Modelled on the ``provenance`` column in :func:`export_key`: per row, and
     absent from the file entirely when no row needs it.
 
-    ponytail: one sequential download and one Biopython parse per row, same as
-    the FASTA route it borrows from -- capped at ``_MAX_STRUCTURE_READS`` rows
-    here, uncapped there, which is the older exposure this change did not take
-    on. The cap is a ceiling, not a fix: the upgrade that retires it is parse
-    once per job and cache, or fetch concurrently, in :func:`_structure_bytes`
-    where the two routes meet, and it would lift the FASTA's limit at the same
-    time.
+    ponytail: every structure is downloaded on every export -- capped at
+    ``_MAX_STRUCTURE_READS`` reads, ``_STRUCTURE_READ_THREADS`` at a time, in
+    :func:`_read_chains`, which the FASTA shares. The upgrade that retires
+    the cap is to store each design's sequence on its row when the job
+    finishes, so no export reads a structure.
     """
-    reads = 0
+    to_read = []
     for cand, key, row in zip(cands, keys, rows):
         if row.get("sequence"):
             continue
         # Rows :func:`_structure_bytes` would not read anything for are settled
-        # before the budget, not out of it: it returns None without a call when
-        # a row has no inline content and no key, or a key but no job id to
-        # fetch it from. Counting those as reads let a job's structureless rows
-        # exhaust the budget and report rows that DO have a readable structure
-        # as unread (test_the_read_cap_counts_reads_and_not_rows). Predicted,
-        # not observed, so it is exact only up to the decode: inline content
-        # that is present but will not decode passes here and spends a slot on
-        # a call that then makes no request, for a row nothing in this repo
-        # produces. Its note, "structure unavailable", is true either way.
-        if not cand.get("pdb_content_b64") and not (
-                (key.get("source_job") or default_job_id) and key["pdb_key"]):
+        # before the budget, not out of it: counting those as reads let a
+        # job's structureless rows exhaust the budget and report rows that DO
+        # have a readable structure as unread
+        # (test_the_read_cap_counts_reads_and_not_rows). Inline content that
+        # is present but will not decode passes here and spends a slot on a
+        # call that then makes no request; its note, "structure unavailable",
+        # is true either way.
+        if not _would_read(cand, key, default_job_id):
             row[_SEQ_NOTE] = ("structure unavailable" if key["pdb_key"]
                               else "no structure stored")
             continue
-        if reads >= _MAX_STRUCTURE_READS:
+        if len(to_read) >= _MAX_STRUCTURE_READS:
             row[_SEQ_NOTE] = (
                 f"not read: this export reads at most "
                 f"{_MAX_STRUCTURE_READS} structures")
             continue
-        reads += 1
-        data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
-        chains = structure_chain_sequences(data) if data else []
+        to_read.append((cand, key, row))
+    results = _read_chains([(c, k) for c, k, _ in to_read],
+                           fetch_bytes, default_job_id)
+    for (_cand, _key, row), (had_data, chains) in zip(to_read, results):
         if not chains:
-            row[_SEQ_NOTE] = ("structure unavailable" if not data
+            row[_SEQ_NOTE] = ("structure unavailable" if not had_data
                               else "structure did not parse" if chains is None
                               else "no sequence in structure")
             continue
@@ -714,13 +732,12 @@ def candidates_to_csv(
 
     Without ``fetch_bytes`` the stored ``sequence`` field is the only source,
     so a row whose sequence lives in its structure file gets an empty cell.
-    That is what the campaign and target exports pass (``campaigns.py``,
-    ``targets.py``), whose FASTA routes pass none either, and what the admin
-    lab-project PAGE passes (``admin._shortlist_tables``).
+    That is what the admin lab-project PAGE passes
+    (``admin._shortlist_tables``).
 
-    The two routes that download one job's CSV pass a fetcher:
-    ``/jobs/<id>/export.csv`` and the staff copy of it,
-    ``admin_source_export_csv``. Such a row is then read from the same bytes
+    The job, campaign and target CSV routes pass a fetcher
+    (``blueprints/jobs.py``, ``campaigns.py``, ``targets.py``), as does the
+    staff copy of the job one, ``admin_source_export_csv``. Such a row is then read from the same bytes
     through the same extractor the FASTA fallback uses, one column per chain
     it returns, or a ``sequence_note`` saying why that row has none.
     """
@@ -813,37 +830,62 @@ def structure_chain_sequences(data: bytes) -> Optional[list[tuple[str, str]]]:
     (``test_a_pdb_with_a_loop_line_is_still_read_as_pdb``).
     """
     from Bio.Data.PDBData import protein_letters_3to1_extended  # noqa: PLC0415
-    from Bio.PDB import MMCIFParser, PDBParser  # noqa: PLC0415
+    from Bio.PDB import MMCIFParser  # noqa: PLC0415
 
     try:
         text = data.decode("utf-8", errors="replace")
-        parser = (MMCIFParser(QUIET=True) if re.search(r"^\s*data_\S", text, re.M)
-                  else PDBParser(QUIET=True))
-        model = next(iter(parser.get_structure("s", io.StringIO(text))), None)
+        if re.search(r"^\s*data_\S", text, re.M):
+            model = next(iter(MMCIFParser(QUIET=True).get_structure(
+                "s", io.StringIO(text))), None)
+            residues = None if model is None else {
+                str(chain.get_id()): [r.get_resname().strip() for r in chain]
+                for chain in model}
+        else:
+            residues = _pdb_residue_names(text) or None
     except Exception as exc:  # noqa: BLE001 -- see docstring
         # The type only: a parser message can quote the file's own text.
         logger.warning("structure did not parse: %s", type(exc).__name__)
         return None
-    if model is None:
+    if residues is None:
         logger.warning("structure did not parse: no model in %d bytes", len(data))
         return None
     out: list[tuple[str, str]] = []
-    for chain in model:
-        seq = "".join(
-            protein_letters_3to1_extended.get(res.get_resname().strip(), "")
-            for res in chain
-        )
+    for cid, names in residues.items():
+        seq = "".join(protein_letters_3to1_extended.get(n, "") for n in names)
         # A one-letter chain (poly-GLY placeholder backbone) is not a
         # designed sequence; test_structure_chain_sequences_skips_placeholder_chains.
         if len(set(seq)) > 1:
-            out.append((str(chain.get_id()), seq))
+            out.append((cid, seq))
     return out
+
+
+def _pdb_residue_names(text: str) -> dict[str, list[str]]:
+    """``{chain_id: [resname, ...]}`` for the first model of PDB text, chains
+    and residues in first-seen order. A line scan, not Biopython's PDBParser,
+    which was 5-18x slower on static/example/3ave_igg1_fc_dimer.pdb (3,348
+    atoms) across two machines (unrecorded hand timings). Keys a
+    residue the way PDBParser ids one -- chain, hetero flag, resSeq + iCode --
+    so altloc atoms are one residue. ``{}`` when there is no ATOM/HETATM
+    record, where PDBParser yields no model."""
+    chains: dict[str, dict] = {}
+    for line in text.splitlines():
+        rec = line[:6]
+        if rec == "ENDMDL":
+            break
+        if rec not in ("ATOM  ", "HETATM"):
+            continue
+        name = line[17:20].strip()
+        het = (" " if rec == "ATOM  "
+               else "W" if name in ("HOH", "WAT") else "H_" + name)
+        chains.setdefault(line[21:22], {}).setdefault((het, line[22:27]), name)
+    return {cid: list(res.values()) for cid, res in chains.items()}
 
 
 def candidates_to_fasta(
     candidates, sequences=None, *, tool=None, preset=None,
     fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
     default_job_id: Optional[str] = None,
+    max_reads: Optional[int] = None,
 ) -> str:
     """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
@@ -875,7 +917,9 @@ def candidates_to_fasta(
     one record per protein chain, id suffixed ``_chain<X>``. Every chain,
     because this function is not told which chain is the design, so a complex's
     target chain repeats once per design. Without ``fetch_bytes`` such a row
-    is skipped as before (the campaign and target routes).
+    is skipped. With ``max_reads``, reads past it are skipped too, counted in a
+    leading ``#`` line; the campaign and target routes pass
+    ``_MAX_STRUCTURE_READS``, the job route passes none.
 
     WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
     ``candidates[0]`` of the list the route hands over -- page order, via
@@ -913,14 +957,23 @@ def candidates_to_fasta(
     lines: list[str] = []
     unparsed = 0
     cands = _dict_candidates(candidates)
+    keys = [export_key(cand, i) for i, cand in enumerate(cands)]
+    # The CSV's read set (_add_chain_columns).
+    to_read = [] if fetch_bytes is None else [
+        i for i, cand in enumerate(cands)
+        if not _candidate_sequence(cand)
+        and _would_read(cand, keys[i], default_job_id)]
+    unread = 0 if max_reads is None else len(to_read[max_reads:])
+    to_read = to_read[:max_reads]
+    read = dict(zip(to_read, _read_chains(
+        [(cands[i], keys[i]) for i in to_read], fetch_bytes, default_job_id)))
     for i, cand in enumerate(cands):
-        key = export_key(cand, i)
+        key = keys[i]
         seq = _candidate_sequence(cand)
         if seq:
             records = [("", seq)]
-        elif fetch_bytes is not None:
-            data = _structure_bytes(cand, key, fetch_bytes, default_job_id)
-            chains = structure_chain_sequences(data) if data else []
+        elif i in read:
+            chains = read[i][1]
             unparsed += chains is None
             records = [(f"_chain{cid}", chain_seq) for cid, chain_seq in chains or []]
         else:
@@ -971,6 +1024,9 @@ def candidates_to_fasta(
         lines.append(" ".join(header_parts))
         for start in range(0, len(seq), 80):
             lines.append(seq[start:start + 80])
+    if unread:
+        lines.insert(0, f"# {unread} structure(s) not read: this export reads "
+                        f"at most {max_reads} structures")
     if not lines:
         return (f"# No sequence read: {unparsed} stored structure(s) did not parse.\n"
                 if unparsed else "")

@@ -442,6 +442,60 @@ def test_pxdesign_exports_carry_the_binder_read_from_its_cif(client, monkeypatch
     assert [r["sequence_chainA0"] for r in rows] == [target, target]
 
 
+def test_a_campaign_export_reads_sequences_from_its_designs_structures(
+        client, monkeypatch):
+    """A customer's rfantibody campaign: a CSV with no sequence column and no
+    FASTA (the page hid the button, and the route served the stub), because
+    the campaign routes passed no structure fetcher and rfantibody rows store
+    no sequence field (tools/rfantibody/example/result.json)."""
+    import blueprints.campaigns as campaigns_mod
+    import blueprints.jobs as jobs_mod
+    from shared import compute_campaigns as cc
+
+    files = {("job-a", "designs/d1.pdb"): _pdb({"H": "MKWC", "T": "KMKG"}),
+             ("job-b", "designs/d1.pdb"): _pdb({"H": "WCMK", "T": "KMKG"})}
+    cands = [{"rank": 1, "pdb_key": "designs/d1.pdb", "_source_job_id": job,
+              "scores": {"ipAE": 4.0}} for job in ("job-a", "job-b")]
+    monkeypatch.setattr(campaigns_mod, "load_user_context", lambda: SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"))
+    monkeypatch.setattr(cc, "aggregate_campaign_candidates", lambda *_a, **_k: {
+        "tool": "rfantibody", "candidates": cands, "total": 2})
+    monkeypatch.setattr(jobs_mod, "download_output",
+                        lambda **kw: files[(kw["job_id"], kw["filename"])])
+
+    rows = list(csv.DictReader(io.StringIO(client.get(
+        "/campaigns/c-1/export.csv").get_data(as_text=True))))
+    assert [r["sequence_chainH"] for r in rows] == ["MKWC", "WCMK"]
+    fasta = client.get("/campaigns/c-1/export.fasta").get_data(as_text=True)
+    assert [ln for ln in fasta.splitlines() if not ln.startswith(">")] == [
+        "MKWC", "KMKG", "WCMK", "KMKG"]
+
+
+def test_only_the_merged_fasta_exports_cap_their_structure_reads(
+        client, monkeypatch):
+    """Campaign and target FASTA merge many runs, so they stop at the cap and
+    say so; the job FASTA read every structure before them and still does."""
+    import blueprints.campaigns as campaigns_mod
+    from shared import compute_campaigns as cc, exports
+
+    monkeypatch.setattr(exports, "_MAX_STRUCTURE_READS", 2)
+    result, files = _chain_rows([{"A": "MKWMKW"}] * 3)
+    job = _wire(monkeypatch, "proteina", result,
+                fetch=lambda **kw: files[kw["filename"]])
+    job_fasta = client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+    assert job_fasta.count(">") == 3
+
+    monkeypatch.setattr(campaigns_mod, "load_user_context", lambda: SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"))
+    monkeypatch.setattr(cc, "aggregate_campaign_candidates", lambda *_a, **_k: {
+        "tool": "proteina", "total": 3, "candidates": [
+            {**c, "_source_job_id": job.id} for c in result["candidates"]]})
+    lines = client.get("/campaigns/c-1/export.fasta").get_data(
+        as_text=True).splitlines()
+    assert lines[0] == "# 1 structure(s) not read: this export reads at most 2 structures"
+    assert sum(ln.startswith(">") for ln in lines) == 2
+
+
 def test_a_structure_that_does_not_parse_says_so_in_the_csv(client, monkeypatch):
     result, files = _chain_rows([{"A": "MKWMKW"}, {"A": "MKWMKW"}])
     files["designs/design_0.pdb"] = b"not a structure"
@@ -814,14 +868,18 @@ def test_fasta_button_hidden_when_no_row_has_a_sequence_or_structure(tools_app):
     assert not _has_fasta_button(html)
 
 
-def test_fasta_button_on_a_campaign_table_needs_a_real_sequence(tools_app):
+def test_fasta_button_on_a_campaign_table_needs_a_sequence_or_structure(tools_app):
     flask_app, _ = tools_app
     tmpl = flask_app.jinja_env.from_string(
         "{% from 'components/candidate_table.html' import candidate_table %}"
         "{{ candidate_table(rows, [], 'job-1', 'iggm', campaign_id='c-1') }}")
     with flask_app.test_request_context("/x"):
         structure_only = tmpl.render(rows=[{"pdb_key": "a.pdb", "scores": {}}])
-        with_seq = tmpl.render(rows=[{"pdb_key": "a.pdb", "sequence": "MK", "scores": {}}])
-    assert "/export.csv" in structure_only
-    assert not _has_fasta_button(structure_only)
+        with_seq = tmpl.render(rows=[{"sequence": "MK", "scores": {}}])
+        neither = tmpl.render(rows=[{"scores": {}}])
+    assert "/export.csv" in neither
+    assert not _has_fasta_button(neither)
+    # The campaign FASTA reads a structure-only row's chains
+    # (test_a_campaign_export_reads_sequences_from_its_designs_structures).
+    assert _has_fasta_button(structure_only)
     assert _has_fasta_button(with_seq)
