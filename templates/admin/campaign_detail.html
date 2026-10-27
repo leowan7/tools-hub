@@ -183,7 +183,7 @@
                 <td class="shortlist-mono num">{{ r.name }}</td>
                 {% for v in r.cells %}<td class="num">{{ '' if v is none else v }}</td>{% endfor %}
                 <td>{{ r.sequence | length if r.sequence else '—' }}</td>
-                <td class="shortlist-mono shortlist-seq">{{ r.sequence or ('in the structure file (Download)' if r.has_structure else '—') }}</td>
+                <td class="shortlist-mono shortlist-seq">{{ r.sequence or ('in the structure file (Download)' if r.has_structure and r.stored_index is not none else 'in the structure file' if r.has_structure else '—') }}</td>
                 <td>
                   {% if r.has_structure and r.stored_index is not none %}
                     <a href="{{ url_for('admin.admin_source_structure', campaign_id=campaign.id, job_id=t.job_id, index=r.stored_index) }}" style="color:var(--accent);">Download</a>
