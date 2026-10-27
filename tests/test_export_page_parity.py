@@ -471,14 +471,26 @@ def test_a_campaign_export_reads_sequences_from_its_designs_structures(
         "MKWC", "KMKG", "WCMK", "KMKG"]
 
 
-def test_the_fasta_reads_no_more_structures_than_the_cap(client, monkeypatch):
-    from shared import exports
+def test_only_the_merged_fasta_exports_cap_their_structure_reads(
+        client, monkeypatch):
+    """Campaign and target FASTA merge many runs, so they stop at the cap and
+    say so; the job FASTA read every structure before them and still does."""
+    import blueprints.campaigns as campaigns_mod
+    from shared import compute_campaigns as cc, exports
 
     monkeypatch.setattr(exports, "_MAX_STRUCTURE_READS", 2)
     result, files = _chain_rows([{"A": "MKWMKW"}] * 3)
     job = _wire(monkeypatch, "proteina", result,
                 fetch=lambda **kw: files[kw["filename"]])
-    lines = client.get(f"/jobs/{job.id}/export.fasta").get_data(
+    job_fasta = client.get(f"/jobs/{job.id}/export.fasta").get_data(as_text=True)
+    assert job_fasta.count(">") == 3
+
+    monkeypatch.setattr(campaigns_mod, "load_user_context", lambda: SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"))
+    monkeypatch.setattr(cc, "aggregate_campaign_candidates", lambda *_a, **_k: {
+        "tool": "proteina", "total": 3, "candidates": [
+            {**c, "_source_job_id": job.id} for c in result["candidates"]]})
+    lines = client.get("/campaigns/c-1/export.fasta").get_data(
         as_text=True).splitlines()
     assert lines[0] == "# 1 structure(s) not read: this export reads at most 2 structures"
     assert sum(ln.startswith(">") for ln in lines) == 2
@@ -856,14 +868,18 @@ def test_fasta_button_hidden_when_no_row_has_a_sequence_or_structure(tools_app):
     assert not _has_fasta_button(html)
 
 
-def test_fasta_button_on_a_campaign_table_needs_a_real_sequence(tools_app):
+def test_fasta_button_on_a_campaign_table_needs_a_sequence_or_structure(tools_app):
     flask_app, _ = tools_app
     tmpl = flask_app.jinja_env.from_string(
         "{% from 'components/candidate_table.html' import candidate_table %}"
         "{{ candidate_table(rows, [], 'job-1', 'iggm', campaign_id='c-1') }}")
     with flask_app.test_request_context("/x"):
         structure_only = tmpl.render(rows=[{"pdb_key": "a.pdb", "scores": {}}])
-        with_seq = tmpl.render(rows=[{"pdb_key": "a.pdb", "sequence": "MK", "scores": {}}])
-    assert "/export.csv" in structure_only
-    assert not _has_fasta_button(structure_only)
+        with_seq = tmpl.render(rows=[{"sequence": "MK", "scores": {}}])
+        neither = tmpl.render(rows=[{"scores": {}}])
+    assert "/export.csv" in neither
+    assert not _has_fasta_button(neither)
+    # The campaign FASTA reads a structure-only row's chains
+    # (test_a_campaign_export_reads_sequences_from_its_designs_structures).
+    assert _has_fasta_button(structure_only)
     assert _has_fasta_button(with_seq)

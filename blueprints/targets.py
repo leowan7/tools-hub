@@ -853,8 +853,8 @@ def _target_export(target_id: str, fmt: str):
     """
     from flask import Response  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
-        candidates_to_csv, candidates_to_fasta, candidates_to_zip,
-        zip_unresolved_message,
+        _MAX_STRUCTURE_READS, candidates_to_csv, candidates_to_fasta,
+        candidates_to_zip, zip_unresolved_message,
     )
     from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
     from shared.storage import download_output  # noqa: PLC0415
@@ -981,6 +981,7 @@ def _target_export(target_id: str, fmt: str):
         body = candidates_to_fasta(
             candidates,
             fetch_bytes=_storage_fetcher(ctx.user_id, "target_export_fasta"),
+            max_reads=_MAX_STRUCTURE_READS,
         )
         if not body:
             # "No sequences found" is a claim about the target. Under `partial`

@@ -861,9 +861,9 @@ def structure_chain_sequences(data: bytes) -> Optional[list[tuple[str, str]]]:
 
 def _pdb_residue_names(text: str) -> dict[str, list[str]]:
     """``{chain_id: [resname, ...]}`` for the first model of PDB text, chains
-    and residues in first-seen order. A line scan, not Biopython's PDBParser:
-    the parser took 0.29s on a 3,348-atom complex (static/example/
-    3ave_igg1_fc_dimer.pdb), so 200 reads would spend about 58s parsing. Keys a
+    and residues in first-seen order. A line scan, not Biopython's PDBParser,
+    which was 5-18x slower on static/example/3ave_igg1_fc_dimer.pdb (3,348
+    atoms) across two machines (unrecorded hand timings). Keys a
     residue the way PDBParser ids one -- chain, hetero flag, resSeq + iCode --
     so altloc atoms are one residue. ``{}`` when there is no ATOM/HETATM
     record, where PDBParser yields no model."""
@@ -885,6 +885,7 @@ def candidates_to_fasta(
     candidates, sequences=None, *, tool=None, preset=None,
     fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
     default_job_id: Optional[str] = None,
+    max_reads: Optional[int] = None,
 ) -> str:
     """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
@@ -916,8 +917,9 @@ def candidates_to_fasta(
     one record per protein chain, id suffixed ``_chain<X>``. Every chain,
     because this function is not told which chain is the design, so a complex's
     target chain repeats once per design. Without ``fetch_bytes`` such a row
-    is skipped. Reads past ``_MAX_STRUCTURE_READS`` are skipped too, counted
-    in a leading ``#`` line.
+    is skipped. With ``max_reads``, reads past it are skipped too, counted in a
+    leading ``#`` line; the campaign and target routes pass
+    ``_MAX_STRUCTURE_READS``, the job route passes none.
 
     WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
     ``candidates[0]`` of the list the route hands over -- page order, via
@@ -956,14 +958,13 @@ def candidates_to_fasta(
     unparsed = 0
     cands = _dict_candidates(candidates)
     keys = [export_key(cand, i) for i, cand in enumerate(cands)]
-    # The CSV's read set and cap (_add_chain_columns), so the two downloads
-    # read the same rows.
+    # The CSV's read set (_add_chain_columns).
     to_read = [] if fetch_bytes is None else [
         i for i, cand in enumerate(cands)
         if not _candidate_sequence(cand)
         and _would_read(cand, keys[i], default_job_id)]
-    unread = len(to_read[_MAX_STRUCTURE_READS:])
-    to_read = to_read[:_MAX_STRUCTURE_READS]
+    unread = 0 if max_reads is None else len(to_read[max_reads:])
+    to_read = to_read[:max_reads]
     read = dict(zip(to_read, _read_chains(
         [(cands[i], keys[i]) for i in to_read], fetch_bytes, default_job_id)))
     for i, cand in enumerate(cands):
@@ -1025,7 +1026,7 @@ def candidates_to_fasta(
             lines.append(seq[start:start + 80])
     if unread:
         lines.insert(0, f"# {unread} structure(s) not read: this export reads "
-                        f"at most {_MAX_STRUCTURE_READS} structures")
+                        f"at most {max_reads} structures")
     if not lines:
         return (f"# No sequence read: {unparsed} stored structure(s) did not parse.\n"
                 if unparsed else "")
