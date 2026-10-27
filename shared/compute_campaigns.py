@@ -2428,12 +2428,51 @@ def _maybe_finalize(campaign: "ComputeCampaign") -> None:
     # CAS from a non-terminal state only, so a concurrent cancel (or another
     # driver's finalize) is never overwritten: finalizing a campaign a user just
     # cancelled would resurrect it out of "cancelled".
-    _cas_transition(
+    if _cas_transition(
         campaign.id,
         final,
         ("funded", "running", "completing", "paused_insufficient_funds"),
         {"completed_at": _now_iso()},
-    )
+    ):
+        _notify_campaign_finished(campaign, final, succeeded)
+
+
+def _notify_campaign_finished(
+    campaign: "ComputeCampaign", final: str, succeeded: int
+) -> None:
+    """Completion email, sent only by the caller that won the terminal CAS.
+
+    At most once per campaign: the CAS in :func:`_cas_transition` has one
+    winner, and a dropped send is not retried. Honours the same
+    ``job_complete_email`` opt-out as single-job emails
+    (``shared.jobs._send_completion_email``). Never raises into the driver.
+    """
+    try:
+        from shared.email import send_campaign_finished_email  # noqa: PLC0415
+        from shared.jobs import (  # noqa: PLC0415
+            _email_pref_enabled,
+            resolve_user_email_and_meta,
+        )
+        user_email, meta = resolve_user_email_and_meta(campaign.user_id)
+        if not user_email:
+            return
+        if not _email_pref_enabled(meta, "job_complete_email", default=True):
+            logger.info(
+                "campaign %s: finished email skipped, user opt-out", campaign.id
+            )
+            return
+        send_campaign_finished_email(
+            user_email=user_email,
+            campaign_id=campaign.id,
+            campaign_name=campaign.name or "",
+            final_status=final,
+            succeeded=succeeded,
+            total=campaign.total_subjobs,
+        )
+    except Exception:
+        logger.warning(
+            "campaign %s: finished email raised", campaign.id, exc_info=True
+        )
 
 
 def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:
@@ -2490,9 +2529,14 @@ def _finalize_undispatchable(
     if succeeded < 0:
         return False
     final = "completed_with_failures" if succeeded > 0 else "cancelled"
-    return _cas_transition(
+    won = _cas_transition(
         campaign_id, final, from_states, {"completed_at": _now_iso()},
     )
+    if won and final != "cancelled":
+        campaign = get_campaign(campaign_id)
+        if campaign is not None:
+            _notify_campaign_finished(campaign, final, succeeded)
+    return won
 
 
 def sweep_paused_campaigns(*, now=None, ttl_days: int = _PAUSE_TTL_DAYS) -> dict:

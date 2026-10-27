@@ -2580,6 +2580,49 @@ def send_campaign_paused_email(
     )
 
 
+def send_campaign_finished_email(
+    *,
+    user_email: str,
+    campaign_id: str,
+    campaign_name: str,
+    final_status: str,
+    succeeded: int,
+    total: int,
+) -> bool:
+    """A compute campaign reached a terminal state.
+
+    Trigger: :func:`shared.compute_campaigns._notify_campaign_finished`, called
+    by the driver that won the terminal CAS. ``final_status`` is one of
+    ``completed``, ``completed_with_failures`` or ``failed``. Counts are
+    sub-jobs (batches), never designs.
+    """
+    base_url = _base_url()
+    label = campaign_name.strip() or "Your full-size run"
+    unfinished = max(total - succeeded, 0)
+    if final_status == "completed":
+        subject = f"{label} is done"
+    elif final_status == "failed":
+        subject = f"{label} failed"
+    else:
+        subject = f"{label} finished: {unfinished} of {total} batches did not finish"
+    html = _render_template(
+        "send_campaign_finished.html",
+        base_url=base_url,
+        campaign_name=label,
+        campaign_url=f"{base_url}/campaigns/{campaign_id}",
+        final_status=final_status,
+        succeeded=succeeded,
+        unfinished=unfinished,
+        total=total,
+    )
+    return _post_resend(
+        to_email=user_email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"campaign_finished campaign={campaign_id} status={final_status}",
+    )
+
+
 def send_job_capped_email(
     *,
     user_id: str,
