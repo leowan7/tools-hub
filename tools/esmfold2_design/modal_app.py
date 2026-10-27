@@ -227,6 +227,34 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
+def _start_beat(env: dict) -> None:
+    """POST a ``starting`` heartbeat to the hub as the GPU function begins.
+
+    The hub stamps ``started_at`` on a job's first heartbeat
+    (webhooks/modal.py::_handle_heartbeat), and a cancel bills from
+    ``started_at`` once a heartbeat has arrived (shared/jobs.py::cancel_job).
+    A failed POST is printed and the run goes on.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url, job_id = env.get("WEBHOOK_URL", ""), env.get("JOB_ID", "")
+    if not (url and job_id):
+        return
+    body = {"job_id": job_id, "stage": "starting"}
+    if env.get("SEED_NAME"):
+        body.update(seed=env["SEED_NAME"], job_token=env.get("JOB_TOKEN", ""))
+    beat_url = urllib.parse.urlunparse(
+        urllib.parse.urlparse(url)._replace(path="/webhooks/heartbeat"))
+    req = urllib.request.Request(
+        beat_url, data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[start_beat] heartbeat failed: {exc}", flush=True)
+
+
 # ESMFold2 + ESMC weights download is ~30-40 GB on first run. The Volume
 # survives deploys so only the very first cold prod call pays the cost.
 weights = modal.Volume.from_name(
@@ -419,6 +447,7 @@ def _run_one_seed(payload: Any) -> dict:
     import sys
 
     env = _merged_environment(payload)
+    _start_beat(env)
     cmd = [_PYTHON, "-u", _RUN_PIPELINE_REMOTE]
     job_spec = (payload or {}).get("job_spec", {}) or {}
 

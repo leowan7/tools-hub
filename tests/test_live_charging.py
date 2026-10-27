@@ -1121,6 +1121,70 @@ def test_cancel_before_the_first_heartbeat_stays_free():
     assert r.settle.call_args.kwargs.get("refund") is True
 
 
+def test_cancel_after_the_start_beat_bills_from_it():
+    # The container's start beat is the job's first beat: it stamps started_at,
+    # so a cancel 125 s later bills 125 s though no work beat has arrived.
+    inputs = {"_wallet": _job_row()["inputs"]["_wallet"]}
+    store = _Jobs(_job_row(tool="iggm", status="pending", started_at=None, inputs=inputs))
+    _heartbeat(store, NOW)
+    r = _cancel(store, 125)
+    assert r.row["gpu_seconds_used"] == 125
+    assert r.settle.call_args.args[:2] == ("hold-1", 125)
+    assert not r.settle.call_args.kwargs.get("refund")
+
+
+# The modal_app.py of every live tool whose container is in this repo.
+START_BEAT_APPS = sorted(t.replace("-", "_") for t in (LIVE | LIVE_ALL_PRESETS) - OUT_OF_REPO)
+
+
+def _start_beat_source(tool):
+    tree = ast.parse((ROOT / "tools" / tool / "modal_app.py").read_text(encoding="utf-8"))
+    return tree, next(n for n in tree.body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_start_beat")
+
+
+@pytest.mark.parametrize("tool", START_BEAT_APPS)
+def test_gpu_function_sends_the_start_beat_before_its_work(tool):
+    tree, _ = _start_beat_source(tool)
+    callers = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+               and any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_merged_environment"
+                       for c in ast.walk(f)) and f.name != "_start_beat"]
+    assert callers
+    for fn in callers:
+        stmts = [ast.unparse(s) for s in fn.body]
+        at = stmts.index("env = _merged_environment(payload)")
+        assert stmts[at + 1] == "_start_beat(env)", (tool, fn.name)
+
+
+@pytest.mark.parametrize("tool", START_BEAT_APPS)
+def test_start_beat_is_the_same_in_every_app(tool):
+    assert ast.dump(_start_beat_source(tool)[1]) == ast.dump(_start_beat_source("af2")[1])
+
+
+@pytest.mark.parametrize("env,body", [
+    ({"WEBHOOK_URL": "https://hub/webhooks/modal", "JOB_ID": "j1"},
+     {"job_id": "j1", "stage": "starting"}),
+    ({"WEBHOOK_URL": "https://hub/webhooks/modal", "JOB_ID": "j1",
+      "SEED_NAME": "seed3", "JOB_TOKEN": "tok"},
+     {"job_id": "j1", "stage": "starting", "seed": "seed3", "job_token": "tok"}),
+])
+def test_start_beat_posts_to_the_heartbeat_route(env, body):
+    ns = {"json": json}
+    exec(compile(ast.Module([_start_beat_source("af2")[1]], []), "modal_app", "exec"), ns)
+    with patch("urllib.request.urlopen") as urlopen:
+        ns["_start_beat"](env)
+    req = urlopen.call_args.args[0]
+    assert req.full_url == "https://hub/webhooks/heartbeat"
+    assert json.loads(req.data) == body
+
+
+def test_start_beat_survives_a_failed_post():
+    ns = {"json": json}
+    exec(compile(ast.Module([_start_beat_source("af2")[1]], []), "modal_app", "exec"), ns)
+    with patch("urllib.request.urlopen", side_effect=OSError("down")):
+        ns["_start_beat"]({"WEBHOOK_URL": "https://hub/x", "JOB_ID": "j1"})
+
+
 def test_webhook_that_lands_during_the_cancel_wins():
     store = _Jobs(_job_row())
 
