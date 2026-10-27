@@ -966,8 +966,8 @@ def _campaign_candidates_meeting_bar(
         for r in rows
     )
 
-# CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
-# (limit=None). The ZIP keeps a top-N cap because it pulls every candidate's
+# CSV and FASTA export the campaign's FULL set (limit=None), reading at most
+# shared.exports._MAX_STRUCTURE_READS structures for the sequences. The ZIP keeps a top-N cap because it pulls every candidate's
 # PDB bytes into web-process memory, and an unbounded campaign could OOM the
 # process — that cap is load-bearing (decision 6).
 #
@@ -994,6 +994,7 @@ def _campaign_export(campaign_id: str, fmt: str):
         candidates_to_csv, candidates_to_fasta, candidates_to_zip,
         zip_unresolved_message,
     )
+    from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
     from shared.storage import download_output  # noqa: PLC0415
 
     ctx = load_user_context()
@@ -1010,7 +1011,10 @@ def _campaign_export(campaign_id: str, fmt: str):
 
     if fmt == "csv":
         return Response(
-            candidates_to_csv(candidates),
+            candidates_to_csv(
+                candidates,
+                fetch_bytes=_storage_fetcher(ctx.user_id, "campaign_export_csv"),
+            ),
             mimetype="text/csv",
             headers={"Content-Disposition": f"attachment; filename={stem}_scores.csv"},
         )
@@ -1023,7 +1027,10 @@ def _campaign_export(campaign_id: str, fmt: str):
         # iggm declare no bar at all). A moded tool added to that list later
         # would read no bar here and get no notes -- the same answer it gives
         # everywhere else that cannot name a run.
-        body = candidates_to_fasta(candidates, tool=agg.get("tool")) or (
+        body = candidates_to_fasta(
+            candidates, tool=agg.get("tool"),
+            fetch_bytes=_storage_fetcher(ctx.user_id, "campaign_export_fasta"),
+        ) or (
             "# No sequences found in this run's output.\n"
         )
         return Response(

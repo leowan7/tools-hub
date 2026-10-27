@@ -447,12 +447,12 @@
   <div class="cand-export-btns">
     <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download CSV</a>
     {# Offered when the file would hold a sequence: a row's own sequence, or
-       -- on a job page only, the one route that reads structures for it
-       (blueprints/jobs.py::export_fasta) -- a structure to read chains from.
-       QA 2026-09-30 P1-3: it was unconditional and served a stub. #}
+       a structure to read chains from (the job, campaign and target FASTA
+       routes all pass a structure fetcher). QA 2026-09-30 P1-3: it was
+       unconditional and served a stub. #}
     {% set _fasta_ok = namespace(v=false) %}
     {% for c in candidates %}
-      {% if c.get('sequence') or c.get('binder_sequence') or (not campaign_id and not target_id and (c.get('pdb_key') or c.get('pdb_content_b64'))) %}{% set _fasta_ok.v = true %}{% endif %}
+      {% if c.get('sequence') or c.get('binder_sequence') or c.get('pdb_key') or c.get('pdb_content_b64') %}{% set _fasta_ok.v = true %}{% endif %}
     {% endfor %}
     {% if _fasta_ok.v %}
     <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">FASTA</a>
