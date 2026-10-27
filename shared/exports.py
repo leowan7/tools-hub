@@ -651,8 +651,10 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     ponytail: a row with no stored chains is downloaded on every export --
     capped at ``_MAX_STRUCTURE_READS`` reads, ``_STRUCTURE_READ_THREADS`` at
     a time, in :func:`_read_chains`, which the FASTA shares. Such rows are
-    ones whose job finished with no inline structure, or before chains were
-    stored; scripts/backfill_chain_sequences.py fills them.
+    ones whose job finished with no inline structure or before chains were
+    stored, whose structure did not parse, or that fell past
+    ``_MAX_STORED_CHAIN_CHARS`` (:func:`store_chain_sequences`);
+    scripts/backfill_chain_sequences.py fills the first two.
     """
     to_read, settled = [], []
     for cand, key, row in zip(cands, keys, rows):

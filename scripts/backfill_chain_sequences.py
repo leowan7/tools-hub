@@ -71,7 +71,7 @@ def backfill_job(row: dict, *, apply: bool) -> int:
     filled = _stored_count(new) - _stored_count(result)
     if filled and apply and not _cas_update(
             row["id"], {"result": new}, allowed_current=(row["status"],)):
-        print(f"  {row['id']}: status changed since read; skipped")
+        print(f"  {row['id']}: not written (status changed since read, or the write failed: see log)")
         return 0
     return filled
 

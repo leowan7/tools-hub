@@ -2152,14 +2152,15 @@ def _with_chain_sequences(
     (:func:`shared.exports.store_chain_sequences`). From
     :func:`_slim_result_for_persist` there is no ``fetch_bytes``, so only the
     inline ``pdb_content_b64`` it is about to drop is read, and no Storage:
-    that runs inside the terminal write, which the webhook request waits on.
+    that runs inside the terminal write, which the webhook request waits on
+    (webhooks/modal.py ``_apply_terminal`` calls :func:`complete_job`).
     scripts/backfill_chain_sequences.py passes a Storage fetcher. Same
     top-level array :func:`candidate_records` picks, without its legacy
     ``output`` unwrap. A raise is logged and the result passes through
     unchanged, so the terminal write still happens.
 
     ponytail: parses every inline structure in the request, a few ms each
-    (static/example PDBs, timed by hand), so cost grows with the rows the
+    (static/example PDBs, timed by hand; the timing is not recorded), so cost grows with the rows the
     webhook carries inline. Move it after the write if a payload ever makes
     that matter.
     """
