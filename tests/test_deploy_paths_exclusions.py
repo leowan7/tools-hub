@@ -51,8 +51,8 @@ Checked two ways on purpose:
    ``DockerfileSpec.context_files``). Costs ~1s per app. This is the only check
    that can see a change in *Modal* rather than in this repo: the whole
    exclusion rests on ``import_file_or_module`` resolving these files in script
-   mode, and ``modal>=1.4,<2`` does not bound that — CI reinstalls the client
-   fresh on every deploy. A syntactic scan structurally cannot notice.
+   mode, and a Modal client bump can change that. A syntactic scan
+   structurally cannot notice.
 
    The ``context_files`` half of that walk exists because check 1 was the sole
    cover for that channel and kept being out-spelled. It asks each layer's own
@@ -510,7 +510,7 @@ _FORBIDDEN_CALLS = {
 # denylist of dangerous methods goes stale silently the moment Modal adds one —
 # which is exactly how `context_files=` got through. This inverts it: anything
 # on the Image that is not on the reviewed-safe list below fails, including a
-# method a future `modal>=1.4,<2` introduces.
+# method a future modal release introduces.
 _IMAGE_API = {n for n in dir(modal.Image) if not n.startswith("_")}
 
 # Reviewed against modal 1.4.2 by BUILDING each candidate image and reading the
@@ -576,7 +576,7 @@ _ALLOWED_IMAGE_CALLS = {
 # Image itself. `_IMAGE_API` matches on the attribute NAME alone, so when modal
 # 1.5 added `Image.from_name`, every app's `modal.Volume.from_name(...)` handle
 # started failing — a false red on nine apps, and one that only appears on the
-# client CI resolves (`modal>=1.4,<2`), not the one a laptop happens to have.
+# client CI installs, not the one a laptop happens to have.
 # Widening `_ALLOWED_IMAGE_CALLS` would have been the wrong fix: it is global, so
 # permitting `Volume.from_name` would permit the real `Image.from_name` forever.
 #
@@ -872,7 +872,7 @@ def test_non_image_receiver_exemption_is_narrow():
     It exists because ``_IMAGE_API`` matches on the attribute name alone and
     modal 1.5 added ``Image.from_name``, turning all nine apps'
     ``modal.Volume.from_name(...)`` red. Note this only reproduces on the client
-    CI resolves from ``modal>=1.4,<2``: on modal 1.4.2 there is no
+    CI installs: on modal 1.4.2 there is no
     ``Image.from_name`` and the false red does not exist at all. So the exemption
     cannot be trusted to a local run, and every edge below is pinned.
 
@@ -1155,7 +1155,7 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 # these files in script mode. If that ever flipped to package mode,
 # `get_entrypoint_mount()` would return `_from_local_python_packages("tools")`,
 # every adapter would ship in every image, and a purely syntactic guard would
-# stay green. `modal>=1.4,<2` is not a bound: CI reinstalls it fresh each run.
+# stay green. A modal bump in requirements.txt is the change this exists to catch.
 #
 # Costs ~1s per app (subprocess start + `import modal`), ~10s for the nine. Not
 # marked slow and not skippable: a skipped guard is not a guard.

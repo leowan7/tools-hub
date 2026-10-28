@@ -54,8 +54,8 @@ def _builder_versions() -> tuple[str, ...]:
     means this neither hardcodes a version nor misses one Modal adds.
 
     Looked up in two places because the Literal has already moved once
-    (``modal.image`` on 1.4.2, ``modal._image`` on 1.5.4) and this repo installs
-    an unpinned ``modal>=1.4,<2`` in CI. If it moves again this RAISES rather
+    (``modal.image`` on 1.4.2, ``modal._image`` on 1.5.4) and a modal bump in
+    requirements.txt can move it again. If it does, this RAISES rather
     than falling back to a baked-in list: a silent fallback would keep the probe
     green while it quietly stopped covering whatever version was added.
     """
