@@ -52,7 +52,8 @@ Checked two ways on purpose:
    that can see a change in *Modal* rather than in this repo: the whole
    exclusion rests on ``import_file_or_module`` resolving these files in script
    mode, and a Modal client bump can change that. A syntactic scan
-   structurally cannot notice.
+   structurally cannot notice. It runs on the client requirements.txt pins;
+   deploy-modal.yml installs its own (``modal>=1.4,<2``), which can differ.
 
    The ``context_files`` half of that walk exists because check 1 was the sole
    cover for that channel and kept being out-spelled. It asks each layer's own
@@ -576,7 +577,7 @@ _ALLOWED_IMAGE_CALLS = {
 # Image itself. `_IMAGE_API` matches on the attribute NAME alone, so when modal
 # 1.5 added `Image.from_name`, every app's `modal.Volume.from_name(...)` handle
 # started failing — a false red on nine apps, and one that only appears on the
-# client CI installs, not the one a laptop happens to have.
+# client pytest CI installs, not the one a laptop happens to have.
 # Widening `_ALLOWED_IMAGE_CALLS` would have been the wrong fix: it is global, so
 # permitting `Volume.from_name` would permit the real `Image.from_name` forever.
 #
@@ -1155,7 +1156,8 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 # these files in script mode. If that ever flipped to package mode,
 # `get_entrypoint_mount()` would return `_from_local_python_packages("tools")`,
 # every adapter would ship in every image, and a purely syntactic guard would
-# stay green. A modal bump in requirements.txt is the change this exists to catch.
+# stay green. It probes the client requirements.txt pins (modal==1.6.2), NOT
+# the one deploy-modal.yml installs (`modal>=1.4,<2`, resolved fresh per deploy).
 #
 # Costs ~1s per app (subprocess start + `import modal`), ~10s for the nine. Not
 # marked slow and not skippable: a skipped guard is not a guard.
