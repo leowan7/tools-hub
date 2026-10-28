@@ -1,0 +1,53 @@
+{# Compute campaign reached a terminal state.
+   Sender: shared.email.send_campaign_finished_email
+   Variables:
+     base_url        URL prefix (no trailing slash)
+     campaign_name   campaign label (already fallback-filled)
+     campaign_url    link to the campaign detail page
+     final_status    completed | completed_with_failures | failed
+     succeeded       sub-jobs (batches) that finished
+     unfinished      total minus succeeded
+     total           sub-jobs (batches) in the campaign
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">
+    {% if final_status == "completed" %}{{ campaign_name }} is done
+    {% elif final_status == "failed" %}{{ campaign_name }} failed
+    {% else %}{{ campaign_name }} finished with some failed batches{% endif %}
+  </h2>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    {% if final_status == "completed" %}
+    All {{ total }} batch{{ "es" if total != 1 }} finished.
+    {% elif final_status == "failed" %}
+    None of the {{ total }} batch{{ "es" if total != 1 }} finished.
+    {% else %}
+    {{ succeeded }} of {{ total }} batches finished. {{ unfinished }} did not finish.
+    {% endif %}
+  </p>
+
+  <p style="margin:1.5rem 0;">
+    <a href="{{ campaign_url }}"
+       style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+              color:#ffffff;text-decoration:none;border-radius:6px;
+              font-weight:600;">
+      {% if final_status == "failed" %}View the run{% else %}View results{% endif %}
+    </a>
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    <a href="{{ campaign_url }}" style="color:#2B9E7E;">{{ campaign_url }}</a>
+  </p>
+
+  <p style="margin:1.5rem 0 0 0;line-height:1.55;">
+    The Ranomics team
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:12px;color:#999;margin:0;">
+    Ranomics Tools.
+    <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+</div>
