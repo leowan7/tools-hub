@@ -16,8 +16,8 @@ Usage (repo root, SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in the env or .env):
 
 Dry run reads the structures and prints what it would fill; it writes
 nothing. Jobs are walked in id order, ``--batch`` ids at a time, each job's
-row read on its own, and every batch prints the ``--after`` value to resume
-from. Rerunning is safe: a row that already stores chains, or stores a
+row read on its own, and every batch of a paged run prints the ``--after``
+value to resume from. Rerunning is safe: a row that already stores chains, or stores a
 sequence, is skipped, and a job with nothing to fill is not written. Only
 terminal jobs completed more than ``--min-age-minutes`` ago are touched, so a
 terminal write still in flight is not raced; the write itself is conditional
@@ -26,9 +26,10 @@ on the job's status not having changed since it was read.
 Storage downloads run one at a time with ``--pause`` seconds after each, and
 the same pause between jobs. A 429, 5xx, network error or statement timeout
 (57014) is retried ``--retries`` times with doubling backoff. A job whose
-write or reads still fail is listed at the end for a ``--ids`` rerun. A page
-or row read that still fails ends the run with the ``--after`` to resume
-from and exit status 2.
+write, or a Storage read that failed transiently, still fails is listed for a
+``--ids`` rerun; a read that misses for good (404, empty) is only printed. A
+page or row read that still fails ends the run with exit status 2, the
+resume point and that list.
 """
 
 from __future__ import annotations
@@ -101,9 +102,11 @@ def _stored_count(result) -> int:
                for c in candidate_records(result))
 
 
-def _fetcher(user_id: str, *, pause: float, retries: int, failed: set):
+def _fetcher(row_id: str, user_id: str, *, pause: float, retries: int,
+             failed: set):
     # ponytail: the lock makes the exports' read pool download one at a time;
-    # 16 at once got 429 too_many_connections from Storage on 2026-10-29.
+    # _STRUCTURE_READ_THREADS (16) at once got 429 too_many_connections from
+    # Storage in the 2026-10-29 production run (runner's report).
     lock = threading.Lock()
 
     def fetch(job_id: str, filename: str):
@@ -115,7 +118,7 @@ def _fetcher(user_id: str, *, pause: float, retries: int, failed: set):
             except StorageError as exc:
                 print(f"  storage miss {job_id}/{filename}: {exc}", file=sys.stderr)
                 if _transient(exc):
-                    failed.add(job_id)
+                    failed.add(row_id)
                 return None
             finally:
                 time.sleep(pause)
@@ -125,14 +128,15 @@ def _fetcher(user_id: str, *, pause: float, retries: int, failed: set):
 def backfill_job(row: dict, *, apply: bool, pause: float = 0.0, retries: int = 0,
                  failed: set | None = None) -> int:
     """Rows filled (or, dry run, that would be) for one ``tool_jobs`` row.
-    A job whose reads or write still fail after retries goes in ``failed``."""
+    A job whose write, or a transient Storage read, still fails after retries
+    goes in ``failed``."""
     failed = set() if failed is None else failed
     result = row.get("result")
     if not isinstance(result, dict):
         return 0
     new = _with_chain_sequences(
         result, default_job_id=row["id"],
-        fetch_bytes=_fetcher(row["user_id"], pause=pause, retries=retries,
+        fetch_bytes=_fetcher(row["id"], row["user_id"], pause=pause, retries=retries,
                              failed=failed))
     filled = _stored_count(new) - _stored_count(result)
     if not (filled and apply):
@@ -167,6 +171,10 @@ def main(argv=None) -> int:
                     help="retries on a transient error, backoff doubling from "
                          f"{BACKOFF_SECONDS:g}s")
     a = ap.parse_args(argv)
+    if a.retries < 0:
+        ap.error("--retries must be 0 or more")
+    if a.ids and a.after:
+        ap.error("--ids and --after do not combine")
 
     client = get_service_client()
     if client is None:
@@ -197,14 +205,16 @@ def main(argv=None) -> int:
         try:
             ids = _retry(lambda: page_ids(cursor), "page query", a.retries)
         except Exception as exc:
-            return _stop(exc, a.ids and f"--ids {a.ids}" or cursor and f"--after {cursor}")
+            return _stop(exc, a.ids and f"--ids {a.ids}" or cursor and f"--after {cursor}",
+                         failed)
         if not ids:
             break
         for job_id in ids:
             try:
                 row = _retry(lambda: read_row(job_id), f"read {job_id}", a.retries)
             except Exception as exc:
-                return _stop(exc, a.ids and f"--ids {a.ids}" or cursor and f"--after {cursor}")
+                return _stop(exc, a.ids and f"--ids {a.ids}" or cursor and f"--after {cursor}",
+                         failed)
             if row is None:
                 print(f"{job_id}: not found, not terminal, or too recent; skipped")
                 n = 0
@@ -228,15 +238,20 @@ def main(argv=None) -> int:
             break
     print(f"done: {jobs} job(s), {rows_filled} row(s) "
           f"{'filled' if a.apply else 'would be filled (dry run)'}")
-    if failed:
-        print(f"incomplete after retries, rerun with --ids {','.join(sorted(failed))}")
+    _print_failed(failed)
     return 0
 
 
-def _stop(exc: BaseException, resume: str) -> int:
+def _print_failed(failed: set) -> None:
+    if failed:
+        print(f"incomplete after retries, rerun with --ids {','.join(sorted(failed))}")
+
+
+def _stop(exc: BaseException, resume: str, failed: set) -> int:
     print(f"stopped: {str(exc)[:300]}", file=sys.stderr)
     print(f"resume with {resume}" if resume else "resume from the start",
           file=sys.stderr)
+    _print_failed(failed)
     return 2
 
 

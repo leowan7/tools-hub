@@ -219,3 +219,10 @@ def test_ids_reads_only_those_rows_and_pages_nothing(monkeypatch, capsys):
         ("id,user_id,tool,status,result", ("id", "a")),
         ("id,user_id,tool,status,result", ("id", "b"))]
     assert "done: 2 job(s)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv", [["--retries", "-1"], ["--ids", "a", "--after", "b"]])
+def test_args_that_would_silently_do_nothing_are_refused(argv):
+    with pytest.raises(SystemExit) as exc:
+        bf.main(argv)
+    assert exc.value.code == 2
