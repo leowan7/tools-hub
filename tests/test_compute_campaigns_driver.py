@@ -1094,3 +1094,108 @@ def test_maybe_finalize_does_not_overwrite_cancelled(driver_env):
     ]
     _maybe_finalize(get_campaign("camp-1"))
     assert _campaign_status(client) == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Completion email: sent once by the terminal-CAS winner
+# ---------------------------------------------------------------------------
+
+
+def _patch_finished_email(monkeypatch, *, meta=None):
+    """Capture finished-email sends; return the list they are appended to."""
+    import shared.email as em
+    import shared.jobs as j
+    monkeypatch.setattr(
+        j, "resolve_user_email_and_meta",
+        lambda uid: ("u@example.com", meta or {}),
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        em, "send_campaign_finished_email",
+        lambda **kw: (calls.append(kw), True)[1],
+    )
+    return calls
+
+
+def test_finished_email_sent_once_across_ticks(driver_env, monkeypatch):
+    client, _ = driver_env
+    calls = _patch_finished_email(monkeypatch)
+    _seed_campaign(client, total_subjobs=2, requested=24)
+    drive_campaign("camp-1")
+    assert calls == []  # children still in flight
+    for r in _children(client):
+        r["status"] = "succeeded"
+    drive_campaign("camp-1")
+    drive_campaign("camp-1")  # cron re-tick on a terminal campaign
+
+    assert _campaign_status(client) == "completed"
+    assert len(calls) == 1
+    assert calls[0]["campaign_id"] == "camp-1"
+    assert calls[0]["final_status"] == "completed"
+    assert (calls[0]["succeeded"], calls[0]["total"]) == (2, 2)
+
+
+def test_finished_email_not_doubled_by_racing_finalizers(driver_env, monkeypatch):
+    """Two drivers that both read the campaign as running (inline hook + cron)
+    both reach the finalize; only the CAS winner mails."""
+    from shared.compute_campaigns import _maybe_finalize, get_campaign
+    client, _ = driver_env
+    calls = _patch_finished_email(monkeypatch)
+    _seed_campaign(client, total_subjobs=2, requested=24, status="running")
+    client.store["tool_jobs"] = [
+        {"id": f"j{i}", "campaign_id": "camp-1", "chunk_index": i,
+         "attempt": 1, "status": "succeeded"}
+        for i in range(2)
+    ]
+    a = get_campaign("camp-1")
+    b = get_campaign("camp-1")
+    _maybe_finalize(a)
+    _maybe_finalize(b)
+
+    assert _campaign_status(client) == "completed"
+    assert len(calls) == 1
+
+
+def test_finished_email_respects_job_email_opt_out(driver_env, monkeypatch):
+    client, _ = driver_env
+    calls = _patch_finished_email(
+        monkeypatch, meta={"email_preferences": {"job_complete_email": False}},
+    )
+    _seed_campaign(client, total_subjobs=2, requested=24)
+    drive_campaign("camp-1")
+    for r in _children(client):
+        r["status"] = "succeeded"
+    drive_campaign("camp-1")
+    assert _campaign_status(client) == "completed"
+    assert calls == []
+
+
+def test_cancelled_campaign_gets_no_finished_email(driver_env, monkeypatch):
+    client, _ = driver_env
+    calls = _patch_finished_email(monkeypatch)
+    _seed_campaign(client, total_subjobs=2, requested=24,
+                   status="paused_insufficient_funds")
+    cc._finalize_undispatchable("camp-1", ("paused_insufficient_funds",))
+    assert _campaign_status(client) == "cancelled"
+    assert calls == []
+
+
+@pytest.mark.parametrize("final, succeeded, subject, body", [
+    ("completed", 3, "Run A is done", "All 3 batches finished."),
+    ("completed_with_failures", 2,
+     "Run A finished: 1 of 3 batches did not finish",
+     "2 of 3 batches finished. 1 did not finish."),
+    ("failed", 0, "Run A failed", "None of the 3 batches finished."),
+])
+def test_finished_email_wording(monkeypatch, final, succeeded, subject, body):
+    import shared.email as em
+    sent: list = []
+    monkeypatch.setattr(em, "_post_resend", lambda **kw: (sent.append(kw), True)[1])
+    assert em.send_campaign_finished_email(
+        user_email="u@example.com", campaign_id="camp-1", campaign_name="Run A",
+        final_status=final, succeeded=succeeded, total=3,
+    )
+    msg = sent[0]
+    assert msg["subject"] == subject
+    assert " ".join(msg["html_body"].split()).count(body) == 1
+    assert "/campaigns/camp-1" in msg["html_body"]

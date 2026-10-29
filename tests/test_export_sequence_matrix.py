@@ -177,3 +177,49 @@ def test_an_esmfold_single_fold_exports_its_sequence(client, monkeypatch):  # no
     row = next(csv.DictReader(io.StringIO(
         client.get(f"/jobs/{job.id}/export.csv").get_data(as_text=True))))
     assert row["sequence"] == "MKWAG"
+
+
+def _ingested(tool: str, n: int) -> list[dict]:
+    """``_rows`` through the real ingest (shared/jobs.py
+    _slim_result_for_persist) and a JSON round trip: even rows carry inline
+    bytes, so they store their chains; odd rows do not, so they need a read."""
+    import base64
+    import json
+
+    from shared.jobs import _slim_result_for_persist
+
+    b64 = base64.b64encode(_pdb(_CHAINS.get(tool, _DEFAULT_CHAINS))).decode()
+    rows = [{**r, "pdb_content_b64": b64} if i % 2 == 0 else r
+            for i, r in enumerate(_rows(tool, n))]
+    kept = _slim_result_for_persist({_container(tool): rows})
+    # Slim drops the inline copy only from ``candidates``; drop it from
+    # ``designs`` too, so no export below can read a structure.
+    return [{k: v for k, v in r.items() if k != "pdb_content_b64"}
+            for r in json.loads(json.dumps(kept))[_container(tool)]]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("tool", TOOLS)
+def test_stored_chains_reach_rows_past_the_read_cap(
+        client, monkeypatch, tool, surface):  # noqa: F811
+    """No structure can be read here (the fetch is None), so every chain a
+    row exports is the one ingest stored; only rows with neither get a note."""
+    n = 2 * CAP + 3
+    chains = _CHAINS.get(tool, _DEFAULT_CHAINS)
+    rows = _ingested(tool, n)
+    stored = n // 2 + 1
+    assert sum("chain_sequences" in r for r in rows) == stored
+    import tests.test_export_sequence_matrix as me
+    monkeypatch.setattr(me, "_pdb", lambda _chains: None)  # _get's fetch
+    csv_body = _get(client, tool, surface, rows, "csv", monkeypatch)
+    fasta = _get(client, tool, surface, rows, "fasta", monkeypatch)
+    out = list(csv.DictReader(io.StringIO(csv_body)))
+    assert len(out) == n
+    for i, r in enumerate(out):
+        has = all(r.get(f"sequence_chain{c}") == s for c, s in chains.items())
+        assert has == (i % 2 == 0), (i, r)
+    capped = f"not read: this export reads at most {CAP} structures"
+    assert all(r["sequence_note"] != capped for r in out[::2])
+    ranks = {m.group(1) for ln in fasta.splitlines()
+             if (m := re.match(r">rank(\d+)_", ln))}
+    assert len(ranks) == stored
