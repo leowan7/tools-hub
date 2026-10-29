@@ -145,7 +145,7 @@ _REPO = pathlib.Path(__file__).resolve().parent.parent
 _OUTSIDE_THIS_REPO = frozenset(
     {
         # The Modal SDK's own source. It is an installed dependency
-        # (``requirements.txt`` pins ``modal>=1.4,<2.0``), never a file here.
+        # (``requirements.txt`` pins ``modal``), never a file here.
         "modal/_utils/function_utils.py",
         # The container repo. The real token is the templated
         # ``llm-proteinDesigner/docker/<tool>/run_pipeline.py``; the ``<tool>``

@@ -2145,6 +2145,41 @@ def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
 # Terminal-state orchestration: prorated refund + email notification
 # ---------------------------------------------------------------------------
 
+def _with_chain_sequences(
+    result: dict, *, fetch_bytes=None, default_job_id=None,
+) -> dict:
+    """``result`` with each row's chains stored on it
+    (:func:`shared.exports.store_chain_sequences`). From
+    :func:`_slim_result_for_persist` there is no ``fetch_bytes``, so only the
+    inline ``pdb_content_b64`` it is about to drop is read, and no Storage:
+    that runs inside the terminal write, which the webhook request waits on
+    (webhooks/modal.py ``_apply_terminal`` calls :func:`complete_job`).
+    scripts/backfill_chain_sequences.py passes a Storage fetcher. Same
+    top-level array :func:`candidate_records` picks, without its legacy
+    ``output`` unwrap. A raise is logged and the result passes through
+    unchanged, so the terminal write still happens.
+
+    ponytail: parses every inline structure in the request, a few ms each
+    (static/example PDBs, timed by hand; the timing is not recorded), so cost grows with the rows the
+    webhook carries inline. Move it after the write if a payload ever makes
+    that matter.
+    """
+    from shared.exports import store_chain_sequences  # noqa: PLC0415
+
+    for key in ("candidates", "designs"):
+        recs = result.get(key)
+        if not is_candidate_array(recs):
+            continue
+        try:
+            rows, filled = store_chain_sequences(
+                recs, fetch_bytes=fetch_bytes, default_job_id=default_job_id)
+        except Exception:
+            logger.warning("chain sequences not stored", exc_info=True)
+            return result
+        return {**result, key: rows} if filled else result
+    return result
+
+
 def _slim_result_for_persist(result: Optional[dict]) -> Optional[dict]:
     """Drop redundant inline ``pdb_content_b64`` before persisting a result.
 
@@ -2167,6 +2202,7 @@ def _slim_result_for_persist(result: Optional[dict]) -> Optional[dict]:
     """
     if not isinstance(result, dict):
         return result
+    result = _with_chain_sequences(result)
     candidates = result.get("candidates")
     if not is_candidate_array(candidates) or not candidates:
         return result

@@ -259,8 +259,8 @@ def _modal_connect_budget_sec() -> float:
     is a hardcoded 63 that goes stale in silence.
 
     The helper is looked up under SEVERAL names because it has been renamed
-    upstream already and requirements.txt pins only ``modal>=1.4,<2.0``, so
-    the whole range has to work: 1.4.2 has ``connect_channel`` and no
+    upstream already and a modal bump in requirements.txt can rename it
+    again: 1.4.2 has ``connect_channel`` and no
     ``create_channel_with_fallbacks``, 1.5.4 has exactly the reverse. Both
     carry ``total_timeout=63.0``, so the shipped deadline is unaffected by
     the rename -- which is the point of reading it rather than trusting it.
