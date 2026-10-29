@@ -155,7 +155,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Pin to a known-working Modal client version; bump deliberately.
-          pip install 'modal>=1.4,<2'
+          pip install 'modal==1.6.2'
 
       - name: Verify Modal auth
         run: |
