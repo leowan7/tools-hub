@@ -131,6 +131,34 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
+def _start_beat(env: dict) -> None:
+    """POST a ``starting`` heartbeat to the hub as the GPU function begins.
+
+    The hub stamps ``started_at`` on a job's first heartbeat
+    (webhooks/modal.py::_handle_heartbeat), and a cancel bills from
+    ``started_at`` once a heartbeat has arrived (shared/jobs.py::cancel_job).
+    A failed POST is printed and the run goes on.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url, job_id = env.get("WEBHOOK_URL", ""), env.get("JOB_ID", "")
+    if not (url and job_id):
+        return
+    body = {"job_id": job_id, "stage": "starting"}
+    if env.get("SEED_NAME"):
+        body.update(seed=env["SEED_NAME"], job_token=env.get("JOB_TOKEN", ""))
+    try:
+        beat_url = urllib.parse.urlunparse(
+            urllib.parse.urlparse(url)._replace(path="/webhooks/heartbeat"))
+        req = urllib.request.Request(
+            beat_url, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[start_beat] heartbeat failed: {exc}", flush=True)
+
+
 # Boltz-2's model cache, ~7.4 GiB. boltz 2.2.1's ``download_boltz2`` fetches
 # ~5.7 GiB (boltz2_conf.ckpt 2.1 GiB, boltz2_aff.ckpt 1.9 GiB, mols.tar
 # 1.7 GiB) and unpacks mols.tar into mols/, another 1.7 GiB in 45,227 files
@@ -184,6 +212,7 @@ def run_tool(payload: Any) -> dict:
     import sys
 
     env = _merged_environment(payload)
+    _start_beat(env)
     cmd = [_PYTHON, "-u", _RUN_PIPELINE_REMOTE]
 
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)

@@ -77,6 +77,34 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
+def _start_beat(env: dict) -> None:
+    """POST a ``starting`` heartbeat to the hub as the GPU function begins.
+
+    The hub stamps ``started_at`` on a job's first heartbeat
+    (webhooks/modal.py::_handle_heartbeat), and a cancel bills from
+    ``started_at`` once a heartbeat has arrived (shared/jobs.py::cancel_job).
+    A failed POST is printed and the run goes on.
+    """
+    import urllib.parse
+    import urllib.request
+
+    url, job_id = env.get("WEBHOOK_URL", ""), env.get("JOB_ID", "")
+    if not (url and job_id):
+        return
+    body = {"job_id": job_id, "stage": "starting"}
+    if env.get("SEED_NAME"):
+        body.update(seed=env["SEED_NAME"], job_token=env.get("JOB_TOKEN", ""))
+    try:
+        beat_url = urllib.parse.urlunparse(
+            urllib.parse.urlparse(url)._replace(path="/webhooks/heartbeat"))
+        req = urllib.request.Request(
+            beat_url, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[start_beat] heartbeat failed: {exc}", flush=True)
+
+
 # IgGM checkpoints (Zenodo 16909543) cache here across cold starts. VERIFIED:
 # IgGM saves each checkpoint to `{os.getcwd()}/checkpoints/<model>.pth`, and
 # run_pipeline runs design.py with cwd=/opt/IgGM, so downloads land in
@@ -140,6 +168,7 @@ def run_tool(payload: Any) -> dict:
     """Run one IgGM design/prediction session. stdout/stderr live-stream to
     Modal's function logs (``modal app logs ranomics-iggm-prod``)."""
     env = _merged_environment(payload)
+    _start_beat(env)
     cmd = ["python3", "-u", _RUN_PIPELINE_REMOTE]
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
     print(
