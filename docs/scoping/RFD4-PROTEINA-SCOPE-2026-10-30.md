@@ -389,9 +389,28 @@ Two things the probe found that were not in the plan:
 One caveat on the probe's own output: the `accelerator` label it prints is read from a module global that the container re-imports with different arguments, so the cu12 run printed `cu13` in that one field. Every other value above was read from the running container and is correct for the image it ran on; the torch local version (`+cu126`) is the trustworthy discriminator.
 
 
-**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That remains UNVERIFIED and now costs about three cents of GPU time to settle, not $0; it should be folded into rung 2 rather than run on its own. An earlier draft of the §6.1 ladder said rung 1 would establish the host driver; that row and §5.1 are corrected above.
+**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That cost about three cents of GPU time to settle rather than $0, and **it has now been settled — see §5.5.** An earlier draft of the §6.1 ladder said rung 1 would establish the host driver; that row and §5.1 are corrected above.
 
 
+### 5.5 Rung 2 — the driver check: cu13 runs on Modal's A100-80GB hosts
+
+**Run 2026-10-30, Leo's ~3¢ approval, app `ap-xGZQXncSKquxGYSQudwHNX`. Result: PASS.** The probe attached one A100-80GB for a few seconds and reported:
+
+| | |
+|---|---|
+| Driver | **610.57.04**, NVIDIA A100-SXM4-80GB |
+| Compute capability | **(8, 0)** — sm_80 |
+| torch | **2.14.1+cu130** (the cu13 wheel set, not the cu126 fallback) |
+| `torch.cuda.is_available()` | True |
+| Real kernel launch (512×512 matmul) | finite, OK |
+| `tmol.score.ljlk.potentials._compiled` | **loaded** |
+| `rfd4-generate --help` | exit 0 |
+
+That closes §5.1's question. The compiled TMol CUDA operator is the one that failed on the CPU builder with `libcuda.so.1: cannot open shared object file`; it loads here, so the cu13 wheel set and Modal's driver are a working pair and **the cu12 fallback described in §5.4 is not needed.** Compute capability 8.0 is recorded because a cu13 build targeting only newer architectures would have failed here rather than on the builder.
+
+**One free finding, not blocking.** `rfd4-generate --help` exits 0 but prints to stderr: *"Environment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable."* Which functions require it, and whether binder generation is among them, is **UNVERIFIED** — a rung-3 question, and a candidate for the pin list in §5.3 if generation turns out to need it.
+
+**The first attempt crash-looped and measured nothing.** The probe imported its image definition from the sibling rung-1 file, which Modal does not ship into the container, so every start died at import (`ModuleNotFoundError: No module named 'rfd4_cpu_probe'`) before a GPU did any work; Modal's retry loop re-tried it until the deployed-function alert fired. App `ap-TPERf9v6ZEHA2yPAG9AbFy`, stopped, 0 tasks. Fixed with `add_local_python_source`, plus `retries=0` so an import error cannot loop again. **No GPU work ran on the failed attempt**, so the ~3¢ approval was consumed once, by the run above.
 ---
 
 ## 6. Cost: what a run will bill, and what validating it costs
@@ -612,7 +631,7 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt **crash-looped and produced no measurement** — the probe imported a sibling module Modal does not ship to the container, so every start failed at import before a GPU did any work (`ModuleNotFoundError: No module named 'rfd4_cpu_probe'`, app `ap-TPERf9v6ZEHA2yPAG9AbFy`, stopped). The probe has been fixed and re-run; **§5.4 carries no driver result yet.***
+*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt crash-looped and measured nothing, and the fixed re-run **PASSED — cu13 runs on Modal's A100-80GB hosts, §5.5.** Rung 2 is done.*
 
 1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
 2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
