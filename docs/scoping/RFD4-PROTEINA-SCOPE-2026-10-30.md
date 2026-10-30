@@ -341,6 +341,24 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 - Sizes from the HF file listing: `model.safetensors` 1.74 GB, flow checkpoint 1.75 GB, autoencoder 1.03 GB; upstream says `make setup` caches about 1.7 GB. Upstream prebuilt runtime `.sif` images (weights excluded): cu13 4.04 GB, cu12 4.41 GB. **Measure the real volume size at rung 2** — our `boltz2` weights volume was previously off by ~7× against its documented figure.
 - GPU class **A100-80GB** (`_GPU` must be a module-level literal; `tests/test_gpu_class_drift.py:155-171` requires a matching `TOOL_SPECS` entry).
 
+### 5.3 Pin list — what rung 1 must turn into code, not prose
+
+Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Nine images already carry digest pins (`tests/test_dockerfile_digest_pins.py`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Every row is currently **UNSET** — rung 1 and rung 2 produce the values.
+
+| What | Where it is pinned | Why a float here hurts |
+|---|---|---|
+| Upstream commit | `ARG RFD4_SHA=<sha>` + `git checkout`, same shape as `tools/proteina/Dockerfile.modal:54` | Upstream is alpha and moving; a branch checkout re-resolves on every rebuild |
+| Base image | digest-pinned `FROM`, enforced by `tests/test_dockerfile_digest_pins.py` | Tag drift silently changes the driver/toolkit pairing |
+| **Accelerator variant** | `ARG RFD4_ACCELERATOR=cu12\|cu13` with **no default** | This is rung 1's answer (§5.1). A default would let a rebuild silently pick the untested wheel set |
+| Weights revision | one HF revision, both checkpoints, recorded in `seed_volumes.py` | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
+| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:36,42`) | Dated filenames; the next release will sit beside them in the same volume |
+| GPU class | module-level `_GPU` literal + matching `TOOL_SPECS` entry (`tests/test_gpu_class_drift.py:155-171`) | Already guarded; a mismatch mis-bills |
+| **The invocation** | one module-level constant holding the full Hydra override list — `metrics_tags`, `'~metrics'`, `nsteps`, `num_replicates` | Built ad hoc, an edit can silently re-enable the AF3 oracle group we excluded on licence grounds (§5.2). Assert on the constant |
+| `certifi` floor | the floor layer, enforced by `tests/test_gpu_image_certifi_floor.py` | Globs `tools/*/Dockerfile.modal`; the suite fails without it |
+
+**The pin that is easiest to get wrong is the accelerator variant**, because both variants build and only one will run. Rung 1 must record *which* variant it proved, in the Dockerfile, in the same commit.
+
+
 ---
 
 ## 6. Cost: what a run will bill, and what validating it costs
@@ -403,6 +421,67 @@ Exports need each candidate to carry a `pdb_key` and a sequence. **RFD4 is unusu
 
 ---
 
+## 7A. Scoring: what RFD4-Proteina ranks designs by
+
+Leo asked (2026-10-30) what the model uses for ranking. The short answer is that **it ships no default score at all**, and the one quality bar it does publish is binary and needs the oracle we excluded. Everything in this section was read first-hand at upstream `aaccdd2ad0720c180468df5f9cf037a713d403e5`.
+
+### 7A.1 A plain run computes nothing
+
+`configs/inference.yaml:71` is `metrics_tags: []` and `:73-77` is `search.checkpoints: null`. Metrics are tag-gated, so an empty tag list means **no metric fires and no score column is written**. Scoring is opt-in, per tag, per run — it is not a property of the model.
+
+### 7A.2 The published bar is pass/fail, and every criterion needs the oracle
+
+`configs/metrics/pass_criteria/all_pass_criteria.yaml` defines four criteria, each emitting one boolean at `{config_key}.pass` (`:3`). The protein-binder one (`:14-23`):
+
+- `oracle_ppi.ptm_coi` min **80.0**
+- `oracle_ppi.min_ipae_coi` max **1.5**
+- `refolded_target_backbone_aligned_binder_rmsd.rmsd` max **2.5**
+
+`antibody` (`:25-32`) and `dna` (`:34-42`) have the same shape with looser bounds. **All three terms in all three criteria come from a refolding oracle** — AF3 by default (`configs/metrics/all_metrics.yaml:5`), with AF2 and OpenFold3 as alternates. We excluded every oracle image on licence grounds (§5.2), so **with our scope, nothing upstream ranks anything, and the headline benchmark percentages in §3 are pass rates we cannot reproduce in-house.** That is the real cost of the licence decision, and it is a scoring cost, not a generation cost.
+
+### 7A.3 What survives oracle-free
+
+`configs/metrics/inline_metrics/design_metrics.yaml` is computed from the generated structure alone. The ones that would make customer-visible columns for a binder run, with their gating tag:
+
+| Column | Tag | Direction | Note |
+|---|---|---|---|
+| `interchain_interactions.hbond_atom_pair_count_coi` | `interchain_interactions` | maximize | Upstream's own oracle-free reward (`skills/rfd4-proteina-search/references/rewards.md:60`) |
+| `interchain_interactions.hydrophobic_atom_pair_count_coi` | `interchain_interactions` | maximize | Paired with the above in the shipped search config |
+| `contact_molecular_surface` | `cms` | maximize | The classic interface-size number |
+| `clash_metrics` | `design` | minimize | Threshold 1.5 |
+| `hotspot_obedience` | `hotspot_conditioning` | maximize | `max_hotspot_distance: 4.5` — "did it hit the residues you asked for" |
+| `sequence_adherence` | `design` | — | "Reports NaN when nothing was sequence-conditioned" |
+| `sse_accuracy`, `bond_length_metrics`, `amino_acid_composition` | `design` | — | Geometry sanity, not ranking material |
+
+**None of these is a confidence number.** They say the interface is large and clean; they do not say the model believes the complex folds.
+
+### 7A.4 `search.reward` is a real scalar — but you define it, and it costs 27×
+
+In search mode each `search.checkpoints.<step>` aggregates named metric outputs into one scalar (`rewards.md:38-50`: `sum(weight * clipped_value / normalize_by)`). `configs/inference_experiment/sm_binder_hbond_search.yaml:18-32` is a shipped, **fully oracle-free** example: beam width 2, branch 2, rewarding H-bond count at step 40 and H-bond + hydrophobic contacts at step 60. Three caveats before treating this as our ranking column:
+
+- It only exists in search mode, which §3 measures at **~27× the GPU seconds per design**.
+- A weighted output missing at scoring scores that candidate `-inf`, and if every candidate scores `-inf` search raises (`rewards.md:48-50`). That is a run-killing failure mode on a billed GPU.
+- Reward scales differ per checkpoint (`rewards.md:120`), so the number is not comparable across presets. It is a within-run selector, not a cross-run score.
+
+### 7A.5 Proposal: fold the designs ourselves and rebuild upstream's own bar
+
+Our site shows a confidence number on every other design tool, and a tool that shows none will read as broken. The licence-clean route is to run each delivered design through a folder **we already ship** — `boltz2` or `esmfold2-design` — and compute interface pTM / PAE from that. This reconstructs exactly the quantities upstream's `ppi` criterion thresholds on (`ptm_coi`, `min_ipae_coi`), just with a different predictor. Costs and cautions:
+
+- Extra GPU time per run, which must be in the quote before release, not after.
+- A recorded Hub finding is that `boltz2` ipTM is not reproducible run-to-run on one input (0.26–0.83 observed), which makes it a weak *sort key* even where it is a fine *display* number. Decide the sort key deliberately; the `#` column on our results pages is a position, not a rank.
+- Our thresholds would be ours, not upstream's. Do not print 80.0 / 1.5 next to a non-AF3 number.
+
+### 7A.6 New finding: the developability metrics need a PyRosetta container
+
+`configs/metrics/inline_metrics/developability_metrics.yaml:1-3` gates both developability metrics behind `metrics_tags=['developability']` and states that **"Rosetta metrics require a PyRosetta apptainer set via `$PYROSETTA_CONTAINER`"**. `rosetta_developability` (`sasa_cutoff: 20.0`) is therefore a third-party dependency with its own licence question, on the same footing as the oracle images we excluded. `sequence_developability` in the same file appears to be pure-sequence and may not need it — **UNVERIFIED, not read**. Resolve before any developability column is promised.
+
+### 7A.7 What rung 3 must capture
+
+The scope doc has been treating the score column set as a rung-3 deliverable. It still is: **no `per_example_metrics.csv` header has been observed**, only the configs that should produce it. Rung 3 must record the real header, and the run must set `metrics_tags: [design, interchain_interactions, cms, hotspot_conditioning]` rather than the empty default, or it will produce no columns to read.
+
+
+---
+
 ## 8. Work plan, in PR-sized steps
 
 Each step is one PR with a gate. Sizes are rough.
@@ -455,6 +534,9 @@ Each step is one PR with a gate. Sizes are rough.
 10. **Cyclic peptide support.** A preset exists; upstream issue #62 asks whether it works. Out of scope for release 1 either way.
 11. **Upstream binder-mode bugs.** #81 (high alanine fraction on the non-interacting face in binder mode) is open and is a *quality* bug in exactly our release-1 mode. Watch it; it may shape the copy we write about expected quality.
 12. **Does the authors' benchmark hold on the current weights?** Upstream says it has not been re-measured. Rung 4 is our own check, on one target.
+13. **Does `sequence_developability` also need the PyRosetta apptainer?** UNVERIFIED — only `rosetta_developability` is documented as requiring `$PYROSETTA_CONTAINER` (§7A.6), and the class was not read. Blocking for any developability column, not for release 1.
+14. **Which confidence predictor and which sort key?** We must supply our own (§7A.5). `boltz2` ipTM is on record as not reproducible run-to-run, so the display number and the sort key may have to differ. A decision, not a measurement.
+15. **Which accelerator variant we actually shipped.** Rung 1 answers it and must write it into the Dockerfile in the same commit (§5.3); until then every pin in that table is UNSET.
 
 ---
 
