@@ -19,6 +19,8 @@ Three facts drive that shape:
 2. **On the authors' own benchmark it is the strongest binder generator in the table, including against the three we already sell.** §3 has the numbers, with their caveats.
 3. **The licence story is clean for the path we want and dirty for a path we do not need.** The core generation path is BSD-3. The optional AlphaFold2 / OpenFold3 refolding images carry separate upstream terms, and the upstream model card states plainly that neither oracle is needed for generation. We exclude them. That has a product consequence (§5) worth Leo's attention: without a refold oracle, our results page cannot show an AF2 ipTM, which is the number our `proteina` and `rfdiffusion` results pages lead with.
 
+**§2A tests that one-preset recommendation against every modality the model supports** — ten runnable, four named but not runnable — and the recommendation survives: the three commercially interesting additions (customer ligand, enzyme cofactor, DNA) are all blocked behind one shared piece of platform work on our side, not upstream. §2A.7 carries the staged release map and the one narrow widening worth considering.
+
 Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually.
 
 ---
@@ -62,7 +64,178 @@ In scope for release 1:
 
 Explicitly out of scope for release 1, each a later slug or preset: DNA binders, small-molecule pockets, antibodies/nanobodies (we sell `rfantibody` and `iggm` there already), enzyme/atomic-motif scaffolding, partial diffusion, inverse folding, reward-guided beam search, cyclic peptides.
 
+**§2A examines every one of those exclusions against the upstream configs and docs rather than asserting them, and adds a staged release map.** It confirms this scope, with one qualified addition (an unconditional-monomer preset, worth it only if it costs under a day, as a $0-upload smoke test for the slug). Read §2A.2 before costing any of the later stages: our own structure intake deletes every residue that is not one of the twenty standard amino acids, which is what actually blocks ligand, enzyme-cofactor and DNA design here.
+
 Reward-guided search deserves a note, because it is the headline mode: on the upstream benchmark it is the strongest arm by a distance (28.1% pass vs 17.0% for one-shot medium, §3), but it costs ~27× the GPU seconds per design (62.5 s vs 2.35 s median, same source) and upstream issue #64 reports a multi-GPU beam-search reward bug. It is the obvious *second* release, priced as its own preset, once one-shot is earning.
+
+---
+
+## 2A. Every modality the model supports, and what each one would cost us
+
+Added 2026-10-30 at the hub lead's request: §2 recommends one preset, so this section tests that recommendation against the *whole* capability surface rather than the binder slice.
+
+Reads in this section are at the same upstream revision as the rest of the document (`main` = `aaccdd2ad0720c180468df5f9cf037a713d403e5`, re-confirmed 2026-10-30 via `gh api repos/RosettaCommons/RFD4-Proteina/commits/main`), by `gh api repos/RosettaCommons/RFD4-Proteina/contents/<path>?ref=main --jq .content | base64 -d`. Nothing was cloned, no weights or images were fetched, and **no GPU ran**.
+
+**Provenance labels used below.** FIRST-HAND = I decoded and read the cited file myself in this session. SECOND-HAND = a delegated reader decoded it and quoted it; I did not re-read that file, so the citation is its verification, not mine. Every benchmark aggregate in §2A.4 that is not a website headline is SECOND-HAND.
+
+### 2A.1 There is no `modality` switch — which changes what a "preset" means for us
+
+The first finding reshapes the rest. Upstream has **no `modality:` key and no per-modality inference config**. A modality is the intersection of three things:
+
+1. **The input itself.** `inputs:` is an annotated CIF (preferred), a directory of them, or a YAML/JSON condition spec — `configs/inference_experiment/TEMPLATE.yaml:65`, `inputs: ???  # Path to annotated CIF or directory of CIFs (preferred) or JSON input` (FIRST-HAND, quoted in §4.1 already). Whether the job is a PPI binder, a ligand binder, an enzyme or a DNA binder is encoded in that file's `contig` and its `C_*` condition blocks — not in any YAML switch.
+2. **`metrics_tags`** — a flat list of strings. Every metric, oracle and pass criterion declares `required_tags_any` / `required_tags_all` / `prohibited_tags` and runs only if the run's tags satisfy it. This is the only place a shipped config names a modality.
+3. **`search.checkpoints.<step>.{metrics,rewards}`** — which provider steers beam search, when search is on at all.
+
+The default is inert: `configs/inference.yaml:71` is `metrics_tags: []`, and `search.checkpoints: null` (`:73-77`). So a plain default run **computes no metrics and fires no oracle** (FIRST-HAND).
+
+The tag vocabulary that exists is readable off one file, `configs/metrics/pass_criteria/all_pass_criteria.yaml` (FIRST-HAND, tags and line numbers re-read directly):
+
+| Pass criterion | Gate | Line |
+|---|---|---|
+| `unconditional` | `required_tags_any: [unconditional_refolding]` | :12 |
+| `ppi` | `[ppi_refolding]` | :23 |
+| `antibody` | `[antibody]` | :32 |
+| `dna` | `[dna_refolding]` | :42 |
+| `motif_scaffold` | `[motif_scaffold_refolding]` | :53 |
+| `internal_coords` | `[internal_coordinate_motif_scaffold_refolding]` | :59 |
+| `sm_binder` | `[sm_binder_refolding]` | :72 |
+| `ame` | `[ame_refolding]`, `prohibited_tags: [no_ligand]` | :85-86 |
+| `ame_no_ligand` | `[ame_refolding]` + `required_tags_all: [no_ligand]` | :95-96 |
+| `disco` | `[disco_refolding]` | :105 |
+| `developability` | `[developability]` | :120 |
+
+**There is no peptide, cyclic-peptide, VHH-specific or RNA pass criterion in that file.** The VHH route reuses the `antibody` criterion, whose bars are *looser* than `ppi` (interface PAE ≤ 2.0 rather than ≤ 1.5, binder RMSD ≤ 2.0 rather than ≤ 2.5, and no pTM bar at all — `:25-32`).
+
+Three consequences for us:
+
+- **No modality needs a different checkpoint.** One denoiser + autoencoder pair serves all of them (`configs/inference.yaml:38-46`, already cited in §5.2). So "add a modality" never means "add weights" — a real saving against the shape of `rfantibody`, `bindcraft` and `iggm`.
+- **A hub "preset" is a four-part bundle**, not a flag: a condition-spec template, a `metrics_tags` list, a recycle strategy, and optionally a `search` block. That is the unit of work for every row below.
+- **Ten of the eleven pass criteria need a refolding oracle** (every tag ending `_refolding`, plus `antibody`); only `developability`, which thresholds SAP, GRAVY and instability index, runs without one. We excluded the AF2/OF3 images on licence grounds (§0, §5). So for *every* modality our results page shows inline metrics only — stated for release 1 in §5, and it generalises.
+
+Pre-oracle filters carry a trap that applies to every row: *"Filters gate on the same tags as the metric they threshold — a filter whose metric never ran sees a missing key, which counts as a (non-deleting) failure and drops every design"* (`configs/metrics/pre_oracle_filters/all_pre_oracle_filters.yaml:11-12`, SECOND-HAND). With `delete_failing_pre_oracle: True` the default (`configs/inference.yaml:44`, FIRST-HAND), a mis-tagged run can plausibly deliver zero designs and still bill GPU time. That is a money bug waiting to happen and belongs in the rung-3 checklist (§6.1) for **whichever** modality ships.
+
+### 2A.2 The decisive hub-side blocker: our intake deletes everything that is not one of the 20 amino acids
+
+This is the finding that orders the staged map, and it is in our code, not upstream.
+
+`shared/pipeline_normalize.py:31-34` defines `STANDARD_AA` as exactly the twenty standard residues. The per-residue loop then does, at `:346-348` (FIRST-HAND, read in this session):
+
+```python
+# Standard-AA filter (after MODRES_MAP applied)
+if resname not in STANDARD_AA:
+    dropped_count += 1
+    continue
+```
+
+preceded at `:341-343` by a HETATM filter, with every one of the six `normalize_for_*` wrappers (`:589`, `:602`, `:615`, `:633`, `:656`, `:674`) passing `keep_hetatm=False`. The module docstring at `shared/pdb_preflight.py:6-8` says the same in prose and adds the part that matters: the stripping is *"silently, so by itself it's invisible to the user."*
+
+So a ligand, a DNA or RNA chain, a PTM, a glycan or a non-canonical residue in a customer upload is **deleted before any container sees it**, and nothing tells the customer. On top of that, intake converts every upload to PDB: `shared/pdb_intake.py:481-485` states that `data`/`filename` are post-conversion — an mmCIF arrives as `.cif` and leaves as PDB bytes under a `.pdb` name, *"because everything downstream (Storage, the presigned URL, the container) assumes PDB"* — with the conversion itself at `:563` via `shared/pdb_inspect.py:239-268`.
+
+RFD4 wants the opposite: annotated CIF, with bonds and formal charges. Two tiers follow.
+
+- **Protein-only modalities** (PPI binder, monomer, protein-motif scaffolding, VHH) survive the round trip in substance: the twenty amino acids are exactly what the filter keeps. Regenerating a CIF from the normalised PDB is work, but it is the work §4 already scopes for release 1.
+- **Every non-protein modality** (ligand binder, enzyme active site with its cofactor, DNA binder, RNA, glycan, PTM, non-canonical) needs a **new CIF-preserving intake path**: no standard-AA filter, no HETATM strip, bonds and charges carried through, plus a new preflight that can reason about a ligand and a new user-facing report of what was kept. That is a multi-PR piece of platform work, not a form field — and it is shared across all of them, so it is paid once and then amortised.
+
+A second, smaller constraint from our side, which bites in release 2 rather than release 1: `shared/score_legends.py:925-945` warns that the legend map is keyed on `(tool, column)` **with no preset dimension** — *"a bar may be mode-scoped, a legend may not."* So if two presets under one slug report different quantities under the same column name, the legend lies for one of them. Mitigation is cheap but must be deliberate: every preset's score column gets a name that carries exactly one quantity, or each modality gets its own slug.
+
+### 2A.3 What ships, per modality
+
+"Shipped config" below means a runnable config or example bundle in the repo, not merely a mentioned capability. Ten rows are runnable; four more are named but not runnable.
+
+| # | Upstream name | Switched on by | User must supply | Needs anything we excluded? | Shipped config |
+|---|---|---|---|---|---|
+| 1 | **Protein binder (PPI)** | condition spec: `contig: "A278-382, /0, BINDER:55-75"` + `C_CRDGRP` (target backbone) + `C_SEQ` (reveal target sequence) + optional `C_HOT` (hotspots); `metrics_tags: [design, ppi_refolding]` | target structure, chain, residue range, optional hotspots, binder length range | **Oracle yes for the `ppi` pass bar** (`ppi_refolding` → `oracle_ppi`). Generation itself needs none. `ppi_novelty_of3_search.yaml` additionally requires **OpenFold3 weights** (`AF3_MODEL_DIR`) *and* an external Foldseek archive (`metrics.inline_metrics.novelty.archive_dir: ???`) | `configs/inference_experiment/ppi_novelty_of3_search.yaml`; plus `docs/examples/ppi_specificity_tutorial.ipynb` writing its own configs over `examples/trka_crossreactivity/targets/*.cif.zst` |
+| 2 | **Unconditional monomer** | `metrics_tags: [design, unconditional_refolding]`; inputs = `data/benchmarks/monomer`, `subset_to_examples: monomer-short` | length only (no structure at all) | Oracle yes for the pass bar; `inference_beam_regression.yaml` is deliberately oracle-free, rewarding on clash count instead | `inference_beam_example.yaml` (AF3-steered), `inference_beam_regression.yaml` (oracle-free) |
+| 3 | **Motif scaffolding (generic)** | `metrics_tags: [… motif_scaffold_refolding]` or `internal_coordinate_motif_scaffold_refolding`; motif carried in the spec | structure + which residues are the motif | Oracle yes for the pass bar | **None.** Pass criteria + four benchmark input sets (`data/benchmarks/motif_scaffolding/`), no inference config |
+| 4 | **Enzyme active site (AME / M-CSA)** | `inference_experiment=inference_on_val_set +datasets/val@generation=mcsa/mcsa_subset`; `ame_refolding`, with `no_ligand` flipping which of the two criteria applies | active-site residues **and their cofactor/ligand** as atoms | Oracle yes. Plus our intake blocker (§2A.2): the cofactor is HETATM and is deleted today | Only via `inference_on_val_set.yaml` + an upstream val dataset — i.e. a curated benchmark route, not a customer-input route |
+| 5 | **Small-molecule / ligand binder** | `metrics_tags: [interchain_interactions]` for the oracle-free H-bond route, or `sm_binder_refolding` / `disco_refolding` for the scored ones | target ligand with bonds and formal charges (an annotated CIF) | **Oracle-free route exists** — `sm_binder_hbond_search.yaml` rewards a geometric H-bond count, no refold. But our intake deletes the ligand (§2A.2) | `sm_binder_hbond_search.yaml` (input: `data/benchmarks/small_molecule_binder/SAM_hbonds.cif.zst`) |
+| 6 | **DNA binder** | `metrics_tags: [… dna_refolding]`; DNA sequence always specified, coordinates optionally fixed | double-stranded DNA target, sequence ± coordinates | **Oracle yes, and AF3/OF3 only** — `af3.yaml` has `oracle_dna`; there is **no AF2 equivalent**, so the cheaper oracle cannot substitute. Plus the intake blocker | **None.** Pass criterion + oracle exist; no inference config anywhere |
+| 7 | **VHH / nanobody** | `metrics_tags: [design, antibody, 3d_coordinate_conditioning, internal_coordinate_conditioning, hotspot_conditioning]`; `recycle_strategy: high/front_loaded`; `generation.dataset.sampling_transforms` = a `SampleNearbyHotspots` list | target structure + a VHH framework; eight example complexes ship | **Oracle expected, but escapable at a cost.** `examples/antibody_design/README.md:6`: *"Complete setup first, including AF3 for scoring."* The spec route is closed: `docs/how-to/cookbook.md:94-96` — loading the VHH inputs as a spec *"stops at a residue-numbering safeguard, so run them through the example config in `examples/antibody_design/` instead"*. That config *"scores designs with the AlphaFold 3 / OpenFold3 oracle, which needs that environment from setup (`AF3_IMAGE`); without it the run writes the designs and then fails"* — **but the same page's own command line passes `'~metrics'`, and `:107` says it *"skips scoring"***. So designs can be generated without the oracle; what is lost is every score and the `antibody` pass criterion (all FIRST-HAND) | `examples/antibody_design/{common,vhh,partial}.yaml` + 8 `.cif.zst` inputs — an **out-of-tree** bundle needing `hydra.searchpath` |
+| 8 | **Partial diffusion (refine an existing design)** | `generation.args.partial_trajectory_fraction_steps: 0.4166666666666667` (resume at step 35 of 60) + `sampling_transforms: null` to retain the parent's hotspots | *a previous run's design plus its saved conditioning* | Inherits whatever the parent modality needed | `examples/antibody_design/partial.yaml` |
+| 9 | **Inverse folding / fixed-backbone sequence design** | `generation=inverse_folding` (7 lines: `args.inverse_folding: true`, `args.inverse_folding_method: resampled_forward_marginal`) | a backbone | No oracle wired, and **no pass criterion exists** for it | `configs/generation/inverse_folding.yaml` |
+| 10 | **Reward-guided beam search** (a mode across rows 1–9, not a modality) | the `search` block: `n_branch`, `beam_width`, `checkpoints.<step>.{metrics,rewards,continuation_criteria}` | nothing extra from the user | Depends on the chosen reward. Oracle-free rewards ship (clash count, H-bond count); oracle rewards cost one refold per candidate per checkpoint | four shipped configs use it |
+| 11 | **RNA** | mechanism only | — | — | **None.** A training-side preset (`configs/design_tasks/presets/rna_design.yaml`) and pseudoknot benchmark *inputs*; no inference config, no tag, no pass criterion, no oracle |
+| 12 | **Peptide / cyclic peptide** | mechanism only | — | — | **None.** Training-side `cyclic_peptide_binder.yaml` only; upstream issue #62 asks whether cyclic peptide design is supported at all (§1) |
+| 13 | **Symmetric oligomer** | — | — | — | **Not implemented.** `docs/reference/annotations.md:76-97` "Status at a glance" marks every row Supported **except** `| **Symmetry** | Planned |` (FIRST-HAND) |
+| 14 | **Structure prediction / side-chain packing** | — | — | — | Benchmark inputs only. Not a design product; ignore |
+
+Two upstream facts that kill several hypothetical rows outright. First, `docs/concepts/conditioning.md:50-53`: *"Atomized tokens are always sequence conditioned. Non-standard residues, PTMs, ligands and small molecules (everything with `atomize` set true) are context the model gets told about and never generates. The model generates only the 20 standard amino acids; nucleic acid and small molecule generation are coming"* (FIRST-HAND). So RFD4 cannot *design* a ligand, a PTM, a nucleic acid or a non-canonical residue — it designs protein **around** them, and upstream says in the same breath that generating them is future work. Any "design me a glycan" or "design me a cyclic peptide with an NCAA" framing is outside the model, not merely outside our scope. Note this also sharpens what rows 5, 6 and 11 mean: a *ligand binder* is a protein designed around a ligand we supply, and "RNA" would be a protein designed around RNA, never RNA itself. Second, `configs/design_tasks/` — the one group whose filenames do read like a modality menu, 23 presets including `rna_design.yaml`, `cyclic_peptide_binder.yaml`, `ig_design.yaml`, `protein_from_dna.yaml` (listing re-read FIRST-HAND via `gh api .../contents/configs/design_tasks/presets`) — **is reached from the training entry point, not from `inference.yaml`**. It is absent from every inference `defaults:` block. Confirmed negatively; I did not read `training_proteina.yaml` to confirm the positive side, so treat "it is training-side" as verified-by-absence. Reading that filename list as a shipped inference menu would be the single easiest mistake to make here, and it would have put RNA and cyclic peptides in release 1.
+
+### 2A.4 Benchmark numbers, per modality
+
+Upstream publishes in-silico design-benchmark numbers for **exactly four** modalities. The headline sentences below are FIRST-HAND — I decoded `website/index.html` and read lines 520-537 myself:
+
+> *"For protein binding, high-thinking, single-shot RFD4-Proteina achieves a 10.6% clustered pass rate versus 5.9% for the next-best model (BindCraft), at 42-fold higher throughput. For small molecules it is 6.1-fold higher than the next-best model (14.3% versus 2.4%). For enzyme scaffolding it reaches 12.1% versus 5.7%, and for DNA binding 3.5% versus 0.8% for BoltzGen and 0.5% for fixed-DNA RFD3."* — `website/index.html:529`
+
+| Modality | Targets | Best published RFD4 figure | Next best | Caveat worth carrying |
+|---|---|---|---|---|
+| PPI binder | 24 | 10.6% clustered, high one-shot; 7.7% at low thinking (`:531`) | BindCraft 5.9% | The BindCraft baseline is **single-backbone**, with its three continuation gates disabled (SECOND-HAND, `website/benchmarks/protocols.mjs:17-18`) |
+| Small-molecule binder | 77 | 14.3% clustered | 2.4% | Two non-nested criteria published side by side (`sm_binder` and the looser `disco`); the 14.3% is the `sm_binder` one |
+| Enzyme (AME / M-CSA) | 37 of 41 | 12.1% clustered | 5.7% | 4 tasks excluded (3 covalent adducts + 1 with unobserved phosphate atoms) |
+| DNA binder | **3** | 3.5% clustered | BoltzGen 0.8%, RFD3 0.5% | **Cross-arm**: the 3.5% is RFD4 on *unfixed* DNA while both baselines are on *fixed* DNA. Three targets is not a benchmark |
+
+Shared basis, SECOND-HAND (`website/benchmarks/leaderboard.html:63-67`): 200 attempts per target, failures counted with no replacement; clustered = distinct passing folds ÷ 200, Foldseek TM 0.5, clustered within each model/protocol/target; the oracle is a **common AF3 refold, not the model's own filter**. Snapshot `2026-10-21`, 3,073 rows, `live_database: false`.
+
+**Everything else has no number.** Explicitly: VHH/nanobody (a full workflow guide and zero published rate), peptide and cyclic peptide, unconditional monomer (no scTM anywhere — a repo code search for `scTM` returns zero hits, SECOND-HAND), generic motif scaffolding, RNA, inverse folding, side-chain packing, glycan. Three of those carry an asserted claim with no value attached — `website/index.html:277` and `:313` claim *"state-of-the-art"* on side-chain packing, fixed-backbone sequence design, conformational sampling and design refinement with no metric, value, baseline or table (SECOND-HAND). Treat those as marketing until a number appears.
+
+**The benchmark GPU model is absent from the repository**, not merely missed: no H100/A100 designation and no wall-clock figure in `website/index.html`, `leaderboard.html`, anything under `website/benchmarks/`, or a repo-wide search for `H100` (which hits only install guidance). Throughput is published as designs per GPU-hour with a per-row `timing_basis` string taking seven values including `transferred_prior_run_estimate`. The preprint PDF was not opened. **UNVERIFIED** — and it means every "designs per GPU-hour" figure here, including the 42-fold claim, cannot be converted into a price on our rate card without the rung-3 measurement in §6.1.
+
+Wet-lab affinities do exist for several modalities with no in-silico number (calmodulin, peptide–MHC, TrkA, glycan shielding, phosphotriesterase, a lenacapavir ligase) — SECOND-HAND, from `website/index.html`. They are campaign results with no attempts-per-target and mostly no baseline. **They are not benchmark numbers and must not be quoted as pass rates**, including in our marketing copy.
+
+### 2A.5 Hub-side work, per modality, on top of the release-1 binder path
+
+Taking the release-1 path of §2 and §8 as the baseline (new slug, new container copied from `tools/proteina/`, condition-spec builder, CIF regeneration, live charging, streaming, exports):
+
+| Modality | New intake? | New form fields | New preflight | New score columns | New export shape | Verdict |
+|---|---|---|---|---|---|---|
+| PPI binder | the §4 CIF path | baseline | baseline | baseline | baseline | **release 1** |
+| Unconditional monomer | **none** — no upload at all | length + count only; the form gets *smaller* | **none** (nothing to inspect) | same inline metrics | same (sequence + PDB per design) | cheapest addition in the list |
+| Partial diffusion / refine | none — input is our own prior run | "refine this design" + a strength slider | none | none | none | cheap **but** needs the parent run's saved conditioning persisted, which release 1 must not throw away |
+| Inverse folding | protein-only, as release 1 | "sequence only" toggle | baseline | fewer, not more | sequence-only (no structure) | cheap mechanically; **no pass criterion and no benchmark number upstream**, so we would be selling an unmeasured mode |
+| Motif scaffolding (protein motif) | protein-only, as release 1 | motif residue picker | motif-coverage check (new) | motif RMSD columns | baseline | moderate; no upstream inference config to copy |
+| VHH / nanobody | protein-only | framework chooser + hotspot sampler knobs | baseline | antibody metrics (different bars) | baseline | mechanically moderate, commercially weak: the only working route is an out-of-tree example config, and without the excluded oracle it delivers **unscored** designs with no pass criterion |
+| Small-molecule binder | **new CIF-preserving path** | ligand upload + charge/bond handling | ligand-aware preflight (new) | interface-interaction columns | ligand copied into output | large — the shared intake build |
+| Enzyme active site | **new CIF-preserving path** | active-site residue + cofactor picker | both of the above | motif all-atom + clash columns | cofactor in output | largest; also no customer-input route upstream |
+| DNA binder | **new CIF-preserving path** | DNA sequence ± coordinates | nucleic-acid preflight (new) | DNA-specific bars | DNA in output | large, **and** the pass bar needs AF3/OF3 specifically — no AF2 fallback |
+| Reward-guided search | none | reward preset + budget | none | reward column | none | cheap to wire, **expensive to run** (§2: ~27× GPU seconds per design on our own aggregation, and upstream issue #64 reports a multi-GPU beam-search reward bug) |
+| RNA / peptide / cyclic / symmetry | — | — | — | — | — | nothing to build against |
+
+### 2A.6 Overlap with what we already sell
+
+| Our tool | What it owns | RFD4 overlap | Replace or compete? |
+|---|---|---|---|
+| `rfantibody` | *"RFdiffusion-based de novo antibody and nanobody binder design"* (`tools/rfantibody/meta.py:45-50`) | row 7 — same job | **Neither, for now.** RFD4's VHH route has **no published pass rate**, and without the AF3/OF3 oracle we excluded it returns designs with no scores and no pass/fail at all — unsellable next to a tool that scores. `rfantibody` keeps this segment |
+| `iggm` | antibody/Ig design (`tools/iggm/meta.py:16-23`) | row 7 | as above |
+| `pxdesign` / `bindcraft` | protein binder design, with and without AF2 filtering | row 1 — same job | **Competes, and on upstream's figures wins** (10.6% vs BindCraft 5.9% clustered). But that baseline is a deliberately de-gated single-backbone BindCraft, and we have no RFD4 run of our own. Decide after a month of real runs, not now (§1.1) |
+| `proteina` | NVIDIA Proteina/Complexa. Already has four variants: `protein_binder`, `ligand_binder`, `motif_ame`, `validate` — but *"the ligand and motif variants run curated tasks (their tasks resolve from separate upstream registries)"* (`tools/proteina/meta.py:270-290`) | rows 4 and 5 | **New capability, not duplication.** Our `proteina` ligand and motif variants run **bundled benchmark tasks only** — a customer has never been able to submit their own ligand. RFD4 rows 4–5 would be the first customer-ligand route we sell. That is the strongest argument in this section for eventually building the CIF intake path |
+| `rfdiffusion` | backbone-only binder design, MPNN + AF2 in the container | row 1 | **Candidate for replacement eventually**, but on our data: it has never produced a successful binder in the runs on record. Argue that separately (§1.1) |
+| `boltz2`, `esmfold2-design`, `af2`, `colabfold` | folding and scoring | row 14 | none — RFD4's structure-prediction benchmarks ship inputs only, and we are not buying a predictor |
+
+Net: RFD4 **competes** with `pxdesign`/`bindcraft` on day one, **does not threaten** `rfantibody`/`iggm` (its antibody route is the one blocked on an excluded dependency), and is the only route to a **customer-supplied-ligand** product we have ever had.
+
+### 2A.7 Staged release map, and whether §2 still holds
+
+**It holds. Ship `protein_binder` alone in release 1 — now with a stronger reason than §2 had.**
+
+§2 excluded the other modalities mostly on "one thing at a time" grounds. Having looked, the exclusions are load-bearing, not stylistic:
+
+- The three commercially interesting ones (ligand, enzyme cofactor, DNA) are all blocked behind the **same** piece of platform work — a CIF-preserving intake that does not delete non-amino-acid residues (§2A.2). That is multi-PR, it touches the intake every live-charging tool shares, and doing it under the pressure of a first release of an alpha-stage model is the wrong order.
+- The one that looks adjacent, VHH, is the **worst** candidate: its spec route hits a residue-numbering safeguard, its only working route is an out-of-tree example config wired to the AF3/OF3 oracle we excluded on licence grounds — runnable without it, but then every design comes back unscored and the `antibody` pass criterion never evaluates — it has no published pass rate, and we already sell two tools in that segment.
+- The headline mode, reward-guided search, is a pricing decision rather than a capability gap, and it has an open upstream multi-GPU bug.
+
+So a wider release 1 is **not** the better call — with one qualified exception, which I recommend:
+
+**Add the unconditional monomer preset to release 1 if and only if it costs under a day.** It is the only modality in the table that needs *no* new intake, *no* new preflight, *no* new score column and *no* new export shape — the form is strictly smaller than the binder form (a length and a count, no upload). It has two shipped configs, one of them deliberately oracle-free. Its value is not the product: it is a **$0-upload smoke test for the whole slug** that exercises generation, streaming, metering and exports without a customer structure anywhere in the loop, which is exactly what §6.1 rung 3 wants. The honest cost against it: there is **no published designability number for it at all** (no scTM anywhere upstream), so it ships as a utility, never as a headline — and if wiring it turns out to need its own condition-spec shape, drop it and keep §2 as written.
+
+| Stage | Modalities | Why |
+|---|---|---|
+| **Release 1** | Protein binder (row 1). Optionally unconditional monomer (row 2) on the one-day test above | One conditioning recipe, one protein-only intake, two of the four published benchmarks' worth of confidence, direct competition with what we already sell |
+| **Release 2** (after one month of real release-1 runs) | Reward-guided search as its own priced preset (row 10); partial diffusion / "refine this design" (row 8) | Both reuse release 1 unchanged. Search is the strongest arm upstream and the clearest premium-price story; refine is the natural second purchase for a customer who liked one design. Gate search on upstream issue #64 closing. Release 1 must persist each design's conditioning or refine becomes a rebuild |
+| **Release 3** (one platform project, then three presets) | Small-molecule binder (row 5), enzyme active site (row 4), DNA binder (row 6) | They share the CIF-preserving intake. Build it once, land it on its own, then the three presets are each small. This is also where we first sell customer-ligand design at all. DNA goes last of the three: 3 benchmark targets, and its pass bar needs AF3/OF3 with no AF2 fallback |
+| **Not scheduled** | VHH/nanobody (row 7), motif scaffolding (row 3), inverse folding (row 9) | VHH: only route is an out-of-tree config that without the excluded oracle returns unscored designs, no published number, segment already served by two tools. Motif scaffolding: no upstream inference config to copy and no published number. Inverse folding: one config flag, but no pass criterion and no number, so we would be selling something we cannot measure |
+| **Skip** | RNA (11), peptide/cyclic peptide (12), symmetry (13), structure prediction (14) | Nothing runnable exists. Symmetry is *"Planned"* upstream. Revisit only when upstream ships an inference config |
+
+**One question this section adds for Leo**, on top of §9: the CIF-preserving intake in release 3 is the single largest piece of work in this document and it is not RFD4-specific — it would also let `proteina`, `boltz2` and `bindcraft` accept a customer's ligand for the first time. It may be worth scoping as its own platform project rather than as RFD4 release 3. That is a roadmap call, not a technical one.
 
 ---
 
