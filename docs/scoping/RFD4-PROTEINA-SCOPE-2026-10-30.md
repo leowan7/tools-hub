@@ -501,7 +501,9 @@ In search mode each `search.checkpoints.<step>` aggregates named metric outputs 
 - A weighted output missing at scoring scores that candidate `-inf`, and if every candidate scores `-inf` search raises (`rewards.md:48-50`). That is a run-killing failure mode on a billed GPU.
 - Reward scales differ per checkpoint (`rewards.md:120`), so the number is not comparable across presets. It is a within-run selector, not a cross-run score.
 
-### 7A.5 Proposal: fold the designs ourselves and rebuild upstream's own bar
+### 7A.5 Fold the designs ourselves and rebuild what we can of upstream's bar
+
+**Decided 2026-10-30 — see §7B for the design, the BindCraft precedent and the reproducibility risk.**
 
 Our site shows a confidence number on every other design tool, and a tool that shows none will read as broken. The licence-clean route is to run each delivered design through a folder **we already ship** — `boltz2` or `esmfold2-design` — and compute interface pTM / PAE from that. This reconstructs two of the three quantities upstream's `ppi` criterion thresholds on (`ptm_coi`, `min_ipae_coi`) with a different predictor; the third, `refolded_target_backbone_aligned_binder_rmsd`, needs the refold itself and is not recovered this way. Whether `boltz2` or `esmfold2-design` exposes an interface PAE in the shape we need is UNVERIFIED and is a rung-3 question. Costs and cautions:
 
@@ -519,6 +521,58 @@ The scope doc has been treating the score column set as a rung-3 deliverable. It
 
 
 ---
+
+## 7B. Decision: our own scoring, chained through Boltz-2
+
+**Leo, 2026-10-30: "we want to use our own scoring, integrate with boltz2 refolding."** That settles §7A.5 and §9 item 5. This section is the design and, more usefully, the two things that make it harder than it sounds.
+
+### 7B.1 The BindCraft precedent, and why it is two separate reroutes
+
+Leo asked how BindCraft handled this for open source. The answer is that BindCraft had **two** licence problems, and only one of them is about folding — which matters, because RFD4-Proteina has the same two.
+
+**Reroute 1 — the scoring/relax stack, not the folder.** BindCraft's own code is MIT, and its design loop (AlphaFold2 via ColabDesign, ProteinMPNN) is open; the non-commercial dependency was **PyRosetta**, used for the final relax and interface scoring. Rosetta is free to academics and charges commercial entities. The community fork **FreeBindCraft** removes it and substitutes OpenMM + PDBFixer for relax, FASPR for side-chain repacking, and `sc-rs` for shape complementarity ([Ariax write-up](https://www.ariax.bio/resources/freebindcraft-open-source-unleashed), [Tamarind](https://app.tamarind.bio/tools/freebindcraft)). Its equivalence to BindCraft is **vendor-reported and wet-lab validation is pending** — treat it as a precedent for the *shape* of the fix, not as a benchmarked drop-in.
+
+This maps one-to-one onto §7A.6: RFD4's `rosetta_developability` needs a PyRosetta apptainer via `$PYROSETTA_CONTAINER`. It is the *same dependency BindCraft had*, and FreeBindCraft is the *same reroute* — swap the Rosetta terms for OpenMM/FASPR equivalents, or drop the group. We already run a `binder-developability` skill that computes dSASA, shape complementarity and sequence liabilities without Rosetta, so **we may already own reroute 1.** UNVERIFIED that its outputs line up with `rosetta_developability.sap_score` / `hydrophobic_exposure_sasa`; that is a desk check, not a GPU run.
+
+**Reroute 2 — the folding oracle, where the licence line sits in a different place than I assumed.** AlphaFold2's *parameters* were CC BY-NC 4.0 at the 2021-07-14 release and were **relicensed to CC BY 4.0** from the 2022-12-06 release ([DeepMind commit](https://github.com/google-deepmind/alphafold/commit/8173117130e6df8749ab7349722ec465666df548)), which permits commercial use with attribution; ColabFold's code is MIT and inherits those terms. **AlphaFold3 is CC-BY-NC-SA 4.0** and is the restrictive one. RFD4 defaults its oracle to **AF3** (`configs/metrics/all_metrics.yaml:6`) and ships `af2` and `of3` as alternates.
+
+So the picture in §7A.2 is right about the *default* and too broad about the rest: the reason to avoid upstream's oracle route is **AF3's terms plus the brief's exclusion of the optional `alphafold2/runtime` and `openfold3/runtime` images**, not a blanket licence problem with refolding. The hub already runs its own `af2` and `colabfold` tools. **Whether we could legitimately wire upstream's `af2` oracle to our own ColabFold weights is an open question worth asking, and it is a licence question for Leo, not a technical one.** It is not a blocker, because the Boltz-2 route below avoids it entirely.
+
+### 7B.2 What Boltz-2 gives us, and the one thing it does not
+
+Boltz-2 is MIT and we already ship it, so it is the clean route. Per `tools/boltz2/__init__.py:7-8` it returns, per design, the predicted complex PDB plus **ipTM, pTM, complex_pLDDT, complex_iplddt**, and a hotspot contact count. Legends already exist for `("boltz2", "ipTM")`, `("boltz2", "pTM")`, `("boltz2", "pLDDT")` and `("boltz2", "n_hotspot_contacts")` (`shared/score_legends.py:733-760`), with thresholds `STRICT_IPTM = 0.7` and `SOFT_IPTM = 0.5` (`tools/boltz2/run_pipeline.py:125,127`).
+
+Against upstream's `ppi` pass criterion (§7A.2), that recovers one term and misses two:
+
+| Upstream term | Boltz-2 equivalent | Status |
+|---|---|---|
+| `oracle_ppi.ptm_coi` min 80.0 | `ipTM` (0–1 here, 0–100 there) | **Covered**, after a scale conversion — the hub already has a pLDDT 0–1 vs 0–100 split to get wrong |
+| `oracle_ppi.min_ipae_coi` max 1.5 | — | **Not emitted.** No `pae` key appears anywhere in `tools/boltz2/`. The hub does carry an interface-PAE field (`webhooks/modal.py::_sanitize_candidate`, used by `rfantibody`), so the column exists — Boltz-2 just does not currently fill it |
+| `refolded_target_backbone_aligned_binder_rmsd` max 2.5 | — | Needs an alignment step we would have to write; the refolded PDB is returned, so this is arithmetic, not inference |
+
+So the honest claim is: **chaining Boltz-2 gives customers a confidence number and a defensible sort key; it does not reproduce upstream's published bar.** Two of three terms need work, and the pass rates in §3 stay non-reproducible either way.
+
+### 7B.3 The problem that decides whether this works at all
+
+Our own measurement, in our own repo: five byte-identical copies of one input, folded in one Boltz-2 process, **spanned ipTM 0.263–0.830**, with 21 pairwise binder CA RMSDs at median 16.3 Å. No `--seed` is passed anywhere in the package, so the sampler is unseeded (`tools/boltz2/__init__.py:111-115`; full write-up in the 2026-09-23 rows of `docs/VALIDATION-LOG.md`). Worse for this purpose, rung B was a **negative discrimination result**: on three binders the cognate held at ipTM ~0.95 while the worst decoy climbed 0.619 → 0.801, collapsing the margin 37% and inverting two decoys' rank (`:118-124`).
+
+**A scorer that moves 0.26–0.83 on identical input cannot rank designs.** This is the real risk in Leo's instruction, and it is ours, not upstream's. Three ways out, cheapest first:
+
+1. **Seed the sampler.** No `--seed` is passed today. If Boltz-2 accepts one, a fixed seed makes the score reproducible per design — it does not make it *discriminative*, but it stops the same design scoring differently twice. UNVERIFIED that the CLI exposes a seed; one desk check.
+2. **Fold each design *n* times and report the median plus the spread.** Honest, and the spread is itself information. Costs *n*× the fold.
+3. **Use ESMFold-based `esmfold2-design` instead**, which is deterministic. Cheaper and stabler, but its interface confidence is weaker than a cofolder's.
+
+**Recommendation: (1) then (2) with n = 3, and show the spread on the results page rather than hiding it behind a single number.** A single ipTM from an unseeded sampler would be the most misleading column we have ever shipped.
+
+### 7B.4 Cost and shape
+
+The chain runs as a second Modal call after generation, per delivered design, on the existing `boltz2` app — so it reuses the live-charging, streaming and recovery paths already in place and adds no new billing surface. Per-design fold cost and the *n* multiplier are UNMEASURED for this input shape and belong to rung 3. A fold that costs a meaningful fraction of the generation it scores changes the pricing conversation, so **rung 3 must measure the fold, not just the generation.**
+
+### 7B.5 What this adds to the rung ladder
+
+- **Desk check, $0:** does the Boltz-2 CLI accept a seed; does our `binder-developability` skill cover `rosetta_developability`'s two terms; does `_sanitize_candidate`'s interface-PAE field accept a Boltz-2-derived value.
+- **Licence question for Leo, $0:** is upstream's `af2` oracle route open to us given AF2 params are CC BY 4.0, or does the brief's exclusion of the `alphafold2/runtime` image close it regardless.
+- **Rung 3, GPU:** measure the fold cost per design, and measure the ipTM spread over *n* folds of one RFD4 design — on RFD4 output, not on the 2026-09-23 inputs.
 
 ## 8. Work plan, in PR-sized steps
 
@@ -544,6 +598,8 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
+*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) approved by Leo and run; result in §5.4.*
+
 1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
 2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
 3. **Approve rung 4 (≈$1.85)?** Head-to-head against a recorded `proteina` run. Recommended but separable.
@@ -551,7 +607,8 @@ Each step is one PR with a gate. Sizes are rough.
 
 **Product decisions:**
 
-5. **No confidence number on the results page.** §7A makes this worse than first written: upstream's *only* quality bar is pass/fail and every term in it comes from the oracle we excluded, so under our scope nothing upstream ranks anything. Ship release 1 with the oracle-free interface columns (§7A.3), or hold for a chained fold through our own `boltz2` / `esmfold2-design` (§7A.5)? I still recommend shipping, then chaining.
+5. ~~**No confidence number on the results page.**~~ **DECIDED by Leo 2026-10-30: use our own scoring, chained through Boltz-2 refolding.** §7B is the design. It raises one new question that is genuinely Leo's: our own Boltz-2 measurement spans **ipTM 0.263–0.830 on byte-identical input** (§7B.3), so an unseeded single fold cannot rank anything either. I recommend seeding, then folding each design three times and showing the spread. That multiplies the scoring cost by three — confirm you want that before rung 3 prices it.
+9. **Is upstream's `af2` oracle route open to us?** AF2 parameters have been CC BY 4.0 since the 2022-12-06 release, so the restrictive one is AF3, not AF2 (§7B.1). The brief excluded the optional `alphafold2/runtime` image on separate terms, which may or may not close the question. $0 to answer, and it would recover the `min_ipae_coi` term Boltz-2 does not give us.
 6. **Start minimum.** $1.00 proposed, but the derivation depends on rung 3's streaming answer. Confirm after rung 3, not now.
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
 8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
