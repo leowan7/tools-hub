@@ -35,7 +35,10 @@ single-container ceiling. One run was made.
   so a 20-design submit would not have tested live charging at all. At 16 the
   notice was gone and the button read "Submit run".
 - **The money should run out before the run finishes.** Measured in the repo
-  venv (`venv/Scripts/python.exe`) against the 16-design parameter shape:
+  venv (`venv/Scripts/python.exe`), calling `compute_hard_cap`,
+  `live_start_usd` and `estimated_cost_for_tool` with the parameter shape
+  `{'preset': 'pilot', 'target_chain': 'A', 'hotspot_residues': '54,56,115',
+  'cdr_lengths': 'H1:8,H2:7,H3:10-16', 'num_designs': 16}`:
 
   ```
   estimate      : 11.65
@@ -103,21 +106,31 @@ above. `designs` is the length of `partial_candidates`.
 | 17:24:45 | running | 2041 | 32 | $0.12 | Running RF2 validation |
 | 17:25:30 | **succeeded** | 2089 | 32 | **$0.00** | Running RF2 validation |
 
-The `gpu_seconds_used` series steps about 61 s per heartbeat throughout
-(2, 63, 124, 185, …, 1115, 1176), consistent with the ~61 s heartbeat measured
-on the 10-21 rfantibody run. The first sample carried no stage and no balance
-figure; both were present from 16:51:04 and 16:51:30 on.
+The `gpu_seconds_used` series steps about 61 s per sample throughout
+(2, 63, 124, 185, …, 1115, 1176). `docs/qa/RFANTIBODY-LIVE-CANCEL-2026-10-21.md`
+records the same ~61 s heartbeat spacing on the 10-21 run; the writer of the
+heartbeat is in llm-proteinDesigner and was not read from this repo, so the 61 s
+figure is an observation from two runs, not a constant read from code. The first
+sample carried no stage and no balance figure; both were present from 16:51:04
+and 16:51:30 on.
 
 - `gpu_seconds_used` rose smoothly from the first sample at 2 s, so the GPU
   start heartbeat from #464 stamped `started_at` right away.
 - **The first design landed at 1487 GPU-s — about 24.5 minutes in.** Nothing
   was in `partial_candidates` for the first 24 minutes: RFdiffusion ran all 16
   backbones (to 1327 s), then ProteinMPNN, and only then did RF2 validation
-  start streaming. On this size the $2.00 start minimum would not have covered
-  time-to-first-design on its own; it was the $2.30 balance that got past it.
-  The docstring note in `shared/wallet_guard.py` that rfantibody's $2.00 "may
-  not cover time-to-first-design" is now measured, not just suspected: first
-  design cost about $1.81 of metered time.
+  start streaming. `compute_charge_usd(1487, 'A100-40GB')` = $1.8049, so the
+  $2.00 start minimum **does** cover time-to-first-design at this size, with
+  about $0.19 of headroom.
+- **This measures the derived figure in `shared/wallet_guard.py:125-133` and
+  confirms it.** That docstring puts the stretch before rfantibody's first
+  design at "about 1490 s, $1.81 at the A100-40GB rate, a derived figure that
+  assumes RF2's time splits evenly over the 4 designs", extrapolated from a
+  412-aa 4-design stage split. This run measured 1487 s and $1.8049 on a 115-aa
+  16-design run — within 3 seconds of the derivation. The docstring also says
+  "A run whose stretch before its first design costs more than $2.00 can still
+  be stopped at $0 with no design"; this run does **not** exhibit that, because
+  its stretch cost less than $2.00.
 - Once RF2 started, designs streamed steadily rather than all at the end:
   1 → 5 → 8 → 12 → 16 → 18 → 20 → 24 → 28 → 30 → 32 across successive samples,
   i.e. 2 to 4 new candidates per 15 s sample for the last ten minutes.
@@ -202,21 +215,52 @@ is a backbone count, and stage 2 runs ProteinMPNN at `seqs_per_backbone=5`
 - **Other presets and tools.** This proves the stop on rfantibody `pilot` at
   16 designs only.
 
+## Review of this report
+
+Both saved reviewers were run on the two-commit delta (base `045a61dc`) before
+it was pushed.
+
+- **`review-code`: no findings.** The delta is two prose files; there is no code
+  behaviour in it. It also noted that the two-dot diff against `origin/main`
+  shows #468's backfill changes reversed, because `origin/main` has moved past
+  this branch's merge base (`3a8de1fc`). That is base drift, not a change this
+  branch makes; the PR diff is docs-only, and the branch was not rebased
+  (memory `worktree-base-drift`).
+- **`review-claims`: three FALSE, all fixed, all the same error.** The first
+  draft claimed the $2.00 start minimum "would not have covered"
+  time-to-first-design, and carried a follow-up headed "does not cover a first
+  design at this size". Both were backwards: $1.8049 is **under** $2.00, as the
+  same report's own $0.19-of-headroom figure said. The third was a quotation
+  ("may not cover time-to-first-design") that is not in the
+  `shared/wallet_guard.py` docstring. The direction of the comparison and the
+  quoted wording are corrected above; the heading now says the minimum clears
+  it by $0.19 and labels the behaviour at exactly $2.00 unverified. The
+  reviewer verified 17 claims, including every figure re-run in the repo venv,
+  and left 7 unverified (live-run evidence outside the repo, the external
+  llm-proteinDesigner cites, and the 10-21 runtime figures); those are listed
+  in "Not covered" and labelled inline.
+
 ## Follow-ups found in passing (not fixed)
 
 - **`designs_total` is not the plan.** The first sample read
   `{designs_completed: 0, designs_total: 16}` and the last read
   `{designs_completed: 32, designs_total: 32}`, so on rfantibody the total is
-  rewritten as candidates stream. The job page therefore shows no
+  rewritten as candidates stream. This rests on the watcher samples alone: the
+  writer of `designs_total` is not in this repo (grepped `shared/jobs.py`,
+  `tools/rfantibody` and the shared code), and is presumably in
+  llm-proteinDesigner. The job page therefore shows no
   "Returned 32 / 80" line, unlike boltz2's "Returned 8 / 16" — only the stop
   notice tells the user the run was cut short. A user who missed the notice
   cannot tell from the count that 48 candidates are missing.
-- **The $2.00 rfantibody start minimum does not cover a first design at this
-  size.** First design at 1487 GPU-s is about $1.81 of metered time, and that
+- **The $2.00 rfantibody start minimum clears a first design at this size by
+  only $0.19.** First design at 1487 GPU-s is $1.8049 of metered time, and that
   is after RFdiffusion has run all 16 backbones. A 16-design run started at
-  exactly $2.00 would have about $0.19 of headroom past the first design. At
-  the ceiling this is close to "pay $2 and get nothing", and the figure does
-  not scale with `num_designs`.
+  exactly $2.00 would have about $0.19 of headroom past the first design — one
+  design delivered, then the stop. The margin is thin and the $2.00 figure does
+  not scale with `num_designs`, so a larger run started at the minimum would
+  plausibly land on the wrong side of it and deliver nothing. Not measured
+  here: this run started at $2.30, and the behaviour at exactly $2.00 is
+  **unverified**.
 - **The stop notice names designs, not backbones.** "after 32 designs" counts
   candidates; the user asked for 16 backbones. Not wrong, but the two counts
   are never shown side by side.
