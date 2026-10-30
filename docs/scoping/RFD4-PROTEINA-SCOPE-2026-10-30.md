@@ -345,15 +345,16 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 
 ### 5.3 Pin list — what rung 1 must turn into code, not prose
 
-Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Eight images already carry digest pins (`tests/test_dockerfile_digest_pins.py`, which globs `tools/*/Dockerfile.modal`; esmfold2_design has no Dockerfile and is checked differently, `:68-75`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Every row is currently **UNSET** — rung 1 and rung 2 produce the values.
+Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Eight images already carry digest pins (`tests/test_dockerfile_digest_pins.py`, which globs `tools/*/Dockerfile.modal`; esmfold2_design has no Dockerfile and is checked differently, `:68-75`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Rungs 1 and 2 have now produced the accelerator variant, the weights revision and the filename mapping (§5.4, §5.6); the rest are still **UNSET**.
 
 | What | Where it is pinned | Why a float here hurts |
 |---|---|---|
 | Upstream commit | `ARG RFD4_SHA=<sha>` + `git checkout`, same shape as `tools/proteina/Dockerfile.modal:54` | Upstream is alpha and moving; a branch checkout re-resolves on every rebuild |
 | Base image | digest-pinned `FROM`, enforced by `tests/test_dockerfile_digest_pins.py` | Tag drift silently changes the driver/toolkit pairing |
 | **Accelerator variant** | `ARG RFD4_ACCELERATOR=cu12\|cu13` with **no default** | This is rung 1's answer (§5.1). A default would let a rebuild silently pick the untested wheel set |
-| Weights revision | one HF revision, both checkpoints, recorded in `seed_volumes.py` | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
-| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:38,46`) | Dated filenames; the next release will sit beside them in the same volume |
+| Weights revision | the literal `a06e2509c7033b010fc43614e9fd840303588502`, both checkpoints, recorded in `seed_volumes.py` (§5.6) | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
+| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:38,46`) | Dated filenames; the next release will sit beside them in the same volume. **HF stores different, stable names** — the seed renames on the way in (§5.6) |
+| **Seed allow-list** | an explicit per-file list in `seed_volumes.py`, never `snapshot_download` | The pinned HF revision is 82.57 GB and ~71.4 GB of it is the `alphafold2/runtime` and `openfold3/runtime` images we exclude on separate terms. A snapshot pulls them (§5.6) |
 | GPU class | module-level `_GPU` literal + matching `TOOL_SPECS` entry (`tests/test_gpu_class_drift.py:155-171`) | Already guarded; a mismatch mis-bills |
 | **The invocation** | one module-level constant holding the full Hydra override list — `metrics_tags`, `'~metrics'`, `nsteps`, `num_replicates` | Built ad hoc, an edit can silently re-enable the AF3 oracle group we excluded on licence grounds (§5.2). Assert on the constant |
 | `certifi` floor | the floor layer, enforced by `tests/test_gpu_image_certifi_floor.py` | Globs `tools/*/Dockerfile.modal`; the suite fails without it |
@@ -411,6 +412,37 @@ That closes §5.1's question: **the cu13 wheel set and Modal's driver are a work
 **The `CCD_MIRROR_PATH` warning recurs with a GPU attached**, in the same words as on the CPU builder. It is not a new finding — §5.4 already recorded it and §10 item 16 tracks it — but it is now known not to be an artifact of running driverless. Still UNVERIFIED whether binder generation needs the variable; rung 3.
 
 **The first attempt crash-looped and measured nothing.** The probe imported its image definition from the sibling rung-1 file, which Modal does not ship into the container, so every start died at import (`ModuleNotFoundError: No module named 'rfd4_cpu_probe'`) before a GPU did any work; Modal's retry loop re-tried it until the deployed-function alert fired. App `ap-TPERf9v6ZEHA2yPAG9AbFy`, stopped, 0 tasks. Fixed with `add_local_python_source`, plus `retries=0` so an import error cannot loop again. **No GPU work ran on the failed attempt**, so the ~3¢ approval was consumed once, by the run above.
+
+### 5.6 Rung 2 RESULT — the weights land at 2.59 GiB and load on our A100, 2026-10-30
+
+**Run 2026-10-30, Leo's ~$0.62 approval, app `ap-g8jGQ8Cft8pfeVvfl0bk16`. Result: PASS.** Script: `rfd4_weights_seed.py` (scratchpad; it is a probe, not product code). Volume `rfd4-proteina-weights`, pinned revision `a06e2509c7033b010fc43614e9fd840303588502`.
+
+| File on the volume | Bytes | SHA-256 vs manifest |
+|---|---|---|
+| `flow_checkpoints/rfd4-proteina-flow-release-2026-10-19.ckpt` | 1,751,488,703 | **match** |
+| `ae_checkpoints/rfd4-proteina-ae-release-2026-10-19.ckpt` | 1,029,340,246 | **match** |
+| `release-checkpoints.json` | 3,755 | — |
+| `config.json` | 7,270 | — |
+| **Volume total** | **2,780,839,974 B = 2.59 GiB** | |
+
+Loaded on an **NVIDIA A100-SXM4-80GB**, torch 2.14.1+cu130, every tensor moved to the device and checked finite:
+
+| | Tensors | Elements | Peak GPU |
+|---|---|---|---|
+| Flow | 1,313 | 437,686,849 | 1.64 GiB |
+| Autoencoder | 699 | 257,174,161 | 0.96 GiB |
+
+Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyper_parameters`, `pytorch-lightning_version`). **That closes §10 item 7:** the real volume is **2.59 GiB**, not the ~1.7 GB this document carried — the old figure counted the flow checkpoint alone and omitted the autoencoder, which is mandatory because the two are a matched pair.
+
+**The licence trap this step avoided.** The pinned HF revision is **82.57 GB over 55 files**. The eight `alphafold2/runtime/**` and `openfold3/runtime/**` image files alone account for **~71.4 GB of it** — the images this project excludes on separate-terms grounds. A bare `snapshot_download` pulls them. **Seeding must use an explicit allow-list, never a snapshot**, and that belongs in the pin list below as a hard requirement, not a convention. We fetched 2.59 GiB of 82.57 GB.
+
+**Two things the seeding code has to get right, both now known:**
+
+1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). The seed must rename on the way in. The mapping and the digests are in the repo's own `release-checkpoints.json`.
+2. **The revision upstream pins and the revision upstream ships disagree.** `configs/inference.yaml:30` at RFD4-Proteina `aaccdd2a` names HF commit `a06e2509…` (2026-10-20). The `inference.yaml` stored *inside* that HF commit names `cf31b935…` (2026-10-19), which is also `release-checkpoints.json`'s `bundle_revision`. Both commits exist. **We pin `a06e2509…`** — it is what upstream's code reads and what the file list above was enumerated from — and the pin list records it as a literal so the ambiguity cannot be re-introduced by an edit.
+
+**Three caveats, so this is not read as more than it is.** (i) This loaded checkpoints; it did **not** instantiate the RFD4 model or run a sampling step, so `torch.compile`, the length buckets and real VRAM remain rung 3's job. (ii) The flow checkpoint holds **437,686,849** tensor elements against `release-checkpoints.json`'s `stored_parameters: 435622465` — a difference of 2,064,384. The manifest counts parameters and our probe counted every tensor in the state dict, so the two are not the same quantity; **UNVERIFIED** that the gap is only buffers. (iii) The download ran **unauthenticated** and the Hub warned about rate limits; production seeding should carry an `HF_TOKEN`. The exact GPU seconds billed were not captured — the function is bounded by its 600 s timeout, so the spend is **≤$0.62 by construction** and was visibly far below it, but the precise figure is **unverified**.
+
 ---
 
 ## 6. Cost: what a run will bill, and what validating it costs
@@ -434,7 +466,7 @@ That closes §5.1's question: **the cu13 wheel set and Modal's driver are a work
 | Rung | What it answers | GPU | Cost | Notes |
 |---|---|---|---|---|
 | **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. **DONE 2026-10-30, $0: `cu13` builds and imports (§5.4).** It does NOT establish the host driver — a CPU builder has none. Fold that check into rung 2. |
-| **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. Deliverable: the true volume size and a `torch.cuda` init on our hardware. |
+| **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. **DONE 2026-10-30 (§5.6): volume is 2.59 GiB, both digests match the manifest, both checkpoints materialise on an A100-80GB.** Exact seconds billed unverified; bounded below the budget. |
 | **3. One 8-design binder run** | **The cost question.** Real wall-clock, real output tree, real per-design file timing | 1 × A100-80GB, ≤30 min | **~$1.85** | Upstream's own `5o45_cropped` binder example, `num_replicates=8`, `'~metrics'`. Deliverables: wall-clock → the `expected_gpu_seconds` figure; the real `per_example_metrics.csv` header → the score column set; **and whether structure files appear per design or only at the end** (§7). |
 | **4. Our own target, like-for-like** | Does it work on a customer-shaped input, and how does it compare to our `proteina`? | 1 × A100-80GB, ≤30 min | **~$1.85** | The same target and hotspots as a recorded `proteina` run. First honest head-to-head on our own data. |
 | **5. Size sweep** | What is the runtime/VRAM curve? | 3 × A100-80GB, ≤30 min each | **~$5.55** | ~130 / 260 / 415 aa, matching `proteina`'s measured points so the two curves are comparable. Replaces the provisional §4.3 caps. Defer until the tool is committed to — buys accuracy, not a go/no-go. |
@@ -633,10 +665,10 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt crash-looped and measured nothing, and the fixed re-run **PASSED — cu13 runs on Modal's A100-80GB hosts, §5.5.** That settles the driver question only; the §6.1 rung-2 row (volume seed, ~$0.62) has NOT been run and no weights have been seeded.*
+*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt crash-looped and measured nothing, and the fixed re-run **PASSED — cu13 runs on Modal's A100-80GB hosts, §5.5.** Leo then approved the §6.1 rung-2 row (volume seed, ~$0.62); it ran the same day and **PASSED — §5.6.** Rungs 1 and 2 are now complete. Rung 3 (one 8-design run, ~$1.85) is the next spend and has NOT been approved.*
 
 1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
-2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
+2. ~~**Approve rungs 2–3 (≈$2.50 together)?**~~ **Rung 2 APPROVED and DONE 2026-10-30 (§5.6).** What remains is **rung 3 (≈$1.85)**: one 8-design run. This is the decision point — it produces the real cost per run, the real score columns, and the streaming answer. Nothing after it is honest without it.
 3. **Approve rung 4 (≈$1.85)?** Head-to-head against a recorded `proteina` run. Recommended but separable.
 4. **Rung 5 (≈$5.55)?** Defer until after the go/no-go.
 
@@ -658,7 +690,7 @@ Each step is one PR with a gate. Sizes are rough.
 4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run (§7A). Rung 3 — and that run must set `metrics_tags` explicitly, since the default is empty and would produce no columns at all.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
 6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
-7. **Real weights-volume size.** Documented ~1.7 GB; a previous weights volume was off by ~7× against its doc figure. Rung 2.
+7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure counted the flow checkpoint and omitted the mandatory autoencoder.
 8. **VRAM at the top of the size envelope.** Only "≥40 GB recommended" upstream, with no curve. Rung 5.
 9. **Does `delete_failing_pre_oracle` race our uploader?** UNVERIFIED. Rung 3 observation.
 10. **Cyclic peptide support.** A preset exists; upstream issue #62 asks whether it works. Out of scope for release 1 either way.
