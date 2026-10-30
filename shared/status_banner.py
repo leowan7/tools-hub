@@ -1,7 +1,8 @@
 """Site-wide "service is disrupted" banner, driven by UptimeRobot.
 
-The banner shows only while UptimeRobot reports a watched monitor down
-(status 8 "seems down" or 9 "down"). Rendering never waits on the network:
+Apart from the STATUS_BANNER override below, the banner shows only while
+UptimeRobot reports a watched monitor down (status 8 "seems down" or 9
+"down"). Rendering never waits on the network:
 ``banner_message()`` reads a process-local flag, and a daemon thread
 refreshes it from the UptimeRobot API at most once per ``CHECK_INTERVAL_S``.
 Supabase is never touched, since the database is what is usually down.
@@ -12,8 +13,10 @@ Env:
   UPTIMEROBOT_READONLY_KEY  read-only (or monitor-specific) API key. Unset
                             means no poll and no banner.
   UPTIMEROBOT_MONITOR_IDS   optional, dash-separated ids to watch, e.g.
-                            "800123-800124". Unset means every monitor the
-                            key can see.
+                            "800123-800124". Unset means whatever monitors
+                            one getMonitors page returns for the key, so
+                            set it (or use a monitor-specific key) on an
+                            account with many monitors.
   STATUS_BANNER             forces a banner with that text, for planned or
                             partial incidents, without a code change. It is
                             read from the process environment, so it takes
