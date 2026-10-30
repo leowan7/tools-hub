@@ -21,7 +21,7 @@ Three facts drive that shape:
 
 **§2A tests that one-preset recommendation against every modality the model supports** — eight with a runnable shipped config, six without — and the recommendation survives: the three commercially interesting additions (customer ligand, enzyme cofactor, DNA) all need the same piece of platform work on our side (a CIF-preserving staging path, §2A.2), and two of the three *also* lack a customer-input route upstream. §2A.7 carries the staged release map and the one narrow widening worth considering.
 
-**Scoring is the one thing this shape costs us, and §7A is new:** RFD4 ships no default score, and its published pass/fail bar is computed entirely from the refold oracle we exclude. The oracle-free interface metrics it does compute are real but carry no confidence number, so release 1 should chain a fold through a tool we already own.
+**Scoring is the one thing this shape costs us, and §7A is new:** RFD4 ships no default score, and every pass/fail criterion that bears on binder quality is computed from the refold oracle we exclude. The oracle-free interface metrics it does compute are real but carry no confidence number, so release 1 should chain a fold through a tool we already own.
 
 Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually; rung 1 ($0, no GPU) was approved on 2026-10-30.
 
@@ -345,7 +345,7 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 
 ### 5.3 Pin list — what rung 1 must turn into code, not prose
 
-Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Nine images already carry digest pins (`tests/test_dockerfile_digest_pins.py`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Every row is currently **UNSET** — rung 1 and rung 2 produce the values.
+Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Eight images already carry digest pins (`tests/test_dockerfile_digest_pins.py`, which globs `tools/*/Dockerfile.modal`; esmfold2_design has no Dockerfile and is checked differently, `:68-75`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Every row is currently **UNSET** — rung 1 and rung 2 produce the values.
 
 | What | Where it is pinned | Why a float here hurts |
 |---|---|---|
@@ -353,7 +353,7 @@ Leo's instruction (2026-10-30): once we know how to run it, **pin those settings
 | Base image | digest-pinned `FROM`, enforced by `tests/test_dockerfile_digest_pins.py` | Tag drift silently changes the driver/toolkit pairing |
 | **Accelerator variant** | `ARG RFD4_ACCELERATOR=cu12\|cu13` with **no default** | This is rung 1's answer (§5.1). A default would let a rebuild silently pick the untested wheel set |
 | Weights revision | one HF revision, both checkpoints, recorded in `seed_volumes.py` | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
-| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:36,42`) | Dated filenames; the next release will sit beside them in the same volume |
+| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:38,46`) | Dated filenames; the next release will sit beside them in the same volume |
 | GPU class | module-level `_GPU` literal + matching `TOOL_SPECS` entry (`tests/test_gpu_class_drift.py:155-171`) | Already guarded; a mismatch mis-bills |
 | **The invocation** | one module-level constant holding the full Hydra override list — `metrics_tags`, `'~metrics'`, `nsteps`, `num_replicates` | Built ad hoc, an edit can silently re-enable the AF3 oracle group we excluded on licence grounds (§5.2). Assert on the constant |
 | `certifi` floor | the floor layer, enforced by `tests/test_gpu_image_certifi_floor.py` | Globs `tools/*/Dockerfile.modal`; the suite fails without it |
@@ -389,7 +389,7 @@ Two things the probe found that were not in the plan:
 One caveat on the probe's own output: the `accelerator` label it prints is read from a module global that the container re-imports with different arguments, so the cu12 run printed `cu13` in that one field. Every other value above was read from the running container and is correct for the image it ran on; the torch local version (`+cu126`) is the trustworthy discriminator.
 
 
-**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That remains UNVERIFIED and now costs about three cents of GPU time to settle, not $0; it should be folded into rung 2 rather than run on its own. §5.1's claim that rung 1 "establishes whether Modal's driver supports cu13" was wrong, and the ladder in §6.1 carries the same error.
+**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That remains UNVERIFIED and now costs about three cents of GPU time to settle, not $0; it should be folded into rung 2 rather than run on its own. An earlier draft of the §6.1 ladder said rung 1 would establish the host driver; that row and §5.1 are corrected above.
 
 
 ---
@@ -460,17 +460,19 @@ Leo asked (2026-10-30) what the model uses for ranking. The short answer is that
 
 ### 7A.1 A plain run computes nothing
 
-`configs/inference.yaml:71` is `metrics_tags: []` and `:73-77` is `search.checkpoints: null`. Metrics are tag-gated, so an empty tag list means **no metric fires and no score column is written**. Scoring is opt-in, per tag, per run — it is not a property of the model.
+`configs/inference.yaml:71` is `metrics_tags: []` and `:73-77` is `search.checkpoints: null`. Metrics are tag-gated, and `src/rfproteina/metrics/metric.py:417-421` passes a metric whose gate sets are empty, so an empty tag list leaves **exactly one metric running: `amino_acid_composition`**, the only entry in the default composition (`configs/metrics/inline_metrics/all_inline_metrics.yaml:1-6`) with no `required_tags_any` (`design_metrics.yaml:1-3`). It is a residue tally, not a score. **Every ranking column is silent.** Scoring is opt-in, per tag, per run — it is not a property of the model.
 
-### 7A.2 The published bar is pass/fail, and every criterion needs the oracle
+### 7A.2 The published bar is pass/fail, and every binder criterion needs the oracle
 
-`configs/metrics/pass_criteria/all_pass_criteria.yaml` defines four criteria, each emitting one boolean at `{config_key}.pass` (`:3`). The protein-binder one (`:14-23`):
+`configs/metrics/pass_criteria/all_pass_criteria.yaml` defines twelve criteria, each emitting one boolean at `{config_key}.pass` (`:2`), each gated by its own tag. The protein-binder one (`:14-23`):
 
 - `oracle_ppi.ptm_coi` min **80.0**
 - `oracle_ppi.min_ipae_coi` max **1.5**
 - `refolded_target_backbone_aligned_binder_rmsd.rmsd` max **2.5**
 
-`antibody` (`:25-32`) and `dna` (`:34-42`) have the same shape with looser bounds. **All three terms in all three criteria come from a refolding oracle** — AF3 by default (`configs/metrics/all_metrics.yaml:5`), with AF2 and OpenFold3 as alternates. We excluded every oracle image on licence grounds (§5.2), so **with our scope, nothing upstream ranks anything, and the headline benchmark percentages in §3 are pass rates we cannot reproduce in-house.** That is the real cost of the licence decision, and it is a scoring cost, not a generation cost.
+`antibody` (`:25-32`) and `dna` (`:34-42`) are two-term versions of the same shape, and their bounds are not uniformly looser: `antibody` demands binder RMSD ≤ **2.0** against `ppi`'s 2.5, while `dna` keeps the same ipAE bound of 1.5 and relaxes RMSD to 8.0. **Every term in all three is a refolding-oracle quantity** — AF3 by default (`configs/metrics/all_metrics.yaml:5`), with AF2 and OpenFold3 as alternates. We excluded every oracle image on licence grounds (§5.2), so **with our scope, nothing upstream ranks anything, and the headline benchmark percentages in §3 are pass rates we cannot reproduce in-house.** That is the real cost of the licence decision, and it is a scoring cost, not a generation cost.
+
+One of the twelve is oracle-free: `developability` (`:109-120`) thresholds `rosetta_developability.sap_score` ≤ 50.0, `hydrophobic_exposure_sasa` ≤ 1500.0, `sequence_developability.gravy` ≤ 0.1 and `instability_index` ≤ 40.0. It is a monomer triage bar, not an interface bar — it says nothing about whether the binder binds — and it carries the PyRosetta dependency of §7A.6. The other eight criteria cover modalities (motif scaffolding, small-molecule, enzyme, DISCO) and are oracle-gated too.
 
 ### 7A.3 What survives oracle-free
 
@@ -484,7 +486,10 @@ Leo asked (2026-10-30) what the model uses for ranking. The short answer is that
 | `clash_metrics` | `design` | minimize | Threshold 1.5 |
 | `hotspot_obedience` | `hotspot_conditioning` | maximize | `max_hotspot_distance: 4.5` — "did it hit the residues you asked for" |
 | `sequence_adherence` | `design` | — | "Reports NaN when nothing was sequence-conditioned" |
-| `sse_accuracy`, `bond_length_metrics`, `amino_acid_composition` | `design` | — | Geometry sanity, not ranking material |
+| `sse_accuracy`, `bond_length_metrics` | `design` | — | Geometry sanity, not ranking material |
+| `amino_acid_composition` | *(none)* | — | Ungated — the one metric a default run still writes (§7A.1) |
+
+The H-bond direction is upstream's own (`rewards.md:60`); the others are the conventional reading of each quantity and are **UNVERIFIED against an upstream statement** — rung 3 should confirm them before any of them sorts a results page.
 
 **None of these is a confidence number.** They say the interface is large and clean; they do not say the model believes the complex folds.
 
@@ -498,7 +503,7 @@ In search mode each `search.checkpoints.<step>` aggregates named metric outputs 
 
 ### 7A.5 Proposal: fold the designs ourselves and rebuild upstream's own bar
 
-Our site shows a confidence number on every other design tool, and a tool that shows none will read as broken. The licence-clean route is to run each delivered design through a folder **we already ship** — `boltz2` or `esmfold2-design` — and compute interface pTM / PAE from that. This reconstructs exactly the quantities upstream's `ppi` criterion thresholds on (`ptm_coi`, `min_ipae_coi`), just with a different predictor. Costs and cautions:
+Our site shows a confidence number on every other design tool, and a tool that shows none will read as broken. The licence-clean route is to run each delivered design through a folder **we already ship** — `boltz2` or `esmfold2-design` — and compute interface pTM / PAE from that. This reconstructs two of the three quantities upstream's `ppi` criterion thresholds on (`ptm_coi`, `min_ipae_coi`) with a different predictor; the third, `refolded_target_backbone_aligned_binder_rmsd`, needs the refold itself and is not recovered this way. Whether `boltz2` or `esmfold2-design` exposes an interface PAE in the shape we need is UNVERIFIED and is a rung-3 question. Costs and cautions:
 
 - Extra GPU time per run, which must be in the quote before release, not after.
 - A recorded Hub finding is that `boltz2` ipTM is not reproducible run-to-run on one input (0.26–0.83 observed), which makes it a weak *sort key* even where it is a fine *display* number. Decide the sort key deliberately; the `#` column on our results pages is a position, not a rank.
