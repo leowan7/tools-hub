@@ -29,7 +29,10 @@ def test_down_monitor_shows_banner_and_up_monitor_clears_it(client, monkeypatch)
     status_banner.refresh()
     page = client.get("/").data.decode()
     assert 'role="status" data-status-banner' in page
-    assert status_banner.DISRUPTION_MESSAGE in page
+    assert (  # Leo's wording, verbatim
+        "Service disruption: all functionalities are not currently available. "
+        "We are working on it"
+    ) in page
 
     monkeypatch.setattr(status_banner, "_uptimerobot_down", lambda: False)
     status_banner.refresh()

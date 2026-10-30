@@ -41,8 +41,8 @@ _API_URL = "https://api.uptimerobot.com/v2/getMonitors"
 _DOWN_STATUSES = {8, 9}
 
 DISRUPTION_MESSAGE = (
-    "Service disruption: sign-in, wallet and run results may be slow or "
-    "unavailable. We are working on it."
+    "Service disruption: all functionalities are not currently available. "
+    "We are working on it"
 )
 
 _lock = threading.Lock()
