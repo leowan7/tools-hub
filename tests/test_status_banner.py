@@ -13,6 +13,8 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 def client(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     monkeypatch.delenv("STATUS_BANNER", raising=False)
+    # Empty, not deleted: load_dotenv does not override a set variable.
+    monkeypatch.setenv("UPTIMEROBOT_READONLY_KEY", "")
     monkeypatch.setattr(status_banner, "_down", False)
     from app import create_app
     flask_app = create_app()
