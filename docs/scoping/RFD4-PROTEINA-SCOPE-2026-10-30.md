@@ -329,7 +329,7 @@ Our `tools/proteina/Dockerfile.modal:35` builds on `nvcr.io/nvidia/pytorch:24.08
 - **Driver is new enough** → build the `cu13` variant from upstream's Dockerfile. Best case.
 - **Driver is CUDA 12 only** → build `RFD4_ACCELERATOR=cu12`. Upstream ships it as a first-class option, so this is a fallback rather than a blocker — but it is a different wheel set and must be probed, not assumed. UNVERIFIED whether the cu12 path is as well exercised upstream as cu13; the published `cu12`/`cu13` runtime image sizes are within 10% of each other (§5.2), so size tells us nothing either way.
 
-Rung 1 answers this for $0.
+Rung 1 answered half of this for $0 on 2026-10-30: the `cu13` wheel set resolves and the image builds and imports (§5.4). The driver half is still open and needs a GPU second — see §5.4.
 
 ### 5.2 Image plan
 
@@ -361,6 +361,32 @@ Leo's instruction (2026-10-30): once we know how to run it, **pin those settings
 **The pin that is easiest to get wrong is the accelerator variant**, because both variants build and only one will run. Rung 1 must record *which* variant it proved, in the Dockerfile, in the same commit.
 
 
+### 5.4 Rung 1 RESULT — the cu13 image builds, 2026-10-30
+
+Leo approved rung 1 on 2026-10-30. It ran the same day on a Modal CPU builder. **No GPU was attached, no weights were downloaded, nothing was deployed, and no GPU second was billed.** The probe script lives in this session's scratchpad, not in the repo; it mirrors upstream's `Dockerfile` (`aaccdd2a`) step for step but `git clone`s the pinned SHA instead of using a build context.
+
+**Outcome: the `cu13` image builds and runs.** Built in **147.57 s**, nine steps, `python -m pip check` reporting "No broken requirements found", 215 packages installed, all from public PyPI and the public PyTorch index. Upstream's own build-time smoke test passed on CPU — including the compiled TMol LJ/LK operator import (`tmol.score.ljlk.potentials._compiled`), OpenBabel, and a `torch.compile(backend="inductor", fullgraph=True)` round trip. `rfd4-generate --help` exited 0.
+
+Resolved versions, read from a container started on the built image:
+
+| | |
+|---|---|
+| `rfd4-proteina` | 0.0.3 |
+| `torch` | 2.14.1+cu130 |
+| `torch.version.cuda` | 13.0 |
+| cuDNN | 9.24 |
+| `tmol-ops-cu13` | 0.2.0 |
+| `bionemo-ir` | 0.2.1 |
+| `certifi` | 2026.10.23 |
+
+Two things the probe found that were not in the plan:
+
+- **`rfd4-generate --help` succeeds without a driver, but it is not silent about it.** With no GPU present the CLI printed `Error while loading libcue_ops.so: libcuda.so.1: cannot open shared object file: No such file or directory` and still exited 0. **A `--help` that exits 0 is therefore not evidence of GPU readiness**, and that string is the exact signature to watch for at rung 2 if the host driver turns out to be too old. Do not build a readiness check on the exit code.
+- **`atomworks` warns that `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` are unset** on every invocation, saying functions requiring them will be unavailable. CCD is the chemical component dictionary. UNVERIFIED whether a protein-only binder run needs either; it is a likely requirement for any ligand or modified-residue modality (§2A). Settle at rung 3.
+
+**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That remains UNVERIFIED and now costs about three cents of GPU time to settle, not $0; it should be folded into rung 2 rather than run on its own. §5.1's claim that rung 1 "establishes whether Modal's driver supports cu13" was wrong, and the ladder in §6.1 carries the same error.
+
+
 ---
 
 ## 6. Cost: what a run will bill, and what validating it costs
@@ -383,7 +409,7 @@ Leo's instruction (2026-10-30): once we know how to run it, **pin those settings
 
 | Rung | What it answers | GPU | Cost | Notes |
 |---|---|---|---|---|
-| **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. Also establishes whether Modal's driver supports cu13 — if not, rebuild as cu12. **Blocking for every rung below.** |
+| **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. **DONE 2026-10-30, $0: `cu13` builds and imports (§5.4).** It does NOT establish the host driver — a CPU builder has none. Fold that check into rung 2. |
 | **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. Deliverable: the true volume size and a `torch.cuda` init on our hardware. |
 | **3. One 8-design binder run** | **The cost question.** Real wall-clock, real output tree, real per-design file timing | 1 × A100-80GB, ≤30 min | **~$1.85** | Upstream's own `5o45_cropped` binder example, `num_replicates=8`, `'~metrics'`. Deliverables: wall-clock → the `expected_gpu_seconds` figure; the real `per_example_metrics.csv` header → the score column set; **and whether structure files appear per design or only at the end** (§7). |
 | **4. Our own target, like-for-like** | Does it work on a customer-shaped input, and how does it compare to our `proteina`? | 1 × A100-80GB, ≤30 min | **~$1.85** | The same target and hotspots as a recorded `proteina` run. First honest head-to-head on our own data. |
@@ -524,10 +550,10 @@ Each step is one PR with a gate. Sizes are rough.
 
 ## 10. UNKNOWNs and UNVERIFIEDs that must close before step 2
 
-1. **Does Modal's A100-80GB present a CUDA-13-capable driver?** UNVERIFIED. Blocking. Rung 1.
+1. **Does Modal's A100-80GB present a CUDA-13-capable driver?** STILL UNVERIFIED and still blocking. Rung 1 ($0, 2026-10-30) proved only that the `cu13` wheel set resolves and the code imports (§5.4); a CPU builder has no driver to test. Needs ~3¢ of GPU time, folded into rung 2.
 2. **Real wall-clock and cost of an 8-design run on our hardware.** UNKNOWN. The benchmark's per-design seconds exclude setup, compile and warmup and name no GPU model. Rung 3.
 3. **Do structure files land per design or only at run end?** NOT FOUND upstream. Decides whether streaming works at all and whether the $1.00 start minimum is defensible. Rung 3.
-4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run. Rung 3.
+4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run (§7A). Rung 3 — and that run must set `metrics_tags` explicitly, since the default is empty and would produce no columns at all.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
 6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
 7. **Real weights-volume size.** Documented ~1.7 GB; a previous weights volume was off by ~7× against its doc figure. Rung 2.
@@ -538,7 +564,8 @@ Each step is one PR with a gate. Sizes are rough.
 12. **Does the authors' benchmark hold on the current weights?** Upstream says it has not been re-measured. Rung 4 is our own check, on one target.
 13. **Does `sequence_developability` also need the PyRosetta apptainer?** UNVERIFIED — only `rosetta_developability` is documented as requiring `$PYROSETTA_CONTAINER` (§7A.6), and the class was not read. Blocking for any developability column, not for release 1.
 14. **Which confidence predictor and which sort key?** We must supply our own (§7A.5). `boltz2` ipTM is on record as not reproducible run-to-run, so the display number and the sort key may have to differ. A decision, not a measurement.
-15. **Which accelerator variant we actually shipped.** Rung 1 answers it and must write it into the Dockerfile in the same commit (§5.3); until then every pin in that table is UNSET.
+15. **Which accelerator variant we actually shipped.** Rung 1 showed `cu13` builds (§5.4); whether it *runs* on our hardware is unknown until the driver check. The Dockerfile must record the variant that was proven on a GPU, not the one that merely built.
+16. **Do `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` need to be set?** `atomworks` warns on every invocation that they are unset (§5.4). Harmless for `--help`; unknown for a real run, and a likely requirement for any ligand or modified-residue modality. Rung 3.
 
 ---
 
