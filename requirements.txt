@@ -8,7 +8,7 @@ certifi>=2026.10.23  # eMudhra key compromise, Oct 2026: of the four emSign root
 biopython>=1.81,<2.0  # Bio.PDB.DSSP tuple order is load-bearing; see scout/scoring.py::assign_dssp
 numpy>=1.24
 pydantic>=2.0,<3.0
-stripe>=9.0,<13.0
+stripe>=15.3.0,<16.0
 python-dotenv>=1.0
 prometheus-client>=0.20
 modal==1.6.2  # 1.6.3 breaks tests/_deploy_upload_probe.py; bump deliberately
