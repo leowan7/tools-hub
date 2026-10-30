@@ -716,6 +716,14 @@ def create_app() -> Flask:
         _compute_campaigns.display_record_usd
     )
 
+    # Separate from the processor below, which reads the database for
+    # signed-in users; this one must not.
+    @flask_app.context_processor
+    def inject_status_banner():
+        from shared.status_banner import banner_message  # noqa: PLC0415
+
+        return {"status_banner": banner_message()}
+
     # Inject Workspace context into every template so the shared header
     # can render the "Active Workspaces (N)" badge. Replaces the legacy
     # ranomics_tier / ranomics_credits injection from the subscription

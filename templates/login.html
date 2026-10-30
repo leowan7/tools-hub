@@ -9,6 +9,7 @@
 {% block body_attr %} class="auth-page"{% endblock %}
 
 {% block body %}
+  {% include "_status_banner.html" %}
   {% macro google_signin() %}
     {% if google_signin_enabled %}
       <a class="btn-google" href="{{ url_for('auth.google_start', next=next or None) }}">
