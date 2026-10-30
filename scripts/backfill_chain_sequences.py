@@ -6,6 +6,13 @@ CSV/FASTA ``_MAX_STRUCTURE_READS`` cap no longer reaches it. This script reads
 each remaining row's structure from Storage once and writes the chains into
 ``tool_jobs.result``. It runs as its own process, not in the web tier.
 
+Rows are read and written ``--piece`` at a time through two database functions,
+``backfill_candidate_page`` and ``backfill_store_chain_sequences`` (migration
+0046), so no request sends or returns a whole result: the one-request save of
+eight large jobs hit statement timeout 57014 on every retry in the production
+backfill (runner's report). The migration must be applied before this runs,
+dry run included.
+
 Usage (repo root, SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in the env or .env):
 
     python scripts/backfill_chain_sequences.py                      # dry run
@@ -13,22 +20,25 @@ Usage (repo root, SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in the env or .env):
     python scripts/backfill_chain_sequences.py --apply              # write
     python scripts/backfill_chain_sequences.py --apply --after <id> # resume
     python scripts/backfill_chain_sequences.py --apply --ids <id>,<id>  # just these
+    python scripts/backfill_chain_sequences.py --apply --ids <id> --piece 25  # smaller pieces
 
 Dry run reads the structures and prints what it would fill; it writes
 nothing. Jobs are walked in id order, ``--batch`` ids at a time, each job's
 row read on its own, and every batch of a paged run prints the ``--after``
 value to resume from. Rerunning is safe: a row that already stores chains, or stores a
-sequence, is skipped, and a job with nothing to fill is not written. Only
+sequence, is skipped, and a piece with nothing to fill is not written. Only
 terminal jobs completed more than ``--min-age-minutes`` ago are touched, so a
-terminal write still in flight is not raced; the write itself is conditional
-on the job's status not having changed since it was read.
+terminal write still in flight is not raced; each piece's write is conditional
+on the job's status and row count not having changed since it was read. A job
+whose later piece fails keeps the pieces already written; a rerun fills the
+rest.
 
 Storage downloads run one at a time with ``--pause`` seconds after each, and
 the same pause between jobs. A 429, 5xx, network error or statement timeout
 (57014) is retried ``--retries`` times with doubling backoff. A job whose
 write, or a Storage read that failed transiently, still fails is listed for a
 ``--ids`` rerun; a read that misses for good (404, empty) is only printed. A
-page or row read that still fails ends the run with exit status 2, the
+page, row or piece read that still fails ends the run with exit status 2, the
 resume point and that list.
 """
 
@@ -52,13 +62,15 @@ except ImportError:
     pass
 
 from shared.credits import get_service_client  # noqa: E402
-from shared.exports import STORED_CHAINS  # noqa: E402
-from shared.jobs import (  # noqa: E402
-    TERMINAL_STATUSES, _cas_update, _with_chain_sequences, candidate_records,
-)
+from shared import exports  # noqa: E402
+from shared.exports import STORED_CHAINS, store_chain_sequences  # noqa: E402
+from shared.jobs import TERMINAL_STATUSES  # noqa: E402
 from shared.storage import StorageError, download_output  # noqa: E402
 
 BACKOFF_SECONDS = 2.0
+# ponytail: chosen, not measured; rows per read page and per write. --piece
+# lowers it when a piece still times out.
+PIECE = 100
 _TRANSIENT_CODES = {"429", "57014", "DatabaseTimeout", "too_many_connections"}
 
 
@@ -97,11 +109,6 @@ def _retry(fn, what: str, retries: int):
             time.sleep(wait)
 
 
-def _stored_count(result) -> int:
-    return sum(isinstance(c, dict) and STORED_CHAINS in c
-               for c in candidate_records(result))
-
-
 def _fetcher(row_id: str, user_id: str, *, pause: float, retries: int,
              failed: set):
     # ponytail: the lock makes the exports' read pool download one at a time;
@@ -125,34 +132,62 @@ def _fetcher(row_id: str, user_id: str, *, pause: float, retries: int,
     return fetch
 
 
-def backfill_job(row: dict, *, apply: bool, pause: float = 0.0, retries: int = 0,
-                 failed: set | None = None) -> int:
-    """Rows filled (or, dry run, that would be) for one ``tool_jobs`` row.
-    A job whose write, or a transient Storage read, still fails after retries
-    goes in ``failed``."""
+def backfill_job(row: dict, *, client, apply: bool, piece: int = PIECE,
+                 pause: float = 0.0, retries: int = 0, failed: set | None = None) -> int:
+    """Rows filled (or, dry run, that would be) for one ``tool_jobs`` row,
+    read and written ``piece`` rows at a time. A job whose write, or a
+    transient Storage read, still fails after retries goes in ``failed``; a
+    piece read that still fails is raised."""
     failed = set() if failed is None else failed
-    result = row.get("result")
-    if not isinstance(result, dict):
-        return 0
-    new = _with_chain_sequences(
-        result, default_job_id=row["id"],
-        fetch_bytes=_fetcher(row["id"], row["user_id"], pause=pause, retries=retries,
-                             failed=failed))
-    filled = _stored_count(new) - _stored_count(result)
-    if not (filled and apply):
-        return filled
-    for attempt in range(retries + 1):
-        if _cas_update(row["id"], {"result": new}, allowed_current=(row["status"],)):
+    job_id = row["id"]
+    fetch = _fetcher(job_id, row["user_id"], pause=pause, retries=retries, failed=failed)
+    offset = spent = filled = 0
+    while True:
+        page = _retry(lambda: client.rpc("backfill_candidate_page", {
+            "p_job_id": job_id, "p_offset": offset, "p_limit": piece}).execute().data,
+            f"read {job_id} rows {offset}+", retries)
+        if not page or not page["rows"]:
             return filled
-        if attempt < retries:
-            wait = BACKOFF_SECONDS * 2 ** attempt
-            print(f"  {row['id']}: write failed or status changed; retry in {wait:g}s",
-                  file=sys.stderr)
-            time.sleep(wait)
-    print(f"  {row['id']}: not written (status changed since read, or the write "
-          f"failed: see log)")
-    failed.add(row["id"])
-    return 0
+        rows = page["rows"]
+        # Padded so each row keeps its index in the result: export_key numbers
+        # by it and the write addresses rows by it. A None row is skipped.
+        padded = [None] * offset + rows
+        try:
+            new, _n = store_chain_sequences(padded, fetch_bytes=fetch,
+                                            default_job_id=job_id)
+        except Exception as exc:
+            print(f"  {job_id}: chain sequences not read: {exc}", file=sys.stderr)
+            failed.add(job_id)
+            return filled
+        chains, over = {}, False
+        for i in range(offset, len(new)):
+            if new[i] is padded[i]:
+                continue
+            value = new[i][STORED_CHAINS]
+            # The same budget store_chain_sequences keeps, held across pieces.
+            spent += sum(len(c) + len(s) for c, s in value)
+            if spent > exports._MAX_STORED_CHAIN_CHARS:
+                over = True
+                break
+            chains[str(i)] = value
+        if chains and apply:
+            try:
+                ok = _retry(lambda: client.rpc("backfill_store_chain_sequences", {
+                    "p_job_id": job_id, "p_status": row["status"], "p_key": page["key"],
+                    "p_total": page["total"], "p_chains": chains}).execute().data,
+                    f"write {job_id} rows {offset}+", retries)
+            except Exception as exc:
+                print(f"  {job_id}: write failed: {str(exc)[:200]}", file=sys.stderr)
+                ok = False
+            if not ok:
+                print(f"  {job_id}: rows {offset}+ not written (status or row count "
+                      f"changed since read, or the write failed: see log)")
+                failed.add(job_id)
+                return filled
+        filled += len(chains)
+        offset += len(rows)
+        if over or offset >= page["total"]:
+            return filled
 
 
 def main(argv=None) -> int:
@@ -164,6 +199,8 @@ def main(argv=None) -> int:
     ap.add_argument("--tool", help="only this tool slug")
     ap.add_argument("--batch", type=int, default=20, help="job ids per page")
     ap.add_argument("--limit", type=int, default=0, help="stop after N jobs (0 = all)")
+    ap.add_argument("--piece", type=int, default=PIECE,
+                    help="result rows per read and per write")
     ap.add_argument("--min-age-minutes", type=int, default=60)
     ap.add_argument("--pause", type=float, default=0.25,
                     help="seconds after each Storage download and each job")
@@ -173,6 +210,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.retries < 0:
         ap.error("--retries must be 0 or more")
+    if a.piece < 1:
+        ap.error("--piece must be 1 or more")
     if a.ids and a.after:
         ap.error("--ids and --after do not combine")
 
@@ -197,7 +236,7 @@ def main(argv=None) -> int:
         return [r["id"] for r in q.order("id").limit(a.batch).execute().data or []]
 
     def read_row(job_id: str):
-        data = query("id,user_id,tool,status,result").eq("id", job_id).execute().data
+        data = query("id,user_id,tool,status").eq("id", job_id).execute().data
         return data[0] if data else None
 
     cursor, jobs, rows_filled, failed = a.after, 0, 0, set()
@@ -212,15 +251,15 @@ def main(argv=None) -> int:
         for job_id in ids:
             try:
                 row = _retry(lambda: read_row(job_id), f"read {job_id}", a.retries)
+                n = 0 if row is None else backfill_job(
+                    row, client=client, apply=a.apply, piece=a.piece, pause=a.pause,
+                    retries=a.retries, failed=failed)
             except Exception as exc:
                 return _stop(exc, a.ids and f"--ids {a.ids}" or cursor and f"--after {cursor}",
                          failed)
             if row is None:
                 print(f"{job_id}: not found, not terminal, or too recent; skipped")
-                n = 0
             else:
-                n = backfill_job(row, apply=a.apply, pause=a.pause,
-                                 retries=a.retries, failed=failed)
                 if n:
                     print(f"{row['id']} {row['tool']} {row['status']}: "
                           f"{'filled' if a.apply else 'would fill'} {n} row(s)")
