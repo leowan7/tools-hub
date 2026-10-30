@@ -27,7 +27,7 @@ Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal fo
 
 | | |
 |---|---|
-| Upstream | `RosettaCommons/RFD4-Proteina`, created 2026-09-25, 514 stars, **21 open issues**, no GitHub Releases, tags `v0.0.1`–`v0.0.3`, PyPI classifier "Development Status :: 3 - Alpha" (`gh api repos/RosettaCommons/RFD4-Proteina`; `pyproject.toml`) |
+| Upstream | `RosettaCommons/RFD4-Proteina`, created 2026-09-25, 514 stars, **7 open issues** (`gh api "search/issues?q=repo:RosettaCommons/RFD4-Proteina+is:issue+is:open"` on 2026-10-30; the repo's `/issues` endpoint returns 21 because it counts pull requests too), no GitHub Releases, tags `v0.0.1`–`v0.0.3`, PyPI classifier "Development Status :: 3 - Alpha" (`gh api repos/RosettaCommons/RFD4-Proteina`; `pyproject.toml`) |
 | Weights | `nvidia/RFD4-Proteina` on Hugging Face, ungated, BSD-3 per the model card |
 | Lineage | Baker Lab × NVIDIA GenAIR. Successor umbrella over *both* the RFdiffusion line and the Proteina/Complexa line (README) |
 | Licence | BSD-3 for code, model and weights (`LICENSE`; HF model card states it explicitly) |
@@ -47,7 +47,7 @@ Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal fo
 | Target input | PDB/CIF via our normalizer | PDB | **annotated CIF or a YAML/JSON condition spec; PDB input NOT FOUND in upstream docs** (§4 — this is a real integration cost) |
 | In our stack | `tools/proteina/` — the one tool whose container lives in this repo | sibling repo `llm-proteinDesigner` | would be a new in-repo container, copying `proteina` |
 
-**Does it supersede either one?** On paper it dominates both — see §3. In practice: **no, not yet, and not on the authors' numbers alone.** Three reasons to add rather than replace. (a) It is alpha software, four weeks old, with 21 open issues including binder-mode bugs (§7). (b) Our `proteina` and `rfdiffusion` are live-charging and have run real paid customer jobs; RFD4 has run nothing here. (c) `rfdiffusion` has never produced a successful binder for us in the runs on record, so the case for retiring *it* is worth making separately and on our own data, not on an upstream leaderboard. Revisit replacement after RFD4 has a month of real runs.
+**Does it supersede either one?** On paper it dominates both — see §3. In practice: **no, not yet, and not on the authors' numbers alone.** Three reasons to add rather than replace. (a) It is alpha software, four weeks old, with 7 open issues, one of them a binder-mode bug (upstream #81, alanine over-representation on the non-interacting face under the binder-design protocol). (b) Our `proteina` and `rfdiffusion` are live-charging and have run real paid customer jobs; RFD4 has run nothing here. (c) `rfdiffusion` has never produced a successful binder for us in the runs on record, so the case for retiring *it* is worth making separately and on our own data, not on an upstream leaderboard. Revisit replacement after RFD4 has a month of real runs.
 
 ---
 
@@ -68,7 +68,7 @@ Reward-guided search deserves a note, because it is the headline mode: on the up
 
 ## 3. The benchmark numbers, and what they are worth
 
-All figures in this section are **my own arithmetic over the upstream benchmark CSV**, not quoted marketing numbers. Source: `website/benchmarks/source_data.csv` at `main`, fetched with `gh api` and aggregated with a script in this session's scratchpad. Each arm is 24 targets × 200 attempts = 4,800 attempts.
+All figures in this section are **my own arithmetic over the upstream benchmark CSV**, not quoted marketing numbers. Source: `website/benchmarks/source_data.csv` at `main`, fetched with `gh api` and aggregated with a throwaway script that is **not committed**, so a reader who wants to check these numbers must re-aggregate the CSV themselves. The CSV path and the group-by (arm x target, mean of the per-target success rates) are the whole method. Each arm is 24 targets × 200 attempts = 4,800 attempts.
 
 | Arm | pass % | clustered % | gen GPU-s / design (median, range) |
 |---|---|---|---|
@@ -150,7 +150,7 @@ Upstream requires **Linux x86_64, Python 3.12, and a CUDA-13-compatible driver**
 Our `tools/proteina/Dockerfile.modal:35` builds on `nvcr.io/nvidia/pytorch:24.08-py3`, a CUDA-12 base. **Whether Modal's A100-80GB hosts present a CUDA-13-capable driver is the one thing that decides the shape of this work, and it is UNVERIFIED.** Two outcomes:
 
 - **Driver is new enough** → build the `cu13` variant from upstream's Dockerfile. Best case.
-- **Driver is CUDA 12 only** → build `RFD4_ACCELERATOR=cu12`. Upstream ships it as a first-class option, so this is a fallback rather than a blocker — but it is a different wheel set and must be probed, not assumed. The `cu12` prebuilt oracle image is also ~2.7× the size of the `cu13` one on HF, which hints the cu12 path is less travelled.
+- **Driver is CUDA 12 only** → build `RFD4_ACCELERATOR=cu12`. Upstream ships it as a first-class option, so this is a fallback rather than a blocker — but it is a different wheel set and must be probed, not assumed. UNVERIFIED whether the cu12 path is as well exercised upstream as cu13; the published `cu12`/`cu13` runtime image sizes are within 10% of each other (§5.2), so size tells us nothing either way.
 
 Rung 1 answers this for $0.
 
@@ -205,8 +205,8 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 How a live tool works here (verified in code this session):
 
 - The slug joins `_LIVE_ALL_PRESETS` (`shared/wallet_guard.py:81-91`), which today holds eight tools.
-- A **start minimum** is the balance a run needs before it may start; nothing is debited at start. Per-tool constants sit beside that set — `PROTEINA_START_USD = $1.00` (`shared/wallet_guard.py:97`), `PXDESIGN_START_USD` and `RFANTIBODY_START_USD` = $2.00 (`:100-101`). Everything else defaults to $0.
-- The container sends a **start heartbeat the moment the GPU is live** (`tools/proteina/modal_app.py`, `_start_beat`), so a cancel bills from GPU start. This function must be **byte-identical across apps** — `tests/test_live_charging.py:1124-1186` enforces it with an AST check. Landed fleet-wide in `3a8de1fc` (#464).
+- A **start minimum** is the balance a run needs before it may start; nothing is debited at start. Per-tool constants sit beside that set — `PROTEINA_START_USD = $1.00` (`shared/wallet_guard.py:97`), `PXDESIGN_START_USD` and `RFANTIBODY_START_USD` = $2.00 (`:100-101`). The other live tools derive theirs instead of using a constant: `bindcraft` and `iggm` return `TOOL_SPECS[slug].base_hard_cap_usd`, `esmfold2-design` returns its base cap **times its seed count**, and `rfdiffusion` returns a `live_due_usd` figure computed from a runtime estimate (`shared/wallet_guard.py:199-213`). Of the eight tools in `_LIVE_ALL_PRESETS`, only `boltz2` falls through to $0 — so "$0 unless stated" is **not** the house default and `rfd4` needs an explicit decision (§9 Q4).
+- The container sends a **start heartbeat the moment the GPU is live** (`tools/proteina/modal_app.py`, `_start_beat`), so a cancel bills from GPU start. Two guard tests constrain this, both parametrised over every in-repo live app (`tests/test_live_charging.py:1147-1161`): `_start_beat` must be **AST-identical to `af2`'s copy** (`ast.dump` equality — so comments and formatting may differ, the code may not), and the statement calling it must come **immediately after** `env = _merged_environment(payload)` in every function that builds the env. Landed in `3a8de1fc` (#464) for the **7 in-repo GPU apps** only — its own commit message says so; the out-of-repo containers (`rfdiffusion`, `pxdesign`, `rfantibody`) and non-live `mpnn` are not covered, so "every live tool sends a start beat" is **not** true today. A new app is picked up automatically once its slug joins the live sets, so `tools/rfd4/modal_app.py` must copy `af2`'s `_start_beat` body exactly rather than write its own.
 - Billing itself runs from the Railway cron every 5 minutes, debiting wall-clock since `started_at`; when the balance falls short the run is cancelled, reconstructed and completed as a partial.
 
 **Proposed start minimum for `rfd4`: $1.00**, pending rung 3 — **and this is a Leo decision, not a derivation.** The principle the other tools follow is "cover the stretch before the first design reaches storage". RFD4's generation is seconds per design, so if structures stream per design that stretch is container start + weight load + compile, and $1.00 (≈570 s of billing) is comfortable. If instead structures only appear at run end, the stretch is the whole run and no modest minimum covers it. **Rung 3 must answer which, before the figure is set.** Until it does, the figure is a guess.
@@ -216,7 +216,7 @@ How a live tool works here (verified in code this session):
 Copy the `proteina` mechanism: the container uploads each design via a presigned PUT, then sends a heartbeat carrying a `new_candidate` record; the hub appends it to the job's partial candidates, and `shared/job_recovery.py` rebuilds a result from those if the run stops. **Two RFD4-specific hazards:**
 
 - **`delete_failing_pre_oracle: True`** (`configs/inference.yaml:44`) deletes structure files for designs failing a pre-oracle filter. Our uploader must either run after that filter or tolerate a vanished file. A naive per-design uploader will race it.
-- **Score keys must be registered.** `shared/job_recovery.py:59` keeps only a fixed tuple of score keys when rebuilding a candidate from a partial, so a new tool's own metrics are dropped on a stop or cancel unless its keys are added. This is a known open defect for `proteina`; do not inherit it silently.
+- **Score keys must be registered.** `shared/job_recovery.py:59` keeps only a fixed tuple of score keys when rebuilding a candidate from a partial, so a new tool's own metrics are dropped on a stop or cancel unless its keys are added. The tuple is `_PROTEINA_SCORE_KEYS`, named for and populated with proteina's metrics, so proteina itself is fine; the hazard is that a new tool silently loses any metric not on that list. Add `rfd4`'s keys in the same PR that adds its streaming.
 
 ### 7.3 Exports
 
@@ -244,7 +244,7 @@ Each step is one PR with a gate. Sizes are rough.
 | 7 | Catalog and copy: `shared/tools_catalog.py`, `shared/tool_chooser.py`, `shared/email.py`, comparison and guide templates | **M**, customer-visible | **SEO lead sign-off.** Includes the unanswered positioning question: *what does a customer choose between `rfd4`, `proteina` and `rfdiffusion`, in one sentence?* |
 | 8 | Flag flip after rung 4 | XS | Leo's go |
 
-**Rollout order is fixed by the deploy workflow:** seed the volumes → deploy Modal → merge the hub PR → flip the flag. One trap: `.github/workflows/deploy-modal.yml` has **no per-app routing** — its matrix of nine apps means any `tools/**` change redeploys the whole fleet. **Merge only when the fleet is idle** (no pending or running jobs for any tool), per standing practice.
+**Rollout order is fixed by the deploy workflow:** seed the volumes → deploy Modal → merge the hub PR → flip the flag. One trap: `.github/workflows/deploy-modal.yml` has **no per-app routing** — its matrix of nine apps means a `tools/**` change redeploys the whole fleet. (The trigger paths do negate `tools/**/meta.py`, `tools/**/example/**` and `tools/**/__init__.py`, so a data-only or adapter-only edit does not trigger it — but any Dockerfile or `modal_app.py` edit does, for all nine.) **Merge only when the fleet is idle** (no pending or running jobs for any tool), per standing practice.
 
 ---
 
@@ -262,7 +262,7 @@ Each step is one PR with a gate. Sizes are rough.
 5. **No ipTM on the results page.** Ship release 1 with inline metrics only, or hold for a chained fold step? (§7.3 — I recommend shipping, then chaining.)
 6. **Start minimum.** $1.00 proposed, but the derivation depends on rung 3's streaming answer. Confirm after rung 3, not now.
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
-8. **Alpha software, four weeks old, 21 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
+8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
 
 ---
 
@@ -288,3 +288,26 @@ Each step is one PR with a gate. Sizes are rough.
 No product code was changed. No Modal app was deployed. No GPU job was launched. No weights or container images were downloaded. No money was spent. No customer-visible string was edited.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
+
+---
+
+## 12. Review verdicts on this document
+
+Both saved reviewers ran on this branch's delta against `origin/main` (045a61dc) before the PR was opened.
+
+**`review-code`: no findings.** The delta is a single new prose file; there is no behaviour to review. Recorded for completeness, not as evidence that any code described here is correct — none of it exists yet.
+
+**`review-claims`: ~60 claims enumerated, 52 checked — 44 VERIFIED, 3 FALSE or overstated, 5 UNVERIFIED.** It independently re-derived the §6 cost table from the rate constants ($0.0017476 per customer GPU-second, $6.29/hour, rung totals $4.32 and $9.87 against my stated ≈$4.30 and ≈$9.90) and recomputed every §3 benchmark row it checked from the upstream CSV, matching mine. The three confirmed problems and the five unverified items are all fixed in this file:
+
+| Finding | Fix |
+|---|---|
+| §7.1 "Everything else defaults to $0" — FALSE; seven of eight live tools are non-zero | §7.1 now enumerates each one and names `boltz2` as the only $0 |
+| §7.1 `_start_beat` "byte-identical" — the guard compares `ast.dump` | §7.1 now says AST-identical and cites `tests/test_live_charging.py:1147-1161` |
+| §7.1 `3a8de1fc` "fleet-wide" — OVERSTATED; 7 in-repo apps only | §7.1 now names the 7 and lists what is not covered |
+| §3 aggregation script not committed | §3 now says so and states the group-by |
+| §5.1 "~2.7× the size" — the ratio belongs to the excluded oracle images | sentence replaced with an explicit UNVERIFIED |
+| §1 "21 open issues" — the count includes PRs | corrected to 7, with the query that produced it |
+| §7.2 score keys "known open defect for `proteina`" | reworded: proteina's keys *are* kept; the hazard is a new tool's |
+| §8 "any `tools/**` change redeploys" — slightly broader than the trigger | §8 now notes the `meta.py` / `example/` / `__init__.py` negations |
+
+A clean claims pass is not proof. Every figure in §3, §5 and §6 is either labelled with the file or command that produced it or marked UNVERIFIED; the UNKNOWNs in §10 are the honest list of what no reviewer could settle without spending GPU money.
