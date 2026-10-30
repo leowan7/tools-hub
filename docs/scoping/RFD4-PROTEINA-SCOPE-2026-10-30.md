@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping. **No product code was changed, no Modal app was deployed, and no GPU job was launched. No money was spent.**
+Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
@@ -438,7 +438,7 @@ Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyp
 
 **Two things the seeding code has to get right, both now known:**
 
-1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). The seed must rename on the way in. The mapping and the digests are in the repo's own `release-checkpoints.json`.
+1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). **Do not rename the flow checkpoint on the way in — rung 3 proved this caveat wrong for that file** (§5.7): `rfproteina/utils/weights.py:20` dispatches on the `-ema.ckpt` suffix, so the seeded name must keep it and the invocation must carry a matching `ckpt_name=` override instead. The autoencoder is unaffected and may take the dated name. The mapping and the digests are in the repo's own `release-checkpoints.json`.
 2. **The revision upstream pins and the revision upstream ships disagree.** `configs/inference.yaml:30` at RFD4-Proteina `aaccdd2a` names HF commit `a06e2509…` (2026-10-20). The `inference.yaml` stored *inside* that HF commit names `cf31b935…` (2026-10-19), which is also `release-checkpoints.json`'s `bundle_revision`. Both commits exist. **We pin `a06e2509…`** — it is what upstream's code reads and what the file list above was enumerated from. §5.3 records it as the literal to use; nothing enforces it yet, because `seed_volumes.py` does not exist. The seeder **will** carry it as a module-level constant and a guard test **should** assert on that constant, the way `tests/test_gpu_class_drift.py` already does for `_GPU`.
 
 **Three caveats, so this is not read as more than it is.** (i) This loaded checkpoints; it did **not** instantiate the RFD4 model or run a sampling step, so `torch.compile`, the length buckets and real VRAM remain rung 3's job. (ii) The flow checkpoint holds **437,686,849** tensor elements against `release-checkpoints.json`'s `stored_parameters: 435622465` — a difference of 2,064,384. The manifest counts parameters and our probe counted every tensor in the state dict, so the two are not the same quantity; **UNVERIFIED** that the gap is only buffers. (iii) The download ran **unauthenticated** and the Hub warned about rate limits; production seeding should carry an `HF_TOKEN`. The exact GPU seconds billed were **not captured**. The only bound is the GPU function's own 600 s timeout, which at $0.001028/s caps *that function* at $0.617; container start and the CPU download are outside it. So the GPU half is bounded under the approved figure, the total is **unverified**, and a future rung should record the seconds rather than infer them.
@@ -471,7 +471,7 @@ rfd4-generate inference_experiment=quickstart hf_ckpt_path=null \
   num_replicates=8 out_dir=/tmp/rfd4_run
 ```
 
-**Cost: ~$0.28 customer for eight designs — one tenth of what this document assumed.** §6 predicted RFD4's cost would be set by startup rather than sampling. It is, but the startup is far cheaper than `proteina`'s 553–1343 s. Decomposing the eight per-design file timestamps:
+**Cost: ~$0.28 customer for eight designs — ten times what the benchmark implied, and a third of the comparable `proteina` shard.** §6 called the benchmark's ~19 s of generation ("about three cents") obviously wrong because a real run is dominated by fixed overhead, and predicted RFD4's cost would be set by startup rather than sampling. Both hold: the measured $0.28 is an order of magnitude *above* the benchmark figure, and still below `proteina`'s 553–1343 s shards. Decomposing the eight per-design file timestamps:
 
 | | Measured |
 |---|---|
@@ -481,7 +481,7 @@ rfd4-generate inference_experiment=quickstart hf_ckpt_path=null \
 | Marginal, between-run (159.2 − 76.4)/7 | **11.83 s/design** |
 | Fixed overhead, by subtraction | **~61–65 s** |
 
-Two independent estimates of the marginal cost agree to 4%. A working model for `expected_gpu_seconds` is **`65 + 12.3 × N` seconds**, which reproduces the measured 159.2 s to within 2%. At N=8 that is $0.28 customer; at N=100, $2.26 — but 100 replicates is a **12× extrapolation beyond anything measured**, and the per-design time is an average over a random 50–120 aa binder length draw (the example's contig), not a fixed-length figure. One run, no variance estimate.
+Two independent estimates of the marginal cost agree to 4%. A working model for `expected_gpu_seconds` is **`65 + 12.3 × N` seconds**, which gives 163.4 s against the measured 159.2 s — **2.6% high**, and deliberately so, since over-reserving is the safe direction on money. The 61 s end of the fixed-overhead range would reproduce it to 0.1%. At N=8 that is $0.28 customer; at N=100, $2.26 — but 100 replicates is a **12× extrapolation beyond anything measured**, and the per-design time is an average over a random 50–120 aa binder length draw (the example's contig), not a fixed-length figure. One run, no variance estimate.
 
 **Three reasons this figure is not yet the production figure.** (i) `quickstart` sets `compile_lengths: null`, and its own comment says the `torch.compile` warm-up "costs minutes on a first run and pays off only across many designs, so drop this preset for production runs" — so 12.3 s/design is the **eager** number and ~61–65 s is a **floor** on startup, not a ceiling. (ii) `batch_size` was left at the preset's default, so the eight designs ran strictly one at a time; batching would change both numbers. (iii) VRAM was not captured.
 
@@ -517,7 +517,7 @@ Two independent estimates of the marginal cost agree to 4%. A working model for 
 | 1800 s | $3.15 |
 | 3600 s | $6.29 |
 
-**Rung 3 settled it (§5.7): ~61–65 s of fixed startup plus ~12.3 s per design, so eight designs billed ~$0.28 customer — an order of magnitude below the `proteina` shards, and still startup-dominated.**
+**Rung 3 settled it (§5.7): ~61–65 s of fixed startup plus ~12.3 s per design, so eight designs billed ~$0.28 customer — about a third of the comparable `proteina` protein-binder shard, which measured ~553 s for the same eight designs and charged ~$0.97 (`shared/wallet_estimates.py:501-506`), and still startup-dominated.**
 
 ### 6.1 Validation ladder — cheapest first
 
