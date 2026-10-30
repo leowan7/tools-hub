@@ -1,17 +1,26 @@
-"""Site-wide "service is disrupted" banner.
+"""Site-wide "service is disrupted" banner, driven by UptimeRobot.
 
-The banner exists for outages where every database read hangs while
-/health stays green. Rendering it must therefore never wait on the
-database: ``banner_message()`` only reads a process-local flag, and the flag
-is refreshed by a daemon thread that sends the /readyz query with a short
-timeout, at most once per ``CHECK_INTERVAL_S``.
+The banner shows only while UptimeRobot reports a watched monitor down
+(status 8 "seems down" or 9 "down"). Rendering never waits on the network:
+``banner_message()`` reads a process-local flag, and a daemon thread
+refreshes it from the UptimeRobot API at most once per ``CHECK_INTERVAL_S``.
+Supabase is never touched, since the database is what is usually down.
 
-Each gunicorn worker holds its own flag and runs its own check.
+Each gunicorn worker holds its own flag and runs its own poll.
 
-``STATUS_BANNER`` (env) forces a banner with that text, for planned or
-partial incidents, without a code change. It is read from the process
-environment, so it takes effect when the service restarts with the new
-value.
+Env:
+  UPTIMEROBOT_READONLY_KEY  read-only (or monitor-specific) API key. Unset
+                            means no poll and no banner.
+  UPTIMEROBOT_MONITOR_IDS   optional, dash-separated ids to watch, e.g.
+                            "800123-800124". Unset means every monitor the
+                            key can see.
+  STATUS_BANNER             forces a banner with that text, for planned or
+                            partial incidents, without a code change. It is
+                            read from the process environment, so it takes
+                            effect when the service restarts with the value.
+
+Any poll failure (UptimeRobot unreachable, bad key, bad reply) clears the
+flag: no banner.
 """
 
 from __future__ import annotations
@@ -23,8 +32,10 @@ import time
 
 logger = logging.getLogger(__name__)
 
-CHECK_INTERVAL_S = 30.0
-CHECK_TIMEOUT_S = 5.0
+CHECK_INTERVAL_S = 60.0
+CHECK_TIMEOUT_S = 3.0
+_API_URL = "https://api.uptimerobot.com/v2/getMonitors"
+_DOWN_STATUSES = {8, 9}
 
 DISRUPTION_MESSAGE = (
     "Service disruption: sign-in, wallet and run results may be slow or "
@@ -32,47 +43,47 @@ DISRUPTION_MESSAGE = (
 )
 
 _lock = threading.Lock()
-_db_down = False
+_down = False
 _last_started = float("-inf")
 _in_flight = False
 
 
-def _db_ok() -> bool:
-    """The /readyz query (user_events, one id) as a raw PostgREST GET."""
+def _uptimerobot_down() -> bool:
+    """True if any watched monitor is down. Raises on any API failure."""
     import httpx  # noqa: PLC0415
 
-    url = os.environ.get("SUPABASE_URL", "").strip()
-    key = (
-        os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-        or os.environ.get("SUPABASE_KEY", "").strip()
-        or os.environ.get("SUPABASE_ANON_KEY", "").strip()
-    )
-    resp = httpx.get(
-        f"{url.rstrip('/')}/rest/v1/user_events",
-        params={"select": "id", "limit": "1"},
-        headers={"apikey": key, "Authorization": f"Bearer {key}"},
-        timeout=CHECK_TIMEOUT_S,
-    )
-    return resp.status_code == 200
+    data = {
+        "api_key": os.environ.get("UPTIMEROBOT_READONLY_KEY", "").strip(),
+        "format": "json",
+    }
+    ids = os.environ.get("UPTIMEROBOT_MONITOR_IDS", "").strip()
+    if ids:
+        data["monitors"] = ids
+    resp = httpx.post(_API_URL, data=data, timeout=CHECK_TIMEOUT_S)
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("stat") != "ok":
+        raise ValueError(f"UptimeRobot stat={body.get('stat')!r}")
+    return any(m.get("status") in _DOWN_STATUSES for m in body["monitors"])
 
 
 def refresh() -> None:
     """Run one check and store the result. Blocking; the thread target."""
-    global _db_down, _in_flight
+    global _down, _in_flight
     try:
-        ok = _db_ok()
-    except Exception as exc:  # noqa: BLE001 - any failure means down
-        logger.warning("status banner check failed: %s", exc)
-        ok = False
+        down = _uptimerobot_down()
+    except Exception as exc:  # noqa: BLE001 - fail closed to no banner
+        logger.warning("status banner poll failed: %s", exc)
+        down = False
     with _lock:
-        _db_down = not ok
+        _down = down
         _in_flight = False
 
 
 def _maybe_start_check() -> None:
     global _last_started, _in_flight
-    if not os.environ.get("SUPABASE_URL", "").strip():
-        return  # local dev / tests: nothing to probe
+    if not os.environ.get("UPTIMEROBOT_READONLY_KEY", "").strip():
+        return
     now = time.monotonic()
     with _lock:
         if _in_flight or now - _last_started < CHECK_INTERVAL_S:
@@ -95,4 +106,4 @@ def banner_message() -> str | None:
     if forced:
         return forced
     _maybe_start_check()
-    return DISRUPTION_MESSAGE if _db_down else None
+    return DISRUPTION_MESSAGE if _down else None
