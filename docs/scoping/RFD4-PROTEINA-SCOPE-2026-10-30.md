@@ -21,7 +21,9 @@ Three facts drive that shape:
 
 **§2A tests that one-preset recommendation against every modality the model supports** — eight with a runnable shipped config, six without — and the recommendation survives: the three commercially interesting additions (customer ligand, enzyme cofactor, DNA) all need the same piece of platform work on our side (a CIF-preserving staging path, §2A.2), and two of the three *also* lack a customer-input route upstream. §2A.7 carries the staged release map and the one narrow widening worth considering.
 
-Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually.
+**Scoring is the one thing this shape costs us, and §7A is new:** RFD4 ships no default score, and its published pass/fail bar is computed entirely from the refold oracle we exclude. The oracle-free interface metrics it does compute are real but carry no confidence number, so release 1 should chain a fold through a tool we already own.
+
+Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually; rung 1 ($0, no GPU) was approved on 2026-10-30.
 
 ---
 
@@ -506,14 +508,14 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-1. **Approve rung 1 ($0)?** CPU-only image build probe. Answers the CUDA-13 question and gates everything.
+1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
 2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
 3. **Approve rung 4 (≈$1.85)?** Head-to-head against a recorded `proteina` run. Recommended but separable.
 4. **Rung 5 (≈$5.55)?** Defer until after the go/no-go.
 
 **Product decisions:**
 
-5. **No ipTM on the results page.** Ship release 1 with inline metrics only, or hold for a chained fold step? (§7.3 — I recommend shipping, then chaining.)
+5. **No confidence number on the results page.** §7A makes this worse than first written: upstream's *only* quality bar is pass/fail and every term in it comes from the oracle we excluded, so under our scope nothing upstream ranks anything. Ship release 1 with the oracle-free interface columns (§7A.3), or hold for a chained fold through our own `boltz2` / `esmfold2-design` (§7A.5)? I still recommend shipping, then chaining.
 6. **Start minimum.** $1.00 proposed, but the derivation depends on rung 3's streaming answer. Confirm after rung 3, not now.
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
 8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
