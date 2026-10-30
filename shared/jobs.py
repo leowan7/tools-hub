@@ -2154,7 +2154,8 @@ def _with_chain_sequences(
     inline ``pdb_content_b64`` it is about to drop is read, and no Storage:
     that runs inside the terminal write, which the webhook request waits on
     (webhooks/modal.py ``_apply_terminal`` calls :func:`complete_job`).
-    scripts/backfill_chain_sequences.py passes a Storage fetcher. Same
+    scripts/backfill_chain_sequences.py calls store_chain_sequences itself,
+    a piece of the array at a time, with a Storage fetcher. Same
     top-level array :func:`candidate_records` picks, without its legacy
     ``output`` unwrap. A raise is logged and the result passes through
     unchanged, so the terminal write still happens.
