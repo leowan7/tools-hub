@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping. **No product code was changed, no Modal app was deployed, and no GPU job was launched. No money was spent.**
+Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
@@ -306,14 +306,19 @@ Mirror `tools/proteina/__init__.py` so the customer sees one consistent binder f
 | Number of designs | default 8 | matches `designs_per_run_baseline=8`, `shared/wallet_estimates.py:525` |
 | Thinking level | **release 1: fixed at `medium`, not exposed** | three levels exist upstream; exposing a 3× cost knob before we have measured any of them is how a tool over-quotes |
 
-### 4.3 Proposed preflight envelope — all **provisional, pending rung 3**
+### 4.3 Proposed preflight envelope — runtime now **measured**, the size and VRAM numbers still **provisional**
 
 Model it on `_PROTEINA` (`shared/pdb_preflight_rules.py:844`) and replace each number the moment we measure:
 
 - `min_target_aa` 30 — copy from `_PROTEINA`.
 - `hard_cap_target_aa` — **start at 400, not 500.** `_PROTEINA`'s 500 is a policy number anchored on a measured VRAM curve up to 415 aa; RFD4 has no such curve here, and its own `compile_lengths` bucket list tops out at 1024 tokens with a BioIR CUDA-graph limit of 511 (`configs/inference.yaml:19,51`) — which is **INFERRED** to mean longer inputs run uncompiled and slower, not that they are refused. Tighten on measurement, loosen later.
 - `hard_cap_combined_aa` — 520 (400 target + 120 binder), same logic.
-- `runtime_base_min` / `runtime_alpha` — **leave explicitly unmeasured and labelled so until rung 3.** Do not copy `proteina`'s curve; it describes a different model.
+- `runtime_base_min` / `runtime_alpha` — **rung 3 measured the runtime, but the measurement does not fit the field that prices a job, and this is the single most important implementation note in this document.** The fit is affine: **`≈ 65 + 12.3 × N` seconds**, from 159.2 s over eight designs, with two independent estimates of the marginal term agreeing to 4%. `ToolSpec.expected_gpu_seconds` (`shared/wallet_estimates.py:128`) is one scalar, and the only scaling applied to it is **purely proportional with no intercept** — `_scale_seconds` (`:1247-1257`) returns `base_seconds * max(actual / designs_per_run_baseline, 1.0)`. A 65 s fixed term, 41% of the measured run, **has no field to live in**, and both ways of forcing it in are wrong in opposite money directions:
+
+  - Register the measured total (`expected_gpu_seconds=159.2`, `designs_per_run_baseline=8`) and N=100 quotes 1990 s = **$3.48** against this document's own $2.26 — a 54% over-quote, which `cushioned_hold_usd` then reserves 1.5× of.
+  - Register the marginal-only 98.4 s so large N lands, and N=8 — the default — quotes **$0.172** against the $0.278 a run actually consumes. Under live charging the customer is debited actual, so every default-size run bills ~62% above its quote.
+
+  The field that *does* carry an intercept is the preflight `SizeEnvelope`'s `runtime_fixed_min` (`shared/pdb_preflight_rules.py:1068-1082`), which is advisory copy and **not** what prices a job. **Decide which of the two registrations to take, and record the resulting error, before `rfd4` goes in `TOOL_SPECS`.** Separately, `runtime_alpha` is still unmeasured: it is a required exponent (`pdb_preflight_rules.py:1068`), one 115 aa target cannot set it, and `proteina`'s must not be copied.
 - VRAM: upstream's only figure is "≥40 GB VRAM recommended" (`skills/rfd4-proteina-setup/skill-card.md:31`, verified by direct read this session). The HF card declines to give a number: peak memory "depends on token count, batch size and recycle depth rather than on the weights". So **A100-80GB, not 40GB**, until measured.
 
 ---
@@ -353,7 +358,7 @@ Leo's instruction (2026-10-30): once we know how to run it, **pin those settings
 | Base image | digest-pinned `FROM`, enforced by `tests/test_dockerfile_digest_pins.py` | Tag drift silently changes the driver/toolkit pairing |
 | **Accelerator variant** | `ARG RFD4_ACCELERATOR=cu12\|cu13` with **no default** | This is rung 1's answer (§5.1). A default would let a rebuild silently pick the untested wheel set |
 | Weights revision | the literal `a06e2509c7033b010fc43614e9fd840303588502`, both checkpoints, recorded in `seed_volumes.py` (§5.6) | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
-| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:38,46`) | Dated filenames; the next release will sit beside them in the same volume. **HF stores different, stable names** — the seed renames on the way in (§5.6) |
+| **Checkpoint filenames** | the flow checkpoint **must keep a name ending `-ema.ckpt`** (HF's own `rfd4_proteina_flow-ema.ckpt`); autoencoder `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:46`). The invocation pins a matching `ckpt_name=` | `rfproteina/utils/weights.py:20` dispatches on the filename suffix: without `-ema.ckpt` the load raises `has no SimpleEMA state`. Upstream's own `configs/inference.yaml:38` default fails this way on the native route. Proven at rung 3 (§5.7) |
 | **Seed allow-list** | an explicit per-file list in `seed_volumes.py`, never `snapshot_download` | The pinned HF revision is 82.57 GB and ~71.4 GB of it is the `alphafold2/runtime` and `openfold3/runtime` images we exclude on separate terms. A snapshot pulls them (§5.6) |
 | GPU class | module-level `_GPU` literal + matching `TOOL_SPECS` entry (`tests/test_gpu_class_drift.py:155-171`) | Already guarded; a mismatch mis-bills |
 | **The invocation** | one module-level constant holding the full Hydra override list — `metrics_tags`, `'~metrics'`, `nsteps`, `num_replicates` | Built ad hoc, an edit can silently re-enable the AF3 oracle group we excluded on licence grounds (§5.2). Assert on the constant |
@@ -438,10 +443,70 @@ Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyp
 
 **Two things the seeding code has to get right, both now known:**
 
-1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). The seed must rename on the way in. The mapping and the digests are in the repo's own `release-checkpoints.json`.
+1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). **Do not rename the flow checkpoint on the way in — rung 3 proved this caveat wrong for that file** (§5.7): `rfproteina/utils/weights.py:20` dispatches on the `-ema.ckpt` suffix, so the seeded name must keep it and the invocation must carry a matching `ckpt_name=` override instead. The autoencoder is unaffected and may take the dated name. The mapping and the digests are in the repo's own `release-checkpoints.json`.
 2. **The revision upstream pins and the revision upstream ships disagree.** `configs/inference.yaml:30` at RFD4-Proteina `aaccdd2a` names HF commit `a06e2509…` (2026-10-20). The `inference.yaml` stored *inside* that HF commit names `cf31b935…` (2026-10-19), which is also `release-checkpoints.json`'s `bundle_revision`. Both commits exist. **We pin `a06e2509…`** — it is what upstream's code reads and what the file list above was enumerated from. §5.3 records it as the literal to use; nothing enforces it yet, because `seed_volumes.py` does not exist. The seeder **will** carry it as a module-level constant and a guard test **should** assert on that constant, the way `tests/test_gpu_class_drift.py` already does for `_GPU`.
 
 **Three caveats, so this is not read as more than it is.** (i) This loaded checkpoints; it did **not** instantiate the RFD4 model or run a sampling step, so `torch.compile`, the length buckets and real VRAM remain rung 3's job. (ii) The flow checkpoint holds **437,686,849** tensor elements against `release-checkpoints.json`'s `stored_parameters: 435622465` — a difference of 2,064,384. The manifest counts parameters and our probe counted every tensor in the state dict, so the two are not the same quantity; **UNVERIFIED** that the gap is only buffers. (iii) The download ran **unauthenticated** and the Hub warned about rate limits; production seeding should carry an `HF_TOKEN`. The exact GPU seconds billed were **not captured**. The only bound is the GPU function's own 600 s timeout, which at $0.001028/s caps *that function* at $0.617; container start and the CPU download are outside it. So the GPU half is bounded under the approved figure, the total is **unverified**, and a future rung should record the seconds rather than infer them.
+
+### 5.7 Rung 3 RESULT — a real 8-design binder run, 2026-10-30
+
+**Leo approved ~$1.85 on 2026-10-30. Three GPU functions ran; the ladder rung PASSED. Total raw spend $0.2908, 15.7% of the approval.** Scripts `rfd4_rung3_run.py` and `rfd4_rung3b_csv.py` (scratchpad probes, not product code).
+
+| | App | Wall | Raw cost | Outcome |
+|---|---|---|---|---|
+| Attempt 1 | `ap-DunYOgRooNnkuhVaOsJrRQ` | 47.3 s | $0.0486 | **FAILED** at checkpoint load, 0 files |
+| Rung 3 | `ap-f44S6NrCsPGSBFSAIJF38b` | 159.2 s | $0.1637 | **PASS**, `returncode 0`, 8/8 designs |
+| Rung 3b | `ap-uZCAf7oVcR7l3D0s7WyC8h` | 76.4 s | $0.0785 | **PASS**, 1 design, recaptured the CSV and CIF |
+| | | **282.9 s** | **$0.2908** | of $1.85 approved |
+
+Rung 3b exists because rung 3's probe returned only file *sizes*, so the metrics-CSV header — a named deliverable — died with the container. Its only purpose was to fetch the two artefacts back.
+
+**The failure is a real integration finding, and it belongs in the pin list.** Attempt 1 died with `ValueError: ... has no SimpleEMA state, but inference requires EMA weights` (`rfproteina/utils/weights.py:24`, reached via `generate.py:781 → :651 → :455 → :353`). The loader **dispatches on the filename**: `weights.py:20` treats a path ending `-ema.ckpt` as already-EMA and uses its `state_dict` directly, and anything else must carry a `SimpleEMA` callback. The HF publish strips exactly that — `release-checkpoints.json` records `training_state_stripped: true` for the flow checkpoint. Our rung-2 seed had renamed HF's `rfd4_proteina_flow-ema.ckpt` to the dated name `configs/inference.yaml:38` asks for, which removed the suffix the loader needs. **Upstream's own packaged default is self-defeating on the native route** for the same reason: `ckpt_name: rfd4-proteina-flow-release-2026-10-19.ckpt` does not end in `-ema.ckpt`, so `hf_ckpt_path=null` with the stock config cannot load the stock checkpoint. The autoencoder is unaffected — `proteina.py:464` uses a plain `AutoEncoder.load_from_checkpoint` with no EMA dispatch.
+
+So **§5.6's instruction to rename on the way in was wrong for the flow checkpoint, and §5.3's "Checkpoint filenames" row is corrected accordingly**: the seeded flow checkpoint must keep a name ending `-ema.ckpt`, and the invocation must carry a matching `ckpt_name=` override. The fix cost nothing — a CPU-only `os.rename` inside the volume, no re-download. The volume's flow checkpoint is now `flow_checkpoints/rfd4_proteina_flow-ema.ckpt`, 1,751,488,703 bytes, the same file rung 2 digest-verified.
+
+One route we did **not** take, and should not: setting `hf_ckpt_path` to the repo makes `generate.py:419-427` call `Proteina.from_pretrained(...)` with `ckpt_name="model.safetensors"`, which **re-downloads from the Hub and ignores the volume entirely**. Only `hf_ckpt_path=null` reads `${DATA_PATH}`.
+
+**The invocation that worked:**
+
+```
+rfd4-generate inference_experiment=quickstart hf_ckpt_path=null \
+  ckpt_name=rfd4_proteina_flow-ema.ckpt \
+  inputs=/opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml \
+  num_replicates=8 out_dir=/tmp/rfd4_run
+```
+
+**Cost: ~$0.28 customer for eight designs — ten times what the benchmark implied, and a third of the comparable `proteina` shard.** §6 called the benchmark's ~19 s of generation ("about three cents") obviously wrong because a real run is dominated by fixed overhead, and predicted RFD4's cost would be set by startup rather than sampling. Both hold: the measured $0.28 is an order of magnitude *above* the benchmark figure, and still below `proteina`'s 553–1343 s shards. Decomposing the eight per-design file timestamps:
+
+| | Measured |
+|---|---|
+| Total wall, 8 designs | 159.2 s → **$0.2782 customer** |
+| First design visible at | 68.1 s |
+| Marginal, within-run (154.1 − 68.1)/7 | **12.29 s/design** |
+| Marginal, between-run (159.2 − 76.4)/7 | **11.83 s/design** |
+| Fixed overhead, by subtraction | **~61–65 s** |
+
+Two independent estimates of the marginal cost agree to 4%. A working model for `expected_gpu_seconds` is **`65 + 12.3 × N` seconds**, which gives 163.4 s against the measured 159.2 s — **2.6% high**, and deliberately so, since over-reserving is the safe direction on money. The 61 s end of the fixed-overhead range would reproduce it to 0.1%. At N=8 that is $0.28 customer; at N=100, $2.26 — but 100 replicates is a **12× extrapolation beyond anything measured**, and the per-design time is an average over a random 50–120 aa binder length draw (the example's contig), not a fixed-length figure. One run, no variance estimate.
+
+**Three reasons this figure is not yet the production figure.** (i) `quickstart` sets `compile_lengths: null`, and its own comment says the `torch.compile` warm-up "costs minutes on a first run and pays off only across many designs, so drop this preset for production runs" — so 12.3 s/design is the **eager** number and ~61–65 s is a **floor** on startup, not a ceiling. (ii) `batch_size` was left at the preset's default, so the eight designs ran strictly one at a time; batching would change both numbers. (iii) VRAM was not captured.
+
+**Streaming: designs land one at a time, so save-as-you-go is feasible.** First-sighting times from a 1 Hz poller: 68.1, 80.1, 92.1, 105.1, 117.1, 130.1, 142.1, 154.1 s — one design every 12–13 s, no end-of-run burst. **That closes §10 item 3.** Two caveats a watcher must handle:
+
+1. **Files are written atomically via a hidden temp directory.** The poller caught `inference_samples/pdl1_binder_5/.generated-cif-w_d3wq6m/pdl1_binder_5_generated.cif` at 129.1 s, one second before the real path appeared at 130.1 s. Only one of eight was caught, which is what a 1 Hz sample of a sub-second window looks like — assume it happens on every design. A naive recursive glob would upload the temp path. Match the final filename and skip dot-directories.
+2. **`per_example_metrics.csv` appears only at 154.1 s**, the same second as the last design. It is written once at the end, so nothing derived from it can stream.
+
+**`per_example_metrics.csv` has 44 columns and not one of them is a score.** The real header, finally observed: `example_id`, `designed_structure_path`, `task`, `dataset_name`, `chain_of_interest`, `ckpt_path`, `ckpt_name`, `seed`, `input_json_path`, then 33 `generation.*` hyperparameters, `output_base_dir`, `metrics_tags`. Under a no-metrics configuration the file is a **run manifest, not a ranking**. This is hard confirmation of §7A.1 and §7B: with the oracle images excluded, nothing upstream ranks anything, and every score column on our results page has to come from our own Boltz-2 chain.
+
+**This only partially closes §10 item 4.** §7A.7 asked that rung 3 set `metrics_tags: [design, interchain_interactions, cms, hotspot_conditioning]`; this run did **not** — it used `quickstart`, whose comment states the `metrics` group "is not composed (the same as `~metrics`)", and `metrics_tags: []`. So we now know the header for *our intended production configuration*, which is the one that matters, but we have **not** observed what the inline metrics would add. If a future rung wants those columns, it must set the tags explicitly and will need `$PYROSETTA_CONTAINER` for the developability pair (§7A.6).
+
+**Runs carry a seed and record it.** The manifest's `seed` column reads `236859448.0` — drawn per run, written into the CSV, and therefore pinnable. That is the mechanism §7B.3 needs for reproducibility, on the RFD4 side at least. Note it is serialised as a **float**, which is lossy above 2^53; the value we observed is far below that, but a seed should be read as an integer and never round-tripped through the CSV.
+
+**The output CIF is the complex, not the binder alone.** `pdl1_binder_0_generated.cif` holds two polymer entities: entity 0 is the 115 aa PD-L1 target on strand A (matching the example's A17-131 contig), entity 1 is the 67 aa generated binder on strand B. 1512 atom lines over 182 residues ≈ 8.3 atoms/residue, so it is all-atom, not backbone-only. Atom records appear in entity order `['1', '0']` — **binder first, target second**. Any downstream chain-splitting must key on the entity or strand id, never on file order.
+
+**A quality signal that must not be read as a result.** The generated binder sequence is `EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEYEEELEKQEELEEDPEYQEAKEKAEEVIKELKEKA` — a 32-residue run of glutamate followed by a more plausible helical stretch, **70% glutamate overall (47 of 67)**. That is not a credible binder. I have **not** diagnosed why, and this document should not guess: candidate explanations include the eager no-compile preset, the manifest's `generation.args.inverse_folding,0.0`, and upstream issue #81 (already on record at §10 item 11 as a composition bug in binder mode). **What follows for us is narrow and firm: no `quickstart` output may be shown to anyone as evidence that the tool produces usable binders.** Rung 4, on our own target, must run a production configuration and must look at sequence composition before any head-to-head claim is made.
+
+**Two smaller closes.** `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` were unset and the run completed — so they are **not** required for the protein-binder modality (§10 item 16 narrows to the ligand and modified-residue modalities, still unknown). And no file was deleted during the run: all 8 designs persisted, which is expected with no oracle composed, so §10 item 9 is **not applicable to our configuration** rather than answered.
+
 
 ---
 
@@ -457,7 +522,7 @@ Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyp
 | 1800 s | $3.15 |
 | 3600 s | $6.29 |
 
-**What will an 8-design RFD4 binder run actually cost? UNKNOWN, and the benchmark does not answer it.** At the benchmark's 2.35 s/design median, eight designs is ~19 seconds of generation — about three cents. That is obviously not what a run bills, because a real run is dominated by fixed overhead the benchmark explicitly excludes: container cold start, weight load, `torch.compile` for the input's length bucket, CIF prep. For reference, our `proteina` 8-design shards measured 553–1343 s (`shared/wallet_estimates.py:501-506`), nearly all of it overhead of the same kind. **Expect RFD4's cost to be set by its startup, not its sampling** — which is good news for margin and bad news for anyone estimating from the benchmark. Rung 3 settles it.
+**Rung 3 settled it (§5.7): ~61–65 s of fixed startup plus ~12.3 s per design, so eight designs billed ~$0.28 customer — about a third of the comparable `proteina` protein-binder shard, which measured ~553 s for the same eight designs and charged ~$0.97 (`shared/wallet_estimates.py:501-506`), and still startup-dominated.**
 
 ### 6.1 Validation ladder — cheapest first
 
@@ -467,7 +532,7 @@ Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyp
 |---|---|---|---|---|
 | **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. **DONE 2026-10-30, $0: `cu13` builds and imports (§5.4).** It does NOT establish the host driver — a CPU builder has none. Fold that check into rung 2. |
 | **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. **DONE 2026-10-30 (§5.6): volume is 2.59 GiB, both digests match the manifest, both checkpoints materialise on an A100-80GB.** Exact seconds billed unverified; bounded below the budget. |
-| **3. One 8-design binder run** | **The cost question.** Real wall-clock, real output tree, real per-design file timing | 1 × A100-80GB, ≤30 min | **~$1.85** | Upstream's own `5o45_cropped` binder example, `num_replicates=8`, `'~metrics'`. Deliverables: wall-clock → the `expected_gpu_seconds` figure; the real `per_example_metrics.csv` header → the score column set; **and whether structure files appear per design or only at the end** (§7). |
+| **3. One 8-design binder run** | **The cost question.** Real wall-clock, real output tree, real per-design file timing | 1 × A100-80GB, ≤30 min | **~$1.85 approved; $0.2908 spent** | **DONE 2026-10-30 (§5.7): 159.2 s for eight designs = ~$0.28 customer; designs land one every ~12 s; the metrics CSV has 44 columns and no score.** One failed attempt and one artefact-recapture run are inside that $0.2908. |
 | **4. Our own target, like-for-like** | Does it work on a customer-shaped input, and how does it compare to our `proteina`? | 1 × A100-80GB, ≤30 min | **~$1.85** | The same target and hotspots as a recorded `proteina` run. First honest head-to-head on our own data. |
 | **5. Size sweep** | What is the runtime/VRAM curve? | 3 × A100-80GB, ≤30 min each | **~$5.55** | ~130 / 260 / 415 aa, matching `proteina`'s measured points so the two curves are comparable. Replaces the provisional §4.3 caps. Defer until the tool is committed to — buys accuracy, not a go/no-go. |
 
@@ -486,14 +551,21 @@ How a live tool works here (verified in code this session):
 - The container sends a **start heartbeat the moment the GPU is live** (`tools/proteina/modal_app.py`, `_start_beat`), so a cancel bills from GPU start. Two guard tests constrain this, both parametrised over every in-repo live app (`tests/test_live_charging.py:1147-1161`): `_start_beat` must be **AST-identical to `af2`'s copy** (`ast.dump` equality — so comments and formatting may differ, the code may not), and the statement calling it must come **immediately after** `env = _merged_environment(payload)` in every function that builds the env. Landed in `3a8de1fc` (#464) for the **7 in-repo GPU apps** only — its own commit message says so; the out-of-repo containers (`rfdiffusion`, `pxdesign`, `rfantibody`) and non-live `mpnn` are not covered, so "every live tool sends a start beat" is **not** true today. A new app is picked up automatically once its slug joins the live sets, so `tools/rfd4/modal_app.py` must copy `af2`'s `_start_beat` body exactly rather than write its own.
 - Billing itself runs from the Railway cron every 5 minutes, debiting wall-clock since `started_at`; when the balance falls short the run is cancelled, reconstructed and completed as a partial.
 
-**Proposed start minimum for `rfd4`: $1.00**, pending rung 3 — **and this is a Leo decision, not a derivation.** The principle the other tools follow is "cover the stretch before the first design reaches storage". RFD4's generation is seconds per design, so if structures stream per design that stretch is container start + weight load + compile, and $1.00 (≈570 s of billing) is comfortable. If instead structures only appear at run end, the stretch is the whole run and no modest minimum covers it. **Rung 3 must answer which, before the figure is set.** Until it does, the figure is a guess.
+**Proposed start minimum for `rfd4`: $1.00 — rung 3 removed the thing that made this a guess for *generation*, and left two conditions on it.** Structures *do* land per design, the first at 68.1 s (§5.7), so the stretch a start minimum has to cover is container start + weight load, not the whole run. At the customer rate $1.00 buys ≈572 s, roughly eight times that stretch. **It remains a Leo decision, not a derivation** — the principle the other tools follow is "cover the stretch before the first design reaches storage", and the measured stretch is a floor: a production configuration pays a `torch.compile` warm-up that `quickstart` skipped, which upstream describes as costing minutes. If that warm-up lands before the first design, $1.00 could stop covering it; rung 4 should re-measure the first-design time with compile on before the figure is fixed.
+
+**Two things the $1.00 depends on that the figure above does not cover.**
+
+1. **It prices generation only, and §7B adds scoring.** Every score column on the results page comes from a chained Boltz-2 refold at ~25 cents per design, ~$2 on an eight-design run and ~$6 if Leo takes the 3-fold recommendation (§9 item 5). **Which route §7B takes decides whether that matters, and this document has not said.** `shared/refold.py` spawns a *separate* Boltz-2 job per candidate (`:41`), each with its own wallet gate — take that route and $1.00 is sound. Fold the refold *inside* the `rfd4` job instead and a run admitted on a $1.00 balance owes ~$2.28 or ~$6.28, the live meter stops it mid-refold, and the customer keeps eight structures with zero scores: unjudged, which is the failure §7B exists to prevent. This is the hole `live_start_usd`'s own docstring already records for `pxdesign`. **Pick the route before the figure.**
+2. **Nothing holds the figure unless two places are edited.** `live_start_usd` (`shared/wallet_guard.py:195-213`) returns `Decimal("0")` for any slug without an explicit branch, and `tests/test_live_charging.py:259-262` asserts exactly that for every live tool outside its `STARTS` map. **Adding `rfd4` to `_LIVE_ALL_PRESETS` alone therefore ships a $0 start minimum with the whole live-charging suite green.** The $1.00 needs a branch in `live_start_usd` *and* an entry in that test's `STARTS` dict; §5.3's pin list does not currently mention either.
 
 ### 7.2 Streaming / save-as-you-go
 
 Copy the `proteina` mechanism: the container uploads each design via a presigned PUT, then sends a heartbeat carrying a `new_candidate` record; the hub appends it to the job's partial candidates, and `shared/job_recovery.py` rebuilds a result from those if the run stops. **Two RFD4-specific hazards:**
 
-- **`delete_failing_pre_oracle: True`** (`configs/inference.yaml:44`) deletes structure files for designs failing a pre-oracle filter. Our uploader must either run after that filter or tolerate a vanished file. A naive per-design uploader will race it.
-- **Score keys must be registered.** `shared/job_recovery.py:59` keeps only a fixed tuple of score keys when rebuilding a candidate from a partial, so a new tool's own metrics are dropped on a stop or cancel unless its keys are added. The tuple is `_PROTEINA_SCORE_KEYS`, named for and populated with proteina's metrics, so proteina itself is fine; the hazard is that a new tool silently loses any metric not on that list. Add `rfd4`'s keys in the same PR that adds its streaming.
+- **`delete_failing_pre_oracle: True`** (`configs/inference.yaml:44`) deletes structure files for designs failing a pre-oracle filter. **Rung 3 showed this does not bite in our configuration** — no metrics group is composed, so no filter runs and all eight designs persisted (§5.7). The hazard is therefore conditional on enabling an oracle, which the licence exclusion rules out. Keep the uploader tolerant of a vanished file anyway; it costs one `try`.
+- **Each design is written through a hidden temp directory, and the uploader must not see it.** Rung 3 caught `inference_samples/<id>/.generated-cif-w_d3wq6m/<id>_generated.cif` one second before the real path appeared (§5.7) — an atomic write-then-rename. A recursive glob for `*_generated.cif` would upload a partial file under a path no exporter expects. Match on the final filename and skip dot-directories.
+
+- **Score keys must clear two allowlists, not one.** The first is `_sanitize_candidate` (`webhooks/modal.py:508-542`), a **literal dict of ~24 named keys**, each pulled by an explicit `cand.get("<name>")`: anything not named there is discarded at heartbeat time, so it never reaches the partial. The second is `_PROTEINA_SCORE_KEYS` (`shared/job_recovery.py:59`), which the rebuild then filters by. **Adding a key to the second alone silently loses it on exactly the stop/cancel path the edit exists to protect** — the heartbeat drops it, `_candidate_from_partial` (`:102-104`) finds it `None`, and the PR looks like it covered the case. Add `rfd4`'s keys to **both**. Note the three keys §7B's Boltz-2 chain would most likely emit — `iptm`, `plddt`, `i_pae` — are already carried unconditionally at `job_recovery.py:83-96`, so for those three the second edit is a no-op and the first is the only one that matters. Rung 3 found RFD4 itself emits **no** score (§5.7), so every key on that list will come from our own Boltz-2 chain (§7B).
 
 ### 7.3 Exports
 
@@ -566,9 +638,9 @@ Our site shows a confidence number on every other design tool, and a tool that s
 
 `configs/metrics/inline_metrics/developability_metrics.yaml:1-3` gates both developability metrics behind `metrics_tags=['developability']` and states that **"Rosetta metrics require a PyRosetta apptainer set via `$PYROSETTA_CONTAINER`"**. `rosetta_developability` (`sasa_cutoff: 20.0`) is therefore a third-party dependency with its own licence question, on the same footing as the oracle images we excluded. `sequence_developability` in the same file appears to be pure-sequence and may not need it — **UNVERIFIED, not read**. Resolve before any developability column is promised.
 
-### 7A.7 What rung 3 must capture
+### 7A.7 What rung 3 captured
 
-The scope doc has been treating the score column set as a rung-3 deliverable. It still is: **no `per_example_metrics.csv` header has been observed**, only the configs that should produce it. Rung 3 must record the real header, and the run must set `metrics_tags: [design, interchain_interactions, cms, hotspot_conditioning]` rather than the empty default, or it will produce no columns to read.
+**Answered at rung 3 (§5.7), for the configuration we intend to ship.** The real 44-column header was observed and **contains no score column** — under a no-metrics configuration the file is a run manifest. What rung 3 did *not* do is set `metrics_tags: [design, interchain_interactions, cms, hotspot_conditioning]`, so what the inline metrics would add is still unobserved; a rung that wants those columns must set the tags and will need `$PYROSETTA_CONTAINER` for the developability pair (§7A.6).
 
 
 ---
@@ -637,9 +709,9 @@ So the honest headline is **about 25 cents per design, roughly $2 on an eight-de
 
 ### 7B.5 What this adds to the rung ladder
 
-- **Desk check, $0:** does the Boltz-2 CLI accept a seed; does our `binder-developability` skill cover `rosetta_developability`'s two terms; does `_sanitize_candidate`'s interface-PAE field accept a Boltz-2-derived value.
+- **Desk check, $0 — DONE 2026-10-30, all three answered.** (i) **The Boltz-2 CLI does accept `--seed` at our pinned `boltz==2.2.1`** (`tools/boltz2/Dockerfile.modal:64`), **and we never pass it** — the argv built at `tools/boltz2/run_pipeline.py:460-468` has no seed flag. That is a plausible contributor to the ipTM spread at §7B.3, though seeding only makes a fold *reproducible*; the spread across seeds is real sampling uncertainty and does not go away because we fixed one. (ii) **`_sanitize_candidate` accepts a Boltz-2-derived interface PAE without complaint, and that is the problem** — `webhooks/modal.py` stores `"i_pae": _num(cand.get("i_pae"))` where `_num` is `round(float(value), 4)` with **no range gate and no unit check**, so a value on the wrong scale would be stored and rendered as if it were right. (iii) **Our `binder-developability` skill covers the two *sequence* terms of upstream's developability criterion and neither Rosetta term:** GRAVY and instability index are computed at `scripts/dev_analysis.py:125,130`, but `sap_score` has no counterpart, and `hydrophobic_exposure_sasa` is approximated only by a largest-contiguous-apo-patch figure that `scripts/build_report.py:696-697` itself calls "a single-snapshot proxy for SAP-style aggregation metrics". It is also a Claude skill outside this repo, so using it in the product means porting it, not calling it.
 - **Licence question for Leo, $0:** is upstream's `af2` oracle route open to us given AF2 params are CC BY 4.0, or does the brief's exclusion of the `alphafold2/runtime` image close it regardless.
-- **Rung 3, GPU:** measure the fold cost per design, and measure the ipTM spread over *n* folds of one RFD4 design — on RFD4 output, not on the 2026-09-23 inputs.
+- **Rung 3, GPU — NOT DONE, carried to rung 4.** Rung 3 priced RFD4 generation only (§5.7); it folded nothing. Measuring the Boltz-2 fold cost per design, and the ipTM spread over *n* folds of one RFD4 design on RFD4 output rather than the 2026-09-23 inputs, is still unspent work and still the thing that decides whether the triple fold is affordable.
 
 ## 8. Work plan, in PR-sized steps
 
@@ -665,18 +737,18 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt crash-looped and measured nothing, and the fixed re-run **PASSED — cu13 runs on Modal's A100-80GB hosts, §5.5.** Leo then approved the §6.1 rung-2 row (volume seed, ~$0.62); it ran the same day and **PASSED — §5.6.** Rungs 1 and 2 are now complete. Rung 3 (one 8-design run, ~$1.85) is the next spend and has NOT been approved.*
+*Status 2026-10-30: rungs 1, 2 and 3 are all complete. Rung 1 ($0) proved the `cu13` image builds (§5.4). The driver check (~3¢) crash-looped on its first attempt and **PASSED** on the re-run (§5.5). Rung 2 (~$0.62) seeded the weights volume and **PASSED** (§5.6). Leo approved rung 3 (~$1.85) and it **PASSED** on the second attempt, for $0.2908 of the $1.85 — real cost, real streaming behaviour and the real metrics header are now measured (§5.7). The next spend is rung 4 (~$1.85), which has NOT been approved.*
 
 1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
-2. ~~**Approve rungs 2–3 (≈$2.50 together)?**~~ **Rung 2 APPROVED and DONE 2026-10-30 (§5.6).** What remains is **rung 3 (≈$1.85)**: one 8-design run. This is the decision point — it produces the real cost per run, the real score columns, and the streaming answer. Nothing after it is honest without it.
-3. **Approve rung 4 (≈$1.85)?** Head-to-head against a recorded `proteina` run. Recommended but separable.
+2. ~~**Approve rungs 2–3 (≈$2.50 together)?**~~ **Both APPROVED and DONE 2026-10-30 (§5.6, §5.7).** Rung 3 cost a measured **$0.2908** of its ~$1.85; rung 2's exact spend was never captured and is only bounded below $0.62 (§5.6), so the pair came in under budget but the total is not a measured figure. Rung 3 answered all three of its questions: ~$0.28 customer for eight designs, designs stream one at a time, and the metrics CSV carries no score column at all. The one thing it did not settle is design *quality* — see §5.7's glutamate caveat, which rung 4 must address before any head-to-head claim.
+3. **Approve rung 4 (≈$1.85)? — this is now the open spend decision.** Head-to-head against a recorded `proteina` run, on our own target. It is no longer only a comparison: rung 3's binder came out 70% glutamate under the `quickstart` preset (§5.7), so rung 4 is also the first run that would tell us whether a production configuration produces credible sequences. Recommended.
 4. **Rung 5 (≈$5.55)?** Defer until after the go/no-go.
 
 **Product decisions:**
 
 5. ~~**No confidence number on the results page.**~~ **DECIDED by Leo 2026-10-30: use our own scoring, chained through Boltz-2 refolding.** §7B is the design. It raises one new question that is genuinely Leo's: our own Boltz-2 measurement spans **ipTM 0.263–0.830 on byte-identical input** (§7B.3), so an unseeded single fold cannot rank anything either. I recommend seeding, then folding each design three times and showing the spread. That multiplies the scoring cost by three — confirm you want that before rung 3 prices it.
 9. **Is upstream's `af2` oracle route open to us?** AF2 parameters have been CC BY 4.0 since the 2022-12-06 release, so the restrictive one is AF3, not AF2 (§7B.1). The brief excluded the optional `alphafold2/runtime` image on separate terms, which may or may not close the question. $0 to answer, and it would recover the `min_ipae_coi` term Boltz-2 does not give us.
-6. **Start minimum.** $1.00 proposed, but the derivation depends on rung 3's streaming answer. Confirm after rung 3, not now.
+6. **Start minimum.** $1.00 proposed, and rung 3 has now supplied the missing input: designs stream one at a time from 68.1 s, so $1.00 covers the pre-first-design stretch roughly eight times over (§7.1). Confirm the figure — with the caveat that a production run pays a `torch.compile` warm-up `quickstart` skipped, so rung 4 should re-check the first-design time before it is locked.
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
 8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
 
@@ -685,27 +757,27 @@ Each step is one PR with a gate. Sizes are rough.
 ## 10. UNKNOWNs and UNVERIFIEDs that must close before step 2
 
 1. ~~**Does Modal's A100-80GB present a CUDA-13-capable driver?**~~ **ANSWERED 2026-10-30, yes.** Driver 610.57.04 on an A100-SXM4-80GB, sm_80, a real kernel launch, `rfd4-generate --help` exit 0. Cost ~3¢ (§5.5).
-2. **Real wall-clock and cost of an 8-design run on our hardware.** UNKNOWN. The benchmark's per-design seconds exclude setup, compile and warmup and name no GPU model. Rung 3.
-3. **Do structure files land per design or only at run end?** NOT FOUND upstream. Decides whether streaming works at all and whether the $1.00 start minimum is defensible. Rung 3.
-4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run (§7A). Rung 3 — and that run must set `metrics_tags` explicitly, since the default is empty and would produce no columns at all.
+2. ~~**Real wall-clock and cost of an 8-design run on our hardware.**~~ **ANSWERED 2026-10-30: 159.2 s, ~$0.28 customer, ≈ `65 + 12.3 × N` seconds (§5.7).** Measured eager, with no `torch.compile` warm-up and no batching, so the per-design figure is an upper bound and the startup a floor.
+3. ~~**Do structure files land per design or only at run end?**~~ **ANSWERED 2026-10-30: per design**, one every ~12 s from 68.1 s onward (§5.7). Save-as-you-go is feasible. The watcher must skip the hidden `.generated-cif-*` temp directory each design is written through.
+4. **The real `per_example_metrics.csv` header.** **PARTLY ANSWERED 2026-10-30 (§5.7):** observed for the no-metrics configuration we intend to ship — 44 columns, none of them a score. Still UNKNOWN for a run with `metrics_tags` set, which rung 3 did not exercise.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
 6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
 7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure was a single-file number; the volume must hold the matched flow/autoencoder pair.
 8. **VRAM at the top of the size envelope.** Only "≥40 GB recommended" upstream, with no curve. Rung 5.
-9. **Does `delete_failing_pre_oracle` race our uploader?** UNVERIFIED. Rung 3 observation.
+9. **Does `delete_failing_pre_oracle` race our uploader?** **NOT APPLICABLE to our configuration.** Rung 3 composed no metrics group, no oracle ran, and all eight designs persisted (§5.7). It would only matter if we later enabled an oracle, which the licence exclusion rules out.
 10. **Cyclic peptide support.** A preset exists; upstream issue #62 asks whether it works. Out of scope for release 1 either way.
 11. **Upstream binder-mode bugs.** #81 (high alanine fraction on the non-interacting face in binder mode) is open and is a *quality* bug in exactly our release-1 mode. Watch it; it may shape the copy we write about expected quality.
 12. **Does the authors' benchmark hold on the current weights?** Upstream says it has not been re-measured. Rung 4 is our own check, on one target.
 13. **Does `sequence_developability` also need the PyRosetta apptainer?** UNVERIFIED — only `rosetta_developability` is documented as requiring `$PYROSETTA_CONTAINER` (§7A.6), and the class was not read. Blocking for any developability column, not for release 1.
 14. **Which confidence predictor and which sort key?** We must supply our own (§7A.5). `boltz2` ipTM is on record as not reproducible run-to-run, so the display number and the sort key may have to differ. A decision, not a measurement.
 15. **Which accelerator variant we actually shipped.** Settled: `cu13`, now proven on a GPU as well as in a build (§5.5). The Dockerfile must record that variant, and must not silently fall back to cu12, which is a different product (§5.4).
-16. **Do `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` need to be set?** `atomworks` warns on every invocation that they are unset (§5.4). Harmless for `--help`; unknown for a real run, and a likely requirement for any ligand or modified-residue modality. Rung 3.
+16. **Do `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` need to be set?** **ANSWERED for release 1, no.** Both were unset for rung 3's run and it completed with 8/8 designs (§5.7). Still unknown for the ligand and modified-residue modalities, which release 1 does not ship.
 
 ---
 
 ## 11. What this pass did not do
 
-No product code was changed. No Modal app was deployed. No GPU job was launched. No weights or container images were downloaded. No money was spent. No customer-visible string was edited.
+No product code was changed. No Modal app was deployed. No customer-visible string was edited. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured) and rung 3's run (§5.7, a measured **$0.2908**). A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
 
