@@ -21,7 +21,9 @@ Three facts drive that shape:
 
 **§2A tests that one-preset recommendation against every modality the model supports** — eight with a runnable shipped config, six without — and the recommendation survives: the three commercially interesting additions (customer ligand, enzyme cofactor, DNA) all need the same piece of platform work on our side (a CIF-preserving staging path, §2A.2), and two of the three *also* lack a customer-input route upstream. §2A.7 carries the staged release map and the one narrow widening worth considering.
 
-Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually.
+**Scoring is the one thing this shape costs us, and §7A is new:** RFD4 ships no default score, and every pass/fail criterion that bears on binder quality is computed from the refold oracle we exclude (the one oracle-free criterion grades monomer developability, not binding — §7A.2). The oracle-free interface metrics it does compute are real but carry no confidence number, so release 1 should chain a fold through a tool we already own.
+
+Nothing below is an instruction to spend. Every GPU rung in §6 is a proposal for Leo to approve or refuse individually; rung 1 ($0, no GPU) was approved on 2026-10-30.
 
 ---
 
@@ -325,9 +327,9 @@ Upstream requires **Linux x86_64, Python 3.12, and a CUDA-13-compatible driver**
 Our `tools/proteina/Dockerfile.modal:35` builds on `nvcr.io/nvidia/pytorch:24.08-py3`, a CUDA-12 base. **Whether Modal's A100-80GB hosts present a CUDA-13-capable driver is the one thing that decides the shape of this work, and it is UNVERIFIED.** Two outcomes:
 
 - **Driver is new enough** → build the `cu13` variant from upstream's Dockerfile. Best case.
-- **Driver is CUDA 12 only** → build `RFD4_ACCELERATOR=cu12`. Upstream ships it as a first-class option, so this is a fallback rather than a blocker — but it is a different wheel set and must be probed, not assumed. UNVERIFIED whether the cu12 path is as well exercised upstream as cu13; the published `cu12`/`cu13` runtime image sizes are within 10% of each other (§5.2), so size tells us nothing either way.
+- **Driver is CUDA 12 only** → build `RFD4_ACCELERATOR=cu12`. Upstream ships it as a first-class option, so this is a fallback rather than a blocker — but it is a different wheel set and must be probed, not assumed. Rung 1 proved cu12 builds and imports too — but it drops the BioIR inference backend, so it is a **different product**, not a drop-in fallback (§5.4).
 
-Rung 1 answers this for $0.
+Rung 1 answered half of this for $0 on 2026-10-30: the `cu13` wheel set resolves and the image builds and imports (§5.4). The driver half was settled the same day for ~3¢ and **passed** — see §5.5.
 
 ### 5.2 Image plan
 
@@ -338,8 +340,108 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 - **Do NOT include `alphafold2/runtime/` or `openfold3/runtime/`.** Per the HF model card those images package third-party software under its own upstream terms, some of which restrict commercial use or redistribution, and **neither oracle is needed for generation**. They are also 3.5–16.6 GB each.
 - **The oracle exclusion has a config consequence that must be in code, not in a comment.** Upstream's default `inference_on_user_inputs` experiment composes a metrics group whose default oracle is AF3. The wrapper must pass `'~metrics'` (or an inline-only metrics tag) so no oracle is ever selected. A guard test asserting that our invocation disables the oracle group is the cheapest way to keep a future edit from quietly re-enabling a licence we did not clear.
 - Weights on a Modal Volume seeded once, copying `tools/proteina/seed_volumes.py`. **Flow checkpoint and autoencoder are a matched pair** — the HF card warns that mixing releases "produces nonsense rather than an error", so the seeder must pin one HF revision for both and record it.
-- Sizes from the HF file listing: `model.safetensors` 1.74 GB, flow checkpoint 1.75 GB, autoencoder 1.03 GB; upstream says `make setup` caches about 1.7 GB. Upstream prebuilt runtime `.sif` images (weights excluded): cu13 4.04 GB, cu12 4.41 GB. **Measure the real volume size at rung 2** — our `boltz2` weights volume was previously off by ~7× against its documented figure.
+- Sizes from the HF file listing: `model.safetensors` 1.74 GB, flow checkpoint 1.75 GB, autoencoder 1.03 GB; upstream says `make setup` caches about 1.7 GB. Upstream prebuilt runtime `.sif` images (weights excluded): cu13 4.04 GB, cu12 4.41 GB. **Measured at rung 2: the volume is 2.59 GiB** (§5.6), because it holds the matched pair, not one file — the kind of gap that put our `boltz2` weights volume ~7× off its documented figure.
 - GPU class **A100-80GB** (`_GPU` must be a module-level literal; `tests/test_gpu_class_drift.py:155-171` requires a matching `TOOL_SPECS` entry).
+
+### 5.3 Pin list — what rung 1 must turn into code, not prose
+
+Leo's instruction (2026-10-30): once we know how to run it, **pin those settings**. Eight images already carry digest pins (`tests/test_dockerfile_digest_pins.py`, which globs `tools/*/Dockerfile.modal`; esmfold2_design has no Dockerfile and is checked differently, `:68-75`), so the mechanism exists; what follows is the list this tool has to fill in, and the file each pin lives in. Rungs 1 and 2 have now produced the accelerator variant, the weights revision and the filename mapping (§5.4, §5.6); the rest are still **UNSET**.
+
+| What | Where it is pinned | Why a float here hurts |
+|---|---|---|
+| Upstream commit | `ARG RFD4_SHA=<sha>` + `git checkout`, same shape as `tools/proteina/Dockerfile.modal:54` | Upstream is alpha and moving; a branch checkout re-resolves on every rebuild |
+| Base image | digest-pinned `FROM`, enforced by `tests/test_dockerfile_digest_pins.py` | Tag drift silently changes the driver/toolkit pairing |
+| **Accelerator variant** | `ARG RFD4_ACCELERATOR=cu12\|cu13` with **no default** | This is rung 1's answer (§5.1). A default would let a rebuild silently pick the untested wheel set |
+| Weights revision | the literal `a06e2509c7033b010fc43614e9fd840303588502`, both checkpoints, recorded in `seed_volumes.py` (§5.6) | The HF card warns a mismatched flow/autoencoder pair "produces nonsense rather than an error" — no exception is raised, so nothing would catch it |
+| Checkpoint filenames | `rfd4-proteina-flow-release-2026-10-19.ckpt`, `rfd4-proteina-ae-release-2026-10-19.ckpt` (`configs/inference.yaml:38,46`) | Dated filenames; the next release will sit beside them in the same volume. **HF stores different, stable names** — the seed renames on the way in (§5.6) |
+| **Seed allow-list** | an explicit per-file list in `seed_volumes.py`, never `snapshot_download` | The pinned HF revision is 82.57 GB and ~71.4 GB of it is the `alphafold2/runtime` and `openfold3/runtime` images we exclude on separate terms. A snapshot pulls them (§5.6) |
+| GPU class | module-level `_GPU` literal + matching `TOOL_SPECS` entry (`tests/test_gpu_class_drift.py:155-171`) | Already guarded; a mismatch mis-bills |
+| **The invocation** | one module-level constant holding the full Hydra override list — `metrics_tags`, `'~metrics'`, `nsteps`, `num_replicates` | Built ad hoc, an edit can silently re-enable the AF3 oracle group we excluded on licence grounds (§5.2). Assert on the constant |
+| `certifi` floor | the floor layer, enforced by `tests/test_gpu_image_certifi_floor.py` | Globs `tools/*/Dockerfile.modal`; the suite fails without it |
+
+**The pin that is easiest to get wrong is the accelerator variant**, because both variants build and only one will run. Rung 1 must record *which* variant it proved, in the Dockerfile, in the same commit.
+
+
+### 5.4 Rung 1 RESULT — the cu13 image builds, 2026-10-30
+
+Leo approved rung 1 on 2026-10-30. It ran the same day on a Modal CPU builder. **No GPU was attached, no weights were downloaded, nothing was deployed, and no GPU second was billed.** The probe script lives in this session's scratchpad, not in the repo; it mirrors upstream's `Dockerfile` (`aaccdd2a`) step for step but `git clone`s the pinned SHA instead of using a build context.
+
+**Outcome: the `cu13` image builds and runs.** Built in **147.57 s**, nine steps, `python -m pip check` reporting "No broken requirements found", 215 packages installed, all from public PyPI and the public PyTorch index. Upstream's own build-time smoke test passed on CPU — including the compiled TMol LJ/LK operator import (`tmol.score.ljlk.potentials._compiled`), OpenBabel, and a `torch.compile(backend="inductor", fullgraph=True)` round trip. `rfd4-generate --help` exited 0.
+
+Resolved versions, read from a container started on the built image:
+
+| | |
+|---|---|
+| `rfd4-proteina` | 0.0.3 |
+| `torch` | 2.14.1+cu130 |
+| `torch.version.cuda` | 13.0 |
+| cuDNN | 9.24 |
+| `tmol-ops-cu13` | 0.2.0 |
+| `bionemo-ir` | 0.2.1 |
+| `certifi` | 2026.10.23 |
+
+Two things the probe found that were not in the plan:
+
+- **`rfd4-generate --help` succeeds without a driver, but it is not silent about it.** With no GPU present the CLI printed `Error while loading libcue_ops.so: libcuda.so.1: cannot open shared object file: No such file or directory` and still exited 0. **A `--help` that exits 0 is therefore not evidence of GPU readiness**, and that string is the exact signature to watch for at rung 2 if the host driver turns out to be too old. Do not build a readiness check on the exit code.
+- **`atomworks` warns that `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` are unset** on every invocation, saying functions requiring them will be unavailable. CCD is the chemical component dictionary. UNVERIFIED whether a protein-only binder run needs either; it is a likely requirement for any ligand or modified-residue modality (§2A). Settle at rung 3.
+
+**The `cu12` fallback also builds, and it is not a free swap.** Probed the same way, same day, same $0. It passes upstream's smoke test with `torch 2.14.1+cu126` (CUDA runtime 12.6, cuDNN 9.10.2) and `tmol-ops-cu12 0.2.0`. But it installs **166 packages against cu13's 215, and `bionemo-ir` is absent** (`ModuleNotFoundError` from a container on the built image). That matches upstream's own note on `Dockerfile:76`: "BioIR (`inference_backend=bioir`) comes with the all-cuda13 extra; cu12 and cpu stay on the native runtime." **So falling back to cu12 costs us an inference backend, not just a wheel set** — and the native runtime's speed relative to BioIR is UNMEASURED by us and unstated upstream. If the driver check forces cu12, the runtime figures in §6 need re-deriving, not adjusting.
+
+One caveat on the probe's own output: the `accelerator` label it prints is read from a module global that the container re-imports with different arguments, so the cu12 run printed `cu13` in that one field. Every other value above was read from the running container and is correct for the image it ran on; the torch local version (`+cu126`) is the trustworthy discriminator.
+
+
+**What rung 1 did not answer.** A CPU builder has no NVIDIA driver, so this proves the wheel set resolves and the code imports — **it does not prove Modal's A100-80GB hosts present a CUDA-13-capable driver**, which was §5.1's actual question. That cost about three cents of GPU time to settle rather than $0, and **it has now been settled — see §5.5.** An earlier draft of the §6.1 ladder said rung 1 would establish the host driver; that row and §5.1 are corrected above.
+
+
+### 5.5 Rung 2 — the driver check: cu13 runs on Modal's A100-80GB hosts
+
+**Run 2026-10-30, Leo's ~3¢ approval, app `ap-xGZQXncSKquxGYSQudwHNX`. Result: PASS.** The probe attached one A100-80GB for a few seconds and reported:
+
+| | |
+|---|---|
+| Driver | **610.57.04**, NVIDIA A100-SXM4-80GB |
+| Compute capability | **(8, 0)** — sm_80 |
+| torch | **2.14.1+cu130** (the cu13 wheel set, not the cu126 fallback) |
+| `torch.cuda.is_available()` | True |
+| Real kernel launch (512×512 matmul) | finite, OK |
+| `tmol.score.ljlk.potentials._compiled` | **loaded** |
+| `rfd4-generate --help` | exit 0 |
+
+That closes §5.1's question: **the cu13 wheel set and Modal's driver are a working pair, so the cu12 fallback described in §5.4 — which drops the BioIR backend — is not needed.** The decisive rows are the ones a CPU builder could not produce: a driver is present, `torch.cuda.is_available()` is True, and a real kernel launched and returned finite values. (An earlier draft of this section claimed the TMol operator had *failed* on the CPU builder and now loads. That is wrong and is corrected here: §5.4 records that the TMol import **passed** on CPU; the `libcuda.so.1` error was raised by `libcue_ops.so`, a different library, and whether *it* now loads was not probed.) Compute capability 8.0 is recorded because a cu13 build targeting only newer architectures would have failed here rather than on the builder.
+
+**The `CCD_MIRROR_PATH` warning recurs with a GPU attached**, in the same words as on the CPU builder. It is not a new finding — §5.4 already recorded it and §10 item 16 tracks it — but it is now known not to be an artifact of running driverless. Still UNVERIFIED whether binder generation needs the variable; rung 3.
+
+**The first attempt crash-looped and measured nothing.** The probe imported its image definition from the sibling rung-1 file, which Modal does not ship into the container, so every start died at import (`ModuleNotFoundError: No module named 'rfd4_cpu_probe'`) before a GPU did any work; Modal's retry loop re-tried it until the deployed-function alert fired. App `ap-TPERf9v6ZEHA2yPAG9AbFy`, stopped, 0 tasks. Fixed with `add_local_python_source`, plus `retries=0` so an import error cannot loop again. **No GPU work ran on the failed attempt**, so the ~3¢ approval was consumed once, by the run above.
+
+### 5.6 Rung 2 RESULT — the weights land at 2.59 GiB and load on our A100, 2026-10-30
+
+**Run 2026-10-30, Leo's ~$0.62 approval, app `ap-g8jGQ8Cft8pfeVvfl0bk16`. Result: PASS.** Script: `rfd4_weights_seed.py` (scratchpad; it is a probe, not product code). Volume `rfd4-proteina-weights`, pinned revision `a06e2509c7033b010fc43614e9fd840303588502`.
+
+| File on the volume | Bytes | SHA-256 vs manifest |
+|---|---|---|
+| `flow_checkpoints/rfd4-proteina-flow-release-2026-10-19.ckpt` | 1,751,488,703 | **match** |
+| `ae_checkpoints/rfd4-proteina-ae-release-2026-10-19.ckpt` | 1,029,340,246 | **match** |
+| `release-checkpoints.json` | 3,755 | — |
+| `config.json` | 7,270 | — |
+| **Volume total** | **2,780,839,974 B = 2.59 GiB** | |
+
+Loaded on an **NVIDIA A100-SXM4-80GB**, torch 2.14.1+cu130, every tensor moved to the device and **every floating-point tensor** checked finite (the probe's finiteness test skips integer and bool tensors):
+
+| | Tensors | Elements | Peak GPU |
+|---|---|---|---|
+| Flow | 1,313 | 437,686,849 | 1.64 GiB |
+| Autoencoder | 699 | 257,174,161 | 0.96 GiB |
+
+Both state dicts are PyTorch-Lightning checkpoints (`epoch`, `global_step`, `hyper_parameters`, `pytorch-lightning_version`). **That closes §10 item 7:** the real volume is **2.59 GiB**, not the ~1.7 GB this document carried. §5.2 took that figure from upstream's note that `make setup` caches about 1.7 GB, alongside single-file sizes; whichever file it referred to, it was a single file, and the volume has to hold the flow checkpoint *and* the autoencoder, which upstream requires be used together.
+
+**The licence trap this step avoided.** The pinned HF revision is **82.57 GB over 55 files**. The eight `alphafold2/runtime/**` and `openfold3/runtime/**` image files alone account for **~71.4 GB of it** — the images this project excludes on separate-terms grounds. A bare `snapshot_download` pulls them. **Seeding must use an explicit allow-list, never a snapshot**, and that belongs in the pin list in §5.3 as a hard requirement, not a convention. We fetched 2.78 GB of 82.57 GB.
+
+**Two things the seeding code has to get right, both now known:**
+
+1. **The filenames differ between HF and the config.** HF stores stable names (`flow_checkpoints/rfd4_proteina_flow-ema.ckpt`); `configs/inference.yaml:38,46` reads dated ones (`rfd4-proteina-flow-release-2026-10-19.ckpt`). The seed must rename on the way in. The mapping and the digests are in the repo's own `release-checkpoints.json`.
+2. **The revision upstream pins and the revision upstream ships disagree.** `configs/inference.yaml:30` at RFD4-Proteina `aaccdd2a` names HF commit `a06e2509…` (2026-10-20). The `inference.yaml` stored *inside* that HF commit names `cf31b935…` (2026-10-19), which is also `release-checkpoints.json`'s `bundle_revision`. Both commits exist. **We pin `a06e2509…`** — it is what upstream's code reads and what the file list above was enumerated from. §5.3 records it as the literal to use; nothing enforces it yet, because `seed_volumes.py` does not exist. The seeder **will** carry it as a module-level constant and a guard test **should** assert on that constant, the way `tests/test_gpu_class_drift.py` already does for `_GPU`.
+
+**Three caveats, so this is not read as more than it is.** (i) This loaded checkpoints; it did **not** instantiate the RFD4 model or run a sampling step, so `torch.compile`, the length buckets and real VRAM remain rung 3's job. (ii) The flow checkpoint holds **437,686,849** tensor elements against `release-checkpoints.json`'s `stored_parameters: 435622465` — a difference of 2,064,384. The manifest counts parameters and our probe counted every tensor in the state dict, so the two are not the same quantity; **UNVERIFIED** that the gap is only buffers. (iii) The download ran **unauthenticated** and the Hub warned about rate limits; production seeding should carry an `HF_TOKEN`. The exact GPU seconds billed were **not captured**. The only bound is the GPU function's own 600 s timeout, which at $0.001028/s caps *that function* at $0.617; container start and the CPU download are outside it. So the GPU half is bounded under the approved figure, the total is **unverified**, and a future rung should record the seconds rather than infer them.
 
 ---
 
@@ -363,8 +465,8 @@ Follow the `proteina` pattern exactly, because its guard tests already enforce i
 
 | Rung | What it answers | GPU | Cost | Notes |
 |---|---|---|---|---|
-| **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. Also establishes whether Modal's driver supports cu13 — if not, rebuild as cu12. **Blocking for every rung below.** |
-| **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. Deliverable: the true volume size and a `torch.cuda` init on our hardware. |
+| **1. CPU build probe** | Does the image build, does `rfd4-generate --help` run, and **which accelerator variant do we need?** | none | **$0** | Build `cu13` on a CPU builder with weights excluded; a `RUN` probe at build time is free. **DONE 2026-10-30, $0: `cu13` builds and imports (§5.4).** It does NOT establish the host driver — a CPU builder has none. Fold that check into rung 2. |
+| **2. Volume seed + GPU import smoke** | Do the weights land, how big is the volume really, does CUDA initialise on our A100? | 1 × A100-80GB, ~10 min | **~$0.62** | Mirrors `proteina`'s seeding step. **DONE 2026-10-30 (§5.6): volume is 2.59 GiB, both digests match the manifest, both checkpoints materialise on an A100-80GB.** Exact seconds billed unverified; bounded below the budget. |
 | **3. One 8-design binder run** | **The cost question.** Real wall-clock, real output tree, real per-design file timing | 1 × A100-80GB, ≤30 min | **~$1.85** | Upstream's own `5o45_cropped` binder example, `num_replicates=8`, `'~metrics'`. Deliverables: wall-clock → the `expected_gpu_seconds` figure; the real `per_example_metrics.csv` header → the score column set; **and whether structure files appear per design or only at the end** (§7). |
 | **4. Our own target, like-for-like** | Does it work on a customer-shaped input, and how does it compare to our `proteina`? | 1 × A100-80GB, ≤30 min | **~$1.85** | The same target and hotspots as a recorded `proteina` run. First honest head-to-head on our own data. |
 | **5. Size sweep** | What is the runtime/VRAM curve? | 3 × A100-80GB, ≤30 min each | **~$5.55** | ~130 / 260 / 415 aa, matching `proteina`'s measured points so the two curves are comparable. Replaces the provisional §4.3 caps. Defer until the tool is committed to — buys accuracy, not a go/no-go. |
@@ -403,6 +505,142 @@ Exports need each candidate to carry a `pdb_key` and a sequence. **RFD4 is unusu
 
 ---
 
+## 7A. Scoring: what RFD4-Proteina ranks designs by
+
+Leo asked (2026-10-30) what the model uses for ranking. The short answer is that **it ships no default score at all**, and the one quality bar it does publish is binary and needs the oracle we excluded. Everything in this section was read first-hand at upstream `aaccdd2ad0720c180468df5f9cf037a713d403e5`.
+
+### 7A.1 A plain run computes nothing
+
+`configs/inference.yaml:71` is `metrics_tags: []` and `:73-77` is `search.checkpoints: null`. Metrics are tag-gated, and `src/rfproteina/metrics/metric.py:417-421` passes a metric whose gate sets are empty, so an empty tag list leaves **exactly one metric running: `amino_acid_composition`**, the only entry in the default composition (`configs/metrics/inline_metrics/all_inline_metrics.yaml:1-6`) with no `required_tags_any` (`design_metrics.yaml:1-3`). It is a residue tally, not a score. **Every ranking column is silent.** Scoring is opt-in, per tag, per run — it is not a property of the model.
+
+### 7A.2 The published bar is pass/fail, and every binder criterion needs the oracle
+
+`configs/metrics/pass_criteria/all_pass_criteria.yaml` defines eleven criteria, each emitting one boolean at `{config_key}.pass` (`:2`), each gated by its own tag. The protein-binder one (`:14-23`):
+
+- `oracle_ppi.ptm_coi` min **80.0**
+- `oracle_ppi.min_ipae_coi` max **1.5**
+- `refolded_target_backbone_aligned_binder_rmsd.rmsd` max **2.5**
+
+`antibody` (`:25-32`) and `dna` (`:34-42`) are two-term versions of the same shape, and their bounds are not uniformly looser: `antibody` demands binder RMSD ≤ **2.0** against `ppi`'s 2.5, while `dna` keeps the same ipAE bound of 1.5 and relaxes RMSD to 8.0. **Every term in all three is a refolding-oracle quantity** — AF3 by default (`configs/metrics/all_metrics.yaml:6`), with AF2 and OpenFold3 as alternates. We excluded every oracle image on licence grounds (§5.2), so **with our scope, nothing upstream ranks anything, and the headline benchmark percentages in §3 are pass rates we cannot reproduce in-house.** That is the real cost of the licence decision, and it is a scoring cost, not a generation cost.
+
+One of the eleven is oracle-free: `developability` (`:109-120`) thresholds `rosetta_developability.sap_score` ≤ 50.0, `hydrophobic_exposure_sasa` ≤ 1500.0, `sequence_developability.gravy` ≤ 0.1 and `instability_index` ≤ 40.0. It is a monomer triage bar, not an interface bar — it says nothing about whether the binder binds — and it carries the PyRosetta dependency of §7A.6. The other seven criteria cover modalities (motif scaffolding, small-molecule, enzyme, DISCO) and are oracle-gated too.
+
+### 7A.3 What survives oracle-free
+
+`configs/metrics/inline_metrics/design_metrics.yaml` is computed from the generated structure alone. The ones that would make customer-visible columns for a binder run, with their gating tag:
+
+| Column | Tag | Direction | Note |
+|---|---|---|---|
+| `interchain_interactions.hbond_atom_pair_count_coi` | `interchain_interactions` | maximize | Upstream's own oracle-free reward (`skills/rfd4-proteina-search/references/rewards.md:60`) |
+| `interchain_interactions.hydrophobic_atom_pair_count_coi` | `interchain_interactions` | maximize | Paired with the above in the shipped search config |
+| `contact_molecular_surface` | `cms` | maximize | The classic interface-size number |
+| `clash_metrics` | `design` | minimize | Threshold 1.5 |
+| `hotspot_obedience` | `hotspot_conditioning` | maximize | `max_hotspot_distance: 4.5` — "did it hit the residues you asked for" |
+| `sequence_adherence` | `design` | — | "Reports NaN when nothing was sequence-conditioned" |
+| `sse_accuracy`, `bond_length_metrics` | `design` | — | Geometry sanity, not ranking material |
+| `amino_acid_composition` | *(none)* | — | Ungated — the one metric a default run still writes (§7A.1) |
+
+The H-bond direction is upstream's own (`rewards.md:60`); the others are the conventional reading of each quantity and are **UNVERIFIED against an upstream statement** — rung 3 should confirm them before any of them sorts a results page.
+
+**None of these is a confidence number.** They say the interface is large and clean; they do not say the model believes the complex folds.
+
+### 7A.4 `search.reward` is a real scalar — but you define it, and it costs 27×
+
+In search mode each `search.checkpoints.<step>` aggregates named metric outputs into one scalar (`rewards.md:38-50`: `sum(weight * clipped_value / normalize_by)`). `configs/inference_experiment/sm_binder_hbond_search.yaml:18-32` is a shipped, **fully oracle-free** example: beam width 2, branch 2, rewarding H-bond count at step 40 and H-bond + hydrophobic contacts at step 60. Three caveats before treating this as our ranking column:
+
+- It only exists in search mode, which §3 measures at **~27× the GPU seconds per design**.
+- A weighted output missing at scoring scores that candidate `-inf`, and if every candidate scores `-inf` search raises (`rewards.md:48-50`). That is a run-killing failure mode on a billed GPU.
+- Reward scales differ per checkpoint (`rewards.md:120`), so the number is not comparable across presets. It is a within-run selector, not a cross-run score.
+
+### 7A.5 Fold the designs ourselves and rebuild what we can of upstream's bar
+
+**Decided 2026-10-30 — see §7B for the design, the BindCraft precedent and the reproducibility risk.**
+
+Our site shows a confidence number on every other design tool, and a tool that shows none will read as broken. The licence-clean route is to run each delivered design through a folder **we already ship** — `boltz2` or `esmfold2-design` — and compute interface pTM / PAE from that. This reconstructs two of the three quantities upstream's `ppi` criterion thresholds on (`ptm_coi`, `min_ipae_coi`) with a different predictor; the third, `refolded_target_backbone_aligned_binder_rmsd`, needs the refold itself and is not recovered this way. Whether `boltz2` or `esmfold2-design` exposes an interface PAE in the shape we need is UNVERIFIED and is a rung-3 question. Costs and cautions:
+
+- Extra GPU time per run, which must be in the quote before release, not after.
+- A recorded Hub finding is that `boltz2` ipTM is not reproducible run-to-run on one input (0.26–0.83 observed), which makes it a weak *sort key* even where it is a fine *display* number. Decide the sort key deliberately; the `#` column on our results pages is a position, not a rank.
+- Our thresholds would be ours, not upstream's. Do not print 80.0 / 1.5 next to a non-AF3 number.
+
+### 7A.6 New finding: the developability metrics need a PyRosetta container
+
+`configs/metrics/inline_metrics/developability_metrics.yaml:1-3` gates both developability metrics behind `metrics_tags=['developability']` and states that **"Rosetta metrics require a PyRosetta apptainer set via `$PYROSETTA_CONTAINER`"**. `rosetta_developability` (`sasa_cutoff: 20.0`) is therefore a third-party dependency with its own licence question, on the same footing as the oracle images we excluded. `sequence_developability` in the same file appears to be pure-sequence and may not need it — **UNVERIFIED, not read**. Resolve before any developability column is promised.
+
+### 7A.7 What rung 3 must capture
+
+The scope doc has been treating the score column set as a rung-3 deliverable. It still is: **no `per_example_metrics.csv` header has been observed**, only the configs that should produce it. Rung 3 must record the real header, and the run must set `metrics_tags: [design, interchain_interactions, cms, hotspot_conditioning]` rather than the empty default, or it will produce no columns to read.
+
+
+---
+
+## 7B. Decision: our own scoring, chained through Boltz-2
+
+**Leo, 2026-10-30: "we want to use our own scoring, integrate with boltz2 refolding."** That settles §7A.5 and §9 item 5. This section is the design and, more usefully, the two things that make it harder than it sounds.
+
+### 7B.1 The BindCraft precedent, and why it is two separate reroutes
+
+Leo asked how BindCraft handled this for open source. The answer is that BindCraft had **two** licence problems, and only one of them is about folding — which matters, because RFD4-Proteina has the same two.
+
+**Reroute 1 — the scoring/relax stack, not the folder.** BindCraft's own code is MIT, and its design loop (AlphaFold2 via ColabDesign, ProteinMPNN) is open; the non-commercial dependency was **PyRosetta**, used for the final relax and interface scoring. Rosetta is free to academics and charges commercial entities. The community fork **FreeBindCraft** removes it and substitutes OpenMM + PDBFixer for relax, FASPR for side-chain repacking, and `sc-rs` for shape complementarity ([Ariax write-up](https://www.ariax.bio/resources/freebindcraft-open-source-unleashed), [Tamarind](https://app.tamarind.bio/tools/freebindcraft)). Its equivalence to BindCraft is **vendor-reported and wet-lab validation is pending** — treat it as a precedent for the *shape* of the fix, not as a benchmarked drop-in.
+
+This maps one-to-one onto §7A.6: RFD4's `rosetta_developability` needs a PyRosetta apptainer via `$PYROSETTA_CONTAINER`. It is the *same dependency BindCraft had*, and FreeBindCraft is the *same reroute* — swap the Rosetta terms for OpenMM/FASPR equivalents, or drop the group. We already run a `binder-developability` skill that computes dSASA, shape complementarity and sequence liabilities without Rosetta, so **we may already own reroute 1.** UNVERIFIED that its outputs line up with `rosetta_developability.sap_score` / `hydrophobic_exposure_sasa`; that is a desk check, not a GPU run.
+
+**Reroute 2 — the folding oracle, where the licence line sits in a different place than I assumed.** AlphaFold2's *parameters* were CC BY-NC 4.0 at the 2021-07-14 release and were **relicensed to CC BY 4.0** from the 2022-12-06 release ([DeepMind commit](https://github.com/google-deepmind/alphafold/commit/8173117130e6df8749ab7349722ec465666df548)), which permits commercial use with attribution; ColabFold's code is MIT and inherits those terms. **AlphaFold3 is CC-BY-NC-SA 4.0** and is the restrictive one. RFD4 defaults its oracle to **AF3** (`configs/metrics/all_metrics.yaml:6`) and ships `af2` and `of3` as alternates.
+
+So the picture in §7A.2 is right about the *default* and too broad about the rest: the reason to avoid upstream's oracle route is **AF3's terms plus the brief's exclusion of the optional `alphafold2/runtime` and `openfold3/runtime` images**, not a blanket licence problem with refolding. The hub already runs its own `af2` and `colabfold` tools. **Whether we could legitimately wire upstream's `af2` oracle to our own ColabFold weights is an open question worth asking, and it is a licence question for Leo, not a technical one.** It is not a blocker, because the Boltz-2 route below avoids it entirely.
+
+### 7B.2 What Boltz-2 gives us, and the one thing it does not
+
+Boltz-2 is MIT and we already ship it, so it is the clean route. Per `tools/boltz2/__init__.py:7-8` it returns, per design, the predicted complex PDB plus **ipTM, pTM, complex_pLDDT, complex_iplddt**, and a hotspot contact count. Legends already exist for `("boltz2", "ipTM")`, `("boltz2", "pTM")`, `("boltz2", "pLDDT")` and `("boltz2", "n_hotspot_contacts")` (`shared/score_legends.py:733-760`), with thresholds `STRICT_IPTM = 0.7` and `SOFT_IPTM = 0.5` (`tools/boltz2/run_pipeline.py:125,127`).
+
+Against upstream's `ppi` pass criterion (§7A.2), that recovers one term and misses two:
+
+| Upstream term | Boltz-2 equivalent | Status |
+|---|---|---|
+| `oracle_ppi.ptm_coi` min 80.0 | `ipTM` (0–1 here, 0–100 there) | **Covered**, after a scale conversion — the hub already has a pLDDT 0–1 vs 0–100 split to get wrong |
+| `oracle_ppi.min_ipae_coi` max 1.5 | — | **Not emitted.** No `pae` key appears anywhere in `tools/boltz2/`. The hub does carry an interface-PAE field (`webhooks/modal.py::_sanitize_candidate`, used by `rfantibody`), so the column exists — Boltz-2 just does not currently fill it |
+| `refolded_target_backbone_aligned_binder_rmsd` max 2.5 | — | Needs an alignment step we would have to write; the refolded PDB is returned, so this is arithmetic, not inference |
+
+So the honest claim is: **chaining Boltz-2 gives customers a confidence number and a defensible sort key; it does not reproduce upstream's published bar.** Two of three terms need work, and the pass rates in §3 stay non-reproducible either way.
+
+### 7B.3 The problem that decides whether this works at all
+
+Our own measurement, in our own repo: five byte-identical copies of one input, folded in one Boltz-2 process, **spanned ipTM 0.263–0.830**, with 21 pairwise binder CA RMSDs at median 16.3 Å. No `--seed` is passed anywhere in the package, so the sampler is unseeded (`tools/boltz2/__init__.py:111-115`; full write-up in the 2026-09-23 rows of `docs/VALIDATION-LOG.md`). Worse for this purpose, rung B was a **negative discrimination result**: on three binders the cognate held at ipTM ~0.95 while the worst decoy climbed 0.619 → 0.801, collapsing the margin 37% and inverting two decoys' rank (`:118-124`).
+
+**A scorer that moves 0.26–0.83 on identical input cannot rank designs.** This is the real risk in Leo's instruction, and it is ours, not upstream's. Three ways out, cheapest first:
+
+1. **Seed the sampler.** No `--seed` is passed today. If Boltz-2 accepts one, a fixed seed makes the score reproducible per design — it does not make it *discriminative*, but it stops the same design scoring differently twice. UNVERIFIED that the CLI exposes a seed; one desk check.
+2. **Fold each design *n* times and report the median plus the spread.** Honest, and the spread is itself information. Costs *n*× the fold.
+3. **Use ESMFold-based `esmfold2-design` instead**, which is deterministic. Cheaper and stabler, but its interface confidence is weaker than a cofolder's.
+
+**Recommendation: (1) then (2) with n = 3, and show the spread on the results page rather than hiding it behind a single number.** A single ipTM from an unseeded sampler would be the most misleading column we have ever shipped.
+
+### 7B.4 Cost and shape
+
+The chain runs as a second Modal call after generation, folding the delivered designs together in one batch, on the existing `boltz2` app — so it reuses the live-charging, streaming and recovery paths already in place and adds no new billing surface.
+
+**What a triple fold costs, from our own measurements.** Boltz-2 runs on **A100-40GB** (`tools/boltz2/modal_app.py:54`), priced at **$0.000714 raw GPU-second** (`shared/wallet_estimates.py:73`) and billed to the customer through **`WALLET_MARKUP = 1.70`** (`shared/wallet.py:71`), i.e. **$0.0012138 per customer GPU-second**. Gate 1 rung A measured a **marginal ~69 s per design** on the `standalone` preset (81.9 s for the first, then 68.5 and 69.5 — the first carries the model load); rung C through the production web flow charged **261 GPU-s for 3 designs**, $0.3168, which is 87 s/design including load (2026-09-19 and 2026-09-23 rows of `docs/VALIDATION-LOG.md`).
+
+| | GPU-s | Customer cost |
+|---|---|---|
+| One extra fold per design, marginal | 69 | **$0.08** |
+| One extra fold per design, incl. amortised load | 87 | **$0.11** |
+| **Triple fold per design (n = 3), marginal** | **207** | **$0.25** |
+| Eight designs, folded once | ~565 | **$0.69** |
+| **Eight designs, folded three times** | ~1,669 | **$2.03** |
+
+The two batch rows assume **one call that loads the model once** and then folds at the marginal rate (81.9 + 23 × 69), which is how rungs A and C ran — 3 designs in a single call. Folding each design in its own call would pay the ~13 s load every time and cost more.
+
+So the honest headline is **about 25 cents per design, roughly $2 on an eight-design run** — the n = 3 spread in §7B.3 costs a couple of dollars, not a reprice.
+
+**Three caveats that could move it, each one a reason rung 3 still has to measure.** (i) The 69 s anchor was measured on a **~244 aa binder against a 107 aa antigen** (the three Gate 1 binders are trastuzumab-framework scFvs, per the 2026-09-21 row of `docs/VALIDATION-LOG.md`); the binder length we propose to offer is 60–120 aa (our `proteina` form default, `tools/proteina/__init__.py:263`, not an upstream default — upstream's own example uses 50–120), and a shorter complex folds faster, so this is more likely an over-estimate than an under-estimate — but it is an extrapolation, **UNVERIFIED for RFD4 output**. (ii) It holds **only on the `standalone` preset**; rung B measured `msa_server` at **214 s/design** against rung C's comparable 87 s/design including load — about **2.5×**, consistent with the validation log's own run-total comparison of ~2.9× (661 vs 229 GPU-s). That would put a triple fold near **$0.78 per design**. (iii) `expected_gpu_seconds = 180.0` for boltz2 (`shared/wallet_estimates.py:423`) over-reserves against the measured 87, so the *hold* a customer sees would be larger than the charge — safe on money, but it is the number they read.
+
+### 7B.5 What this adds to the rung ladder
+
+- **Desk check, $0:** does the Boltz-2 CLI accept a seed; does our `binder-developability` skill cover `rosetta_developability`'s two terms; does `_sanitize_candidate`'s interface-PAE field accept a Boltz-2-derived value.
+- **Licence question for Leo, $0:** is upstream's `af2` oracle route open to us given AF2 params are CC BY 4.0, or does the brief's exclusion of the `alphafold2/runtime` image close it regardless.
+- **Rung 3, GPU:** measure the fold cost per design, and measure the ipTM spread over *n* folds of one RFD4 design — on RFD4 output, not on the 2026-09-23 inputs.
+
 ## 8. Work plan, in PR-sized steps
 
 Each step is one PR with a gate. Sizes are rough.
@@ -427,14 +665,17 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-1. **Approve rung 1 ($0)?** CPU-only image build probe. Answers the CUDA-13 question and gates everything.
-2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
+*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt crash-looped and measured nothing, and the fixed re-run **PASSED — cu13 runs on Modal's A100-80GB hosts, §5.5.** Leo then approved the §6.1 rung-2 row (volume seed, ~$0.62); it ran the same day and **PASSED — §5.6.** Rungs 1 and 2 are now complete. Rung 3 (one 8-design run, ~$1.85) is the next spend and has NOT been approved.*
+
+1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
+2. ~~**Approve rungs 2–3 (≈$2.50 together)?**~~ **Rung 2 APPROVED and DONE 2026-10-30 (§5.6).** What remains is **rung 3 (≈$1.85)**: one 8-design run. This is the decision point — it produces the real cost per run, the real score columns, and the streaming answer. Nothing after it is honest without it.
 3. **Approve rung 4 (≈$1.85)?** Head-to-head against a recorded `proteina` run. Recommended but separable.
 4. **Rung 5 (≈$5.55)?** Defer until after the go/no-go.
 
 **Product decisions:**
 
-5. **No ipTM on the results page.** Ship release 1 with inline metrics only, or hold for a chained fold step? (§7.3 — I recommend shipping, then chaining.)
+5. ~~**No confidence number on the results page.**~~ **DECIDED by Leo 2026-10-30: use our own scoring, chained through Boltz-2 refolding.** §7B is the design. It raises one new question that is genuinely Leo's: our own Boltz-2 measurement spans **ipTM 0.263–0.830 on byte-identical input** (§7B.3), so an unseeded single fold cannot rank anything either. I recommend seeding, then folding each design three times and showing the spread. That multiplies the scoring cost by three — confirm you want that before rung 3 prices it.
+9. **Is upstream's `af2` oracle route open to us?** AF2 parameters have been CC BY 4.0 since the 2022-12-06 release, so the restrictive one is AF3, not AF2 (§7B.1). The brief excluded the optional `alphafold2/runtime` image on separate terms, which may or may not close the question. $0 to answer, and it would recover the `min_ipae_coi` term Boltz-2 does not give us.
 6. **Start minimum.** $1.00 proposed, but the derivation depends on rung 3's streaming answer. Confirm after rung 3, not now.
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
 8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
@@ -443,18 +684,22 @@ Each step is one PR with a gate. Sizes are rough.
 
 ## 10. UNKNOWNs and UNVERIFIEDs that must close before step 2
 
-1. **Does Modal's A100-80GB present a CUDA-13-capable driver?** UNVERIFIED. Blocking. Rung 1.
+1. ~~**Does Modal's A100-80GB present a CUDA-13-capable driver?**~~ **ANSWERED 2026-10-30, yes.** Driver 610.57.04 on an A100-SXM4-80GB, sm_80, a real kernel launch, `rfd4-generate --help` exit 0. Cost ~3¢ (§5.5).
 2. **Real wall-clock and cost of an 8-design run on our hardware.** UNKNOWN. The benchmark's per-design seconds exclude setup, compile and warmup and name no GPU model. Rung 3.
 3. **Do structure files land per design or only at run end?** NOT FOUND upstream. Decides whether streaming works at all and whether the $1.00 start minimum is defensible. Rung 3.
-4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run. Rung 3.
+4. **The real `per_example_metrics.csv` header.** Currently inferred from upstream config files, not from a run (§7A). Rung 3 — and that run must set `metrics_tags` explicitly, since the default is empty and would produce no columns at all.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
 6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
-7. **Real weights-volume size.** Documented ~1.7 GB; a previous weights volume was off by ~7× against its doc figure. Rung 2.
+7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure was a single-file number; the volume must hold the matched flow/autoencoder pair.
 8. **VRAM at the top of the size envelope.** Only "≥40 GB recommended" upstream, with no curve. Rung 5.
 9. **Does `delete_failing_pre_oracle` race our uploader?** UNVERIFIED. Rung 3 observation.
 10. **Cyclic peptide support.** A preset exists; upstream issue #62 asks whether it works. Out of scope for release 1 either way.
 11. **Upstream binder-mode bugs.** #81 (high alanine fraction on the non-interacting face in binder mode) is open and is a *quality* bug in exactly our release-1 mode. Watch it; it may shape the copy we write about expected quality.
 12. **Does the authors' benchmark hold on the current weights?** Upstream says it has not been re-measured. Rung 4 is our own check, on one target.
+13. **Does `sequence_developability` also need the PyRosetta apptainer?** UNVERIFIED — only `rosetta_developability` is documented as requiring `$PYROSETTA_CONTAINER` (§7A.6), and the class was not read. Blocking for any developability column, not for release 1.
+14. **Which confidence predictor and which sort key?** We must supply our own (§7A.5). `boltz2` ipTM is on record as not reproducible run-to-run, so the display number and the sort key may have to differ. A decision, not a measurement.
+15. **Which accelerator variant we actually shipped.** Settled: `cu13`, now proven on a GPU as well as in a build (§5.5). The Dockerfile must record that variant, and must not silently fall back to cu12, which is a different product (§5.4).
+16. **Do `CCD_MIRROR_PATH` and `PDB_MIRROR_PATH` need to be set?** `atomworks` warns on every invocation that they are unset (§5.4). Harmless for `--help`; unknown for a real run, and a likely requirement for any ligand or modified-residue modality. Rung 3.
 
 ---
 
