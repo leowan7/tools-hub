@@ -566,7 +566,21 @@ Our own measurement, in our own repo: five byte-identical copies of one input, f
 
 ### 7B.4 Cost and shape
 
-The chain runs as a second Modal call after generation, per delivered design, on the existing `boltz2` app — so it reuses the live-charging, streaming and recovery paths already in place and adds no new billing surface. Per-design fold cost and the *n* multiplier are UNMEASURED for this input shape and belong to rung 3. A fold that costs a meaningful fraction of the generation it scores changes the pricing conversation, so **rung 3 must measure the fold, not just the generation.**
+The chain runs as a second Modal call after generation, per delivered design, on the existing `boltz2` app — so it reuses the live-charging, streaming and recovery paths already in place and adds no new billing surface.
+
+**What a triple fold costs, from our own measurements.** Boltz-2 runs on **A100-40GB** (`tools/boltz2/modal_app.py:54`), priced at **$0.000714 raw GPU-second** (`shared/wallet_estimates.py:71`) and billed to the customer through **`WALLET_MARKUP = 1.70`** (`shared/wallet.py:71`), i.e. **$0.0012138 per customer GPU-second**. Gate 1 rung A measured a **marginal ~69 s per design** on the `standalone` preset (81.9 s for the first, then 68.5 and 69.5 — the first carries the model load); rung C through the production web flow charged **261 GPU-s for 3 designs**, $0.3168, which is 87 s/design including load (2026-09-19 and 2026-09-23 rows of `docs/VALIDATION-LOG.md`).
+
+| | GPU-s | Customer cost |
+|---|---|---|
+| One extra fold per design, marginal | 69 | **$0.08** |
+| One extra fold per design, incl. amortised load | 87 | **$0.11** |
+| **Triple fold per design (n = 3), marginal** | **207** | **$0.25** |
+| Eight designs, folded once | ~565 | **$0.69** |
+| **Eight designs, folded three times** | ~1,669 | **$2.03** |
+
+So the honest headline is **about 25 cents per design, roughly $2 on an eight-design run** — the n = 3 spread in §7B.3 costs a couple of dollars, not a reprice.
+
+**Three caveats that could move it, each one a reason rung 3 still has to measure.** (i) The 69 s anchor was measured on a **~244 aa scFv binder against a 107 aa antigen**; RFD4-Proteina's binders default to a 60–120 aa range, and a shorter complex folds faster, so this is more likely an over-estimate than an under-estimate — but it is an extrapolation, **UNVERIFIED for RFD4 output**. (ii) It holds **only on the `standalone` preset**; rung B measured `msa_server` at **214 s/design**, 3.1× the cost, which would put a triple fold near **$0.78 per design**. (iii) `expected_gpu_seconds = 180.0` for boltz2 (`shared/wallet_estimates.py:423`) over-reserves against the measured 87, so the *hold* a customer sees would be larger than the charge — safe on money, but it is the number they read.
 
 ### 7B.5 What this adds to the rung ladder
 
@@ -598,7 +612,7 @@ Each step is one PR with a gate. Sizes are rough.
 
 **GPU spend decisions — these are the ones that need an answer to proceed:**
 
-*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) approved by Leo and run; result in §5.4.*
+*Status 2026-10-30: rung 1 approved and done ($0). The driver check (~3¢) was approved by Leo; its first attempt **crash-looped and produced no measurement** — the probe imported a sibling module Modal does not ship to the container, so every start failed at import before a GPU did any work (`ModuleNotFoundError: No module named 'rfd4_cpu_probe'`, app `ap-TPERf9v6ZEHA2yPAG9AbFy`, stopped). The probe has been fixed and re-run; **§5.4 carries no driver result yet.***
 
 1. ~~**Approve rung 1 ($0)?**~~ **APPROVED by Leo 2026-10-30.** CPU-only image build probe; no GPU, no spend. Leo also directed that whatever configuration it proves must be **pinned** — §5.3 is the list.
 2. **Approve rungs 2–3 (≈$2.50 together)?** Volume seed plus one 8-design run. This is the decision point: it produces the real cost per run, the real score columns, and the streaming answer. I recommend approving 1–3 as one block, since 1 and 2 are nearly free and 3 is what makes the rest honest.
