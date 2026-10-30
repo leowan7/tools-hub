@@ -1,15 +1,17 @@
 """Site-wide "service is disrupted" banner.
 
-The banner exists for outages where the database hangs (2026-10-30: /health
-200, /readyz 503 after ~30 s). Rendering it must therefore never wait on the
+The banner exists for outages where every database read hangs while
+/health stays green. Rendering it must therefore never wait on the
 database: ``banner_message()`` only reads a process-local flag, and the flag
-is refreshed by a daemon thread that does the same read as /readyz with a
-short timeout, at most once per ``CHECK_INTERVAL_S``.
+is refreshed by a daemon thread that sends the /readyz query with a short
+timeout, at most once per ``CHECK_INTERVAL_S``.
 
 Each gunicorn worker holds its own flag and runs its own check.
 
 ``STATUS_BANNER`` (env) forces a banner with that text, for planned or
-partial incidents, without a deploy.
+partial incidents, without a code change. It is read from the process
+environment, so it takes effect when the service restarts with the new
+value.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ _in_flight = False
 
 
 def _db_ok() -> bool:
-    """The /readyz read (user_events, one id) straight against PostgREST."""
+    """The /readyz query (user_events, one id) as a raw PostgREST GET."""
     import httpx  # noqa: PLC0415
 
     url = os.environ.get("SUPABASE_URL", "").strip()
@@ -77,7 +79,14 @@ def _maybe_start_check() -> None:
             return
         _in_flight = True
         _last_started = now
-    threading.Thread(target=refresh, name="status-banner", daemon=True).start()
+    try:
+        threading.Thread(
+            target=refresh, name="status-banner", daemon=True
+        ).start()
+    except RuntimeError:
+        logger.warning("status banner check thread did not start")
+        with _lock:
+            _in_flight = False
 
 
 def banner_message() -> str | None:
