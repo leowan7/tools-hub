@@ -3,7 +3,7 @@
 requirements.txt only reaches the Railway web tier. Each Modal app builds its
 own image, and every run_pipeline.py talks HTTPS through ``requests``, which
 verifies against certifi's bundle. A floor raised in requirements.txt alone
-leaves all nine containers on whatever bundle their last build resolved.
+leaves every container on whatever bundle its last build resolved.
 """
 
 from __future__ import annotations
@@ -31,8 +31,14 @@ def _floor() -> tuple[int, ...]:
     return _version(m.group(1))
 
 
-def test_all_nine_images_are_discovered():
-    assert len(_IMAGE_FILES) == 9, [str(p) for p in _IMAGE_FILES]
+def test_every_image_is_discovered():
+    # Ten: the eight tools/*/Dockerfile.modal files, esmfold2_design's
+    # modal_app.py (no Dockerfile — it builds via modal.Image.micromamba), and
+    # tools/rfd4/Dockerfile.modal, which is an image without a deployed app yet
+    # (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §8 step 1). The floor binds
+    # on an image, not on a deploy, so rfd4 is in scope from the moment the
+    # Dockerfile exists.
+    assert len(_IMAGE_FILES) == 10, [str(p) for p in _IMAGE_FILES]
 
 
 @pytest.mark.parametrize("path", _IMAGE_FILES, ids=lambda p: p.parent.name)

@@ -362,6 +362,15 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
 
 _DOCKERFILES = sorted((_REPO / "tools").glob("*/Dockerfile.modal"))
 
+# Slugs that have a Dockerfile.modal but are NOT in the deploy matrix: a tool
+# whose image lands before its Modal app does. `rfd4` is one because
+# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §8 ships the image and the
+# weights seeder as step 1 and the modal_app.py only at step 2; its matrix entry
+# is step 6's. Until then no deploy builds that image and no customer can reach
+# it. Every check in this module still reads these files — only the
+# app-to-Dockerfile relation below has to know they have no app yet.
+_UNDEPLOYED_DOCKERFILE_SLUGS = {"rfd4"}
+
 # EVERY tools-side __init__.py must fail to match every COPY pattern — globbed,
 # not enumerated. A Dockerfile is free to COPY a *non-deployed* slug's adapter
 # (`tools/pxdesign/__init__.py` into af2's image, say); that file is still under
@@ -402,7 +411,7 @@ def test_every_tools_init_py_is_globbed():
 def test_copy_scan_actually_detects_an_adapter_copy():
     """Non-vacuity floor for ``_init_paths_pulled`` itself.
 
-    Four of the eight Dockerfiles carry no COPY at all, so half of
+    Five of the nine Dockerfiles carry no COPY at all, so most of
     ``test_dockerfile_copies_no_adapter_package`` asserts nothing (correctly —
     Modal builds no context mount there), and no app uses
     ``dockerfile_commands`` today. Without this, a change in Modal's parser or
@@ -458,9 +467,15 @@ def test_no_dockerignore_narrows_what_modal_uploads():
 
 def test_dockerfiles_are_discovered():
     # esmfold2_design has no Dockerfile (it builds via modal.Image.micromamba),
-    # so eight is the full set, not a short read.
-    assert len(_DOCKERFILES) == len(_APPS) - 1, (
-        f"expected {len(_APPS) - 1} tools/*/Dockerfile.modal, found "
+    # so it is the one deployed app with nothing in this glob.
+    #
+    # The relation is a SET equality, not a count: `len(_DOCKERFILES) ==
+    # len(_APPS) - 1` held only while every Dockerfile belonged to a deployed
+    # app, and _UNDEPLOYED_DOCKERFILE_SLUGS now breaks that. A count would also
+    # go green on a swap (one Dockerfile deleted, one added).
+    expected = (set(_APPS) - {"esmfold2_design"}) | _UNDEPLOYED_DOCKERFILE_SLUGS
+    assert {p.parent.name for p in _DOCKERFILES} == expected, (
+        f"expected Dockerfiles for {sorted(expected)}, found "
         f"{[str(p) for p in _DOCKERFILES]}"
     )
 
@@ -1134,14 +1149,21 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 
     ``_DOCKERFILES`` is a glob of ``tools/*/Dockerfile.modal``; nothing else
     proves those are the files the apps actually build from. If an app switched
-    to a Dockerfile somewhere else, the glob would still find eight files, still
+    to a Dockerfile somewhere else, the glob would still find nine files, still
     scan them, and still pass — over a Dockerfile no longer in use.
+
+    A slug in ``_UNDEPLOYED_DOCKERFILE_SLUGS`` has no modal_app.py to scan, so it
+    is dropped from the globbed side rather than counted as unused.
     """
     used = set()
     for app in _APPS:
         scan = _scan((_REPO / "tools" / app / "modal_app.py").read_text(encoding="utf-8"))
         used |= {v for _, v in ((n, _resolve(a, scan)) for n, a in scan["dockerfiles"])}
-    globbed = {str(p.relative_to(_REPO)).replace("\\", "/") for p in _DOCKERFILES}
+    globbed = {
+        str(p.relative_to(_REPO)).replace("\\", "/")
+        for p in _DOCKERFILES
+        if p.parent.name not in _UNDEPLOYED_DOCKERFILE_SLUGS
+    }
     assert used == globbed, (
         f"apps build from {sorted(used)} but this file scans {sorted(globbed)}. "
         "Every Dockerfile an app uses must be one the COPY scan reads."
