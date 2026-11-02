@@ -1,0 +1,26 @@
+# Rung 4: de-novo binder against our own target -- 3AVE fucosylated IgG1 Fc dimer,
+# chains A and B, the same target and hotspots as the recorded `proteina` run
+# (.proteina_direct_call_state.json: target_chain "A,B", 16 EU-numbered hotspots,
+# binder_length [60, 120]).
+#
+# res_id below is mmCIF label_seq_id, NOT the author/EU numbering, per
+# docs/reference/yaml-json.md "contig tokens". The mapping was computed from the
+# written CIF by prep_input.py: chain A label_seq 10..220 == auth 234..444,
+# chain B label_seq 13..220 == auth 237..444, one shared entity, so both chains
+# share the mapping auth -> label = auth - 224.
+fc_binder:
+  input: /tmp/rfd4_in/3ave_fc_AB.cif
+  contig: "60-120, /0, A10-220, /0, B13-220"
+  conditions:
+    C_CRDGRP:              # one rigid group over both protomers: the dimer geometry is the target
+      1:
+        - select: "sel('A/*/*/[N,CA,C,O]') and not has_nan_coord()"
+        - select: "sel('B/*/*/[N,CA,C,O]') and not has_nan_coord()"
+    C_SEQ:                 # the target sequence is known
+      true:
+        - select: "sel('A')"
+        - select: "sel('B')"
+    C_HOT:                 # EU 241,243,244,246,260,262,264,301 on each protomer
+      true:
+        - select: "sel('A/*/[17, 19, 20, 22, 36, 38, 40, 77]')"
+        - select: "sel('B/*/[17, 19, 20, 22, 36, 38, 40, 77]')"
