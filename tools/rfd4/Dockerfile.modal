@@ -1,0 +1,156 @@
+# RFD4-Proteina (RosettaCommons/RFD4-Proteina) — de-novo binder generation.
+#
+# NOT the same model line as tools/proteina/, which is NVIDIA Proteina-Complexa.
+# Separate slug, separate image, separate weights Volume.
+#
+# Strategy: reproduce upstream's own Dockerfile at the pinned commit, with one
+# structural change — upstream builds from a local checkout (`COPY pyproject.toml`,
+# `COPY . .`) and there is no RFD4 build context on Modal, so this image clones the
+# repo at ${RFD4_SHA} instead. Everything else (base digest, pip bootstrap, uv
+# floor, the accelerator case statement, the `--only-binary tmol,...` install, the
+# smoke test) is upstream's, kept close enough to diff against
+# https://github.com/RosettaCommons/RFD4-Proteina/blob/<RFD4_SHA>/Dockerfile.
+#
+# The oracle images (alphafold2/runtime/**, openfold3/runtime/**) are NOT in this
+# image and NOT on the weights Volume — excluded on licence grounds, which is why
+# only ~2.6 GiB of the 82.57 GiB weights revision is seeded
+# (tools/rfd4/seed_volumes.py). Step 2's run_pipeline.py will have to pass
+# `'~metrics'` so no oracle metric group is composed; nothing in THIS file
+# enforces that, and nothing here can.
+#
+# PIN: by DIGEST, not by tag — upstream's own pin, carried over verbatim. A bare
+# tag can be retagged upstream, silently changing this image on the next rebuild
+# with nothing in this repo changing (the deploy workflow rebuilds on any
+# tools/** push). To bump: re-verify with
+#   docker buildx imagetools inspect python:3.12.12-slim-bookworm
+# and paste the new digest here in the same commit.
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+
+# The upstream commit this image builds. A SHA, never a branch: `main` re-resolves
+# on every rebuild. Resolved and built 2026-10-30 (scope doc §5.4): the image
+# builds in 147.57 s on a CPU builder, `python -m pip check` is clean, and
+# `rfd4-proteina` resolves to 0.0.3.
+ARG RFD4_SHA=aaccdd2ad0720c180468df5f9cf037a713d403e5
+
+# NO DEFAULT, deliberately. Upstream defaults this to cu13; we do not, because a
+# default is what lets a rebuild silently pick a wheel set nothing has run.
+# cu13 is the only variant proven here: driver 610.57.04 on an A100-SXM4-80GB,
+# torch 2.14.1+cu130, a real kernel launch finite, tmol's compiled operators
+# loaded (scope doc §5.5), and an 8-design run (§5.7). cu12 is a DIFFERENT
+# PRODUCT, not a fallback: it resolves 166 packages against cu13's 215 and does
+# not install bionemo-ir at all, so the BioIR inference backend is absent. The
+# case statement below has no permissive arm — an unset or unrecognised value
+# exits 2 rather than resolving to either wheel set.
+#
+# Nothing passes this argument yet: step 1 ships no modal_app.py, so this image
+# is not built by any deploy. Step 2's modal_app.py will have to pass
+# RFD4_ACCELERATOR=cu13 explicitly when it declares the image.
+ARG RFD4_ACCELERATOR
+
+# Minimum uv: 0.13.4 is the first release with the emSign CA fix. Upstream's floor.
+ARG UV_MIN_VERSION=0.13.4
+
+# DATA_PATH is where configs/inference.yaml:39 and :46 look for the two
+# checkpoints (flow_checkpoints/, ae_checkpoints/); the rfd4-proteina-weights
+# Volume mounts there at run time. HF_HOME is set so nothing writes to a home
+# directory that does not exist in the container.
+ENV DATA_PATH=/data \
+    HF_HOME=/opt/rfd4/cache/huggingface \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    TMOL_DISABLE_WHEEL_FETCH=1 \
+    TMOL_JIT_FALLBACK=0 \
+    TMOL_USE_JIT=0
+
+# build-essential: torch.compile (Inductor/Triton) compiles C++ and CUDA glue at
+# run time. The lib* packages are OpenBabel runtime deps. git is ours, for the
+# clone below (upstream needs none — it copies a checkout in).
+#
+# Bootstrap trust (eMudhra/emSign CA incident, Oct 2026), upstream's step: the pip
+# shipped in the base image bundles a certifi that still trusts the compromised
+# CA, and pip always trusts its bundled certifi in addition to the system store.
+# The base image is pinned by digest, so its pip does not change on rebuild.
+# Install the fixed pip from a hash-pinned URL so this download is verified by
+# checksum rather than by the old trust store.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates build-essential git libxrender1 libx11-6 libxext6 && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip install --no-cache-dir "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" && \
+    python -m pip install --no-cache-dir "uv>=${UV_MIN_VERSION}"
+
+# Fetch-then-checkout rather than `git clone --branch <sha>`: git cannot clone a
+# bare commit by ref. `--depth 1` keeps the fetch small while still landing the
+# exact commit, and the rev-parse is what makes the SHA a pin rather than a
+# comment — a server that served something else fails the build here.
+RUN git init /opt/rfd4 && \
+    cd /opt/rfd4 && \
+    git remote add origin https://github.com/RosettaCommons/RFD4-Proteina.git && \
+    git fetch --depth 1 origin "${RFD4_SHA}" && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = "${RFD4_SHA}"
+
+WORKDIR /opt/rfd4
+
+# Upstream's install, both halves in one layer: the clone above already
+# invalidates on a SHA bump, so there is no cache win in splitting dependencies
+# from the application the way upstream does.
+#
+# `--no-sources` ignores [tool.uv.sources] in pyproject.toml, so no Git or SSH
+# dependency is reachable from this build. TMol and its operator packages come
+# from published wheels only (`--only-binary`), never a source build.
+#
+# The certifi line is a FLOOR, not an install: it only binds if something pulls
+# certifi in. The pin itself is the layer below.
+RUN printf 'certifi>=2026.10.23\n' > /tmp/rfd4-constraints.txt && \
+    case "${RFD4_ACCELERATOR}" in \
+        cu13) set -- --extra all-cuda13 --torch-backend cu130 ;; \
+        cu12) set -- --extra all-cuda12 --torch-backend cu126 ;; \
+        *) echo "RFD4_ACCELERATOR must be cu13 (proven) or cu12 (different product: no BioIR); got '${RFD4_ACCELERATOR}'" >&2; exit 2 ;; \
+    esac && \
+    uv pip install --system --no-cache --no-sources -c /tmp/rfd4-constraints.txt \
+        --only-binary tmol,tmol-ops-cu12,tmol-ops-cu13 "$@" -r pyproject.toml && \
+    uv pip install --system --no-cache --no-sources --no-deps . && \
+    rm -f /tmp/rfd4-constraints.txt && \
+    python -m pip check
+
+# certifi: this repo's floor (requirements.txt:7, #452 eMudhra key compromise),
+# enforced by tests/test_gpu_image_certifi_floor.py. Its own layer, so every
+# layer above keeps its build cache. 2026.10.23 is also what the §5.4 build
+# resolved on its own.
+RUN python -m pip install --no-cache-dir "certifi==2026.10.23"
+
+# Bare, EMPTY mount points. /data is where the rfd4-proteina-weights Volume
+# mounts; Modal refuses "cannot mount volume on non-empty path", so nothing may
+# be written under it here — the flow_checkpoints/ and ae_checkpoints/ subdirs
+# come from the Volume, not from this image.
+RUN mkdir -p /data /opt/rfd4/cache/huggingface /workspace
+WORKDIR /workspace
+
+# Self-verifying build gate (upstream's smoke test, unchanged), HARD-fail so drift
+# surfaces at build rather than on a paying run. It asserts the things that are
+# actually checkable without a GPU: that torch carries the wheel suffix matching
+# RFD4_ACCELERATOR, that OpenBabel parses, that tmol's compiled LJ/LK operators
+# import, that exactly the one matching tmol-ops-* distribution is installed, and
+# that Inductor can compile and run a graph. It passed on a CPU builder (§5.4).
+#
+# The cu13-only BioIR import is the line that makes a silent cu12 build
+# impossible to mistake for a cu13 one: it is the backend cu12 does not have.
+#
+# NOT a GPU readiness check, and no layer here can be one. `rfd4-generate --help`
+# exits 0 on a machine with no driver while printing "Error while loading
+# libcue_ops.so: libcuda.so.1: cannot open shared object file" to stderr (§5.4),
+# so its exit code is evidence that the entry point is installed and nothing more.
+# Driver and device readiness were measured separately, on a real A100 (§5.5).
+RUN TORCHINDUCTOR_CACHE_DIR=/tmp/rfd4-build-compile RFD4_ACCELERATOR="${RFD4_ACCELERATOR}" python -c \
+        'import os; from importlib.metadata import distributions; import torch, atomworks, rfproteina; from openbabel import pybel; from tmol.score.ljlk.potentials._compiled import ljlk_pose_scores; accelerator = os.environ["RFD4_ACCELERATOR"]; assert torch.__version__.endswith("+" + {"cu13": "cu130", "cu12": "cu126"}[accelerator]); assert pybel.readstring("smi", "CCO").OBMol.NumAtoms() == 3; assert callable(ljlk_pose_scores); ops = {d.metadata["Name"].lower().replace("_", "-") for d in distributions() if d.metadata["Name"].lower().replace("_", "-").startswith("tmol-ops-")}; assert ops == {"tmol-ops-" + accelerator}, ops; x = torch.ones(8); torch.testing.assert_close(torch.compile(lambda t: t.sin() + 1, backend="inductor", fullgraph=True)(x), x.sin() + 1)' && \
+    rm -rf /tmp/rfd4-build-compile && \
+    if [ "${RFD4_ACCELERATOR}" = "cu13" ]; then \
+        python -c "from bionemo_ir._torch.layers.transformers.blocks import ConditionedTransformerBlock, PairUpdateBlock, with_cuda_graph"; \
+    fi && \
+    rfd4-generate --help > /dev/null
+
+# Do not append anything below this line, and never soften the gate above with
+# `|| true`: a layer after it would build green on an image whose imports failed.
