@@ -33,7 +33,7 @@ Consistent with the delta being comment-only, proved by
 AST-with-docstrings-stripped identity against the base for every changed
 Python file.
 
-### Two corrections made after the first round of review
+### Corrections made after the first and second rounds of review
 
 **The item-9 comment misquoted GitHub's page.** It rendered the `**` rule as
 "matches any character including the / character", a string that does not appear
@@ -54,6 +54,16 @@ for a pushed commit; verified instead that no comment, docstring or PR-body line
 repeats the miscount -- `git diff 1ede8b57..HEAD` over the three changed source
 files has no "three" or "positive control" in any added line, and every other
 mention in this note and the PR body is this correction itself.
+
+**Three prose imprecisions caught by the second claims review, all mine, all in
+this note and the staged PR text; no code line was involved.** (1) This note's
+item 9 and the PR body still carried the old all-in-one-table attribution that
+`132b4e79` had already corrected in the workflow comment; both now match the
+comment. (2) Item 6 cited `git blame -L 622,628` as giving `bc8faccf`, where
+`bc8faccf` owns 625-628 only and 620-624 are `746ee334` (2026-09-14); the
+blame range and the result are now as measured. (3) `28500548`'s pushed commit
+message still carries the superseded attribution. History was not rewritten for
+it, so that message stands as written and `132b4e79` is its correction.
 
 ### Gotcha worth keeping
 
@@ -135,8 +145,9 @@ also carried a September measurement from a different tree; amended it out.
 
 ## 6. `wallet_estimates.py` "cut to $5.00" comment — ALREADY FIXED
 
-    git blame -L 622,628 -- shared/wallet_estimates.py
-    # -> bc8faccf (PR #459, 2026-10-23)
+    git blame -L 620,630 -- shared/wallet_estimates.py
+    # -> lines 625-628 are bc8faccf ("... (#459)", 2026-10-23);
+    #    620-624 are older (746ee334)
 
 The comment already reads as a dated history of the constant, ending "removed
 on 2026-10-23", and cites
@@ -177,14 +188,18 @@ clients**. Worth rewording in the register.
 
 **The three negations DO work as the file assumes.** No trigger path changed.
 
-From GitHub's "Patterns to match file paths" table (Workflow syntax for GitHub
-Actions): `*` does not match `/`, `**` does, patterns match the whole path from
-the repo root, and "A matching negative pattern (prefixed with `!`) after a
+From GitHub's Workflow syntax for GitHub Actions page, each quote attributed to
+the part of the page it comes from: the filter pattern cheat sheet says `*`
+"Matches zero or more characters, but does not match the / character"; the
+"Patterns to match file paths" table's '**' row says "The ** wildcard matches
+any character including slash (/)"; patterns match the whole path from the
+repository root (the page states this, paraphrased here); and the Note under
+the paths section says "A matching negative pattern (prefixed with `!`) after a
 positive match will exclude the path".
 
 One nuance worth the lead's attention: **whether `**` matches ZERO path
-segments is shown only by example, never stated** — the table's `docs/**/*.md`
-row is given as matching `docs/README.md`. The single real path that turns on
+segments is shown only by example, never stated in the page's text** — the
+cheat sheet's `docs/**/*.md` row is given as matching `docs/README.md`. The single real path that turns on
 in this repo is `tools/__init__.py`, which exists. Its exclusion is intended,
 for the script-mode reason already argued in
 `tests/test_deploy_paths_exclusions.py::test_deploy_step_still_passes_a_FILE_path_to_modal_deploy`.
@@ -240,11 +255,14 @@ diffing them: identical.
 
 **9. `**/` path-filter semantics in `.github/workflows/deploy-modal.yml`.** The
 three `tools/**` negations **do** exclude what the trigger assumes. Quoted from
-GitHub's "Patterns to match file paths" table: `*` does not match `/`, `**`
-does, patterns match the whole path from the repo root, and a later negation
-wins. One rule that table shows **only by example**, never states, is whether
-`**` may match zero path segments — its `docs/**/*.md` row is given as matching
-`docs/README.md`. The single real path that turns on here is `tools/__init__.py`,
+GitHub's Workflow syntax for GitHub Actions page, each quote attributed to the
+part it comes from: the filter pattern cheat sheet for `*` ("does not match the
+/ character"), the "Patterns to match file paths" table's '**' row ("The **
+wildcard matches any character including slash (/)"), and the Note under the
+paths section for later-wins. Whole-path matching from the repository root is
+paraphrased, not quoted. One rule the page shows **only by example**, never
+states, is whether `**` may match zero path segments — the cheat sheet's
+`docs/**/*.md` row is given as matching `docs/README.md`. The single real path that turns on here is `tools/__init__.py`,
 which exists, and excluding it is intended for the script-mode reason already
 argued in
 `tests/test_deploy_paths_exclusions.py::test_deploy_step_still_passes_a_FILE_path_to_modal_deploy`.
@@ -262,7 +280,7 @@ explicitly.
 | 2 | iggm cancelled-run panel blank | `templates/tools/iggm_results.html:14-26` already falls back to `job.inputs`; the run still writes those keys (`tools/iggm/__init__.py:379-380`, `:433-434`). **A display gap, not data loss**, so no P1 was due. Closed by #441. |
 | 3 | recovered proteina design loses root `target_numbering` | Same code as item 1. Also display, not data loss. |
 | 4 | rfdiffusion stop-test QA report stranded | Report blob is byte-identical on `origin/main` and the stranded branch (same blob SHA `88cc2169…`). Came in with #441. |
-| 6 | `wallet_estimates.py` "cut to $5.00" comment | `git blame -L 622,628` → `bc8faccf` (#459, 2026-10-23). **File not touched** — the wallet worker owns that area. |
+| 6 | `wallet_estimates.py` "cut to $5.00" comment | `git blame -L 620,630` → lines 625-628 are `bc8faccf` (#459, 2026-10-23); 620-624 are older. **File not touched** — the wallet worker owns that area. |
 | 7 | boltzgen `num_designs=200` undocumented | `tools/boltzgen/__init__.py:150-168` already names the source. All three figures re-derived: `runtime_minutes: 82.4` at `tools/boltzgen/example/result.json:58`; 4x = 200/50 with the cap at `tools/boltzgen/__init__.py:101-108`; the 6600 s subprocess timeout at `shared/pdb_preflight_rules.py:715-716`. Number unchanged. |
 | 8 | 22 test files construct a zero-value, unguarded | The single shared guard already exists: `tests/conftest.py::_forbid_real_supabase_clients`, autouse and session-scoped, raising a `BaseException` subclass deliberately (app code wraps client construction in `except Exception:`). Landed in `296598c4` / #302 — the same commit the register's "22, not 23" re-measurement cites. **Mutation-proved**: an unmarked probe file building a real client failed with `_RealSupabaseClientRefused` at `tests\conftest.py:143`. Probe deleted; no 22-file diff written. |
 
