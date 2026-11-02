@@ -81,20 +81,24 @@ on:
       - '!tools/**/example/**'
       - '!tools/**/__init__.py'
       #
-      # The glob semantics the three negations above rely on, read off GitHub's
-      # own "Patterns to match file paths" table (Workflow syntax for GitHub
-      # Actions): `*` "does not match the / character", `**` "matches any
-      # character including the / character", a pattern is matched against the
-      # whole path from the repo root, and later-wins is documented as "A
-      # matching negative pattern (prefixed with !) after a positive match will
-      # exclude the path". On those rules each negation does exclude what this
-      # trigger assumes it excludes.
+      # The glob semantics the three negations above rely on, quoted from
+      # GitHub's Workflow syntax for GitHub Actions page. Of `*`, the filter
+      # pattern cheat sheet says it "Matches zero or more characters, but does
+      # not match the / character"; of `**`, the "Patterns to match file paths"
+      # table's '**' row says "The ** wildcard matches any character including
+      # slash (/)". Patterns are matched against the whole path from the
+      # repository root (the page states this, paraphrased here). Later-wins is
+      # the Note under the paths section: "A matching negative pattern
+      # (prefixed with !) after a positive match will exclude the path" -- the
+      # paths wording, not the near-identical branches and tags bullets that
+      # say "the Git ref" or "the branch". On those rules each negation does
+      # exclude what this trigger assumes it excludes.
       #
-      # One rule is shown only by EXAMPLE, not stated: whether `**` may match
-      # zero path segments. The table's `docs/**/*.md` row is given as matching
-      # `docs/README.md`, so it may. The single real path that turns on here is
-      # tools/__init__.py, which exists; excluding it is intended, for the
-      # script-mode reason argued in
+      # One rule is shown only by EXAMPLE, never stated in the page's text:
+      # whether `**` may match zero path segments. The cheat sheet's
+      # `docs/**/*.md` row is given as matching `docs/README.md`, so it may.
+      # The single real path that turns on here is tools/__init__.py, which
+      # exists; excluding it is intended, for the script-mode reason argued in
       # tests/test_deploy_paths_exclusions.py::test_deploy_step_still_passes_a_FILE_path_to_modal_deploy.
       # static/example/ is NOT web-tier only: four Dockerfile.modal files COPY a
       # fixture out of it as their in-image smoke target. static/ is outside

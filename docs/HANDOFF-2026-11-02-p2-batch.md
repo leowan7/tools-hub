@@ -33,13 +33,27 @@ Consistent with the delta being comment-only, proved by
 AST-with-docstrings-stripped identity against the base for every changed
 Python file.
 
-### Known imprecision left in place deliberately
+### Two corrections made after the first round of review
 
-The claims reviewer flagged `40152fed`'s message: it says "the three positive
+**The item-9 comment misquoted GitHub's page.** It rendered the `**` rule as
+"matches any character including the / character", a string that does not appear
+on the page, while attributing it to GitHub's table in quotation marks. The
+meaning was right and no behaviour claim was affected, but the attribution was
+false as written. The hub lead read the live page in a browser and extracted its
+wording; the comment now quotes the `'**'` row exactly ("The ** wildcard matches
+any character including slash (/)"), and the other quotes are attributed to the
+specific places they come from: the filter pattern cheat sheet for `*`, the Note
+under the paths section for later-wins. The whole-path rule is a paraphrase and
+is marked as one. **The previously UNVERIFIED docs claim is now verified against
+the live page.**
+
+**A miscount in `40152fed`'s pushed message.** It says "the three positive
 controls", where `tests/test_fold_duplicate_record_names.py:218` is ONE test
-parametrized over three tools. Three cases, one test. Not corrected by
-rewriting history, because a rebase would re-trigger both reviews for a wording
-nuance the reviewer itself did not call false.
+parametrized over three tools. Three cases, one test. History was not rewritten
+for a pushed commit; verified instead that no comment, docstring or PR-body line
+repeats the miscount -- `git diff 1ede8b57..HEAD` over the three changed source
+files has no "three" or "positive control" in any added line, and every other
+mention in this note and the PR body is this correction itself.
 
 ### Gotcha worth keeping
 
