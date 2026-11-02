@@ -6,8 +6,14 @@
 # res_id below is mmCIF label_seq_id, NOT the author/EU numbering, per
 # docs/reference/yaml-json.md "contig tokens". The mapping was computed from the
 # written CIF by prep_input.py: chain A label_seq 10..220 == auth 234..444,
-# chain B label_seq 13..220 == auth 237..444, one shared entity, so both chains
-# share the mapping auth -> label = auth - 224.
+# chain B label_seq 13..220 == auth 237..444, and both chains share the mapping
+# auth -> label = auth - 224 (234 - 10 = 237 - 13 = 224).
+#
+# The CIF has ONE ENTITY PER CHAIN, not one shared entity: prep_input.py assigns a
+# separate entity to each protomer, because upstream's
+# index_group_molecule_must_be_connected invariant rejects two unbonded chains that
+# share a molecule id. An earlier version of this comment said "one shared
+# entity", contradicting prep_input.py in the same commit.
 fc_binder:
   input: /tmp/rfd4_in/3ave_fc_AB.cif
   contig: "60-120, /0, A10-220, /0, B13-220"

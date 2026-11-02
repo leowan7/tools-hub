@@ -10,15 +10,14 @@ Two entry points:
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 
 import modal
 
 _HERE = pathlib.Path(__file__).parent
-_REPO_RFD4 = pathlib.Path(
-    "C:/Users/lab/Documents/Claude_projects/tools-hub/.claude/worktrees/rfd4-rung4-8d448c/tools/rfd4"
-)
+_REPO_RFD4 = _HERE.parents[2] / "tools" / "rfd4"
 
 weights = modal.Volume.from_name("rfd4-proteina-weights")
 
@@ -72,14 +71,14 @@ def cpu_probe(files: dict, spec_name: str = _PAID_SPEC) -> dict:
 
     # Where did the condition flags actually land? Read the annotated CIF back and
     # report, per condition column, the residues it marks -- in both numberings.
-    if built:
+    for _cif in built:
         import gemmi
 
-        doc = gemmi.cif.read(built[0])
+        doc = gemmi.cif.read(_cif)
         blk = doc.sole_block()
         names = [t.strip() for t in blk.get_mmcif_category_names()]
         cols = [c for c in blk.find_mmcif_category("_atom_site.").tags]
-        report["atom_site_tags"] = cols
+        report.setdefault("atom_site_tags", {})[os.path.basename(_cif)] = cols
         cond_cols = [c for c in cols if "condition" in c.lower()]
         keys = ["_atom_site.label_asym_id", "_atom_site.label_seq_id",
                 "_atom_site.auth_seq_id", "_atom_site.label_comp_id",
@@ -97,12 +96,12 @@ def cpu_probe(files: dict, spec_name: str = _PAID_SPEC) -> dict:
                     continue
                 d = per_col.setdefault(c, {})
                 d.setdefault(v, set()).add("/".join(str(x) for x in res))
-        report["condition_columns"] = {
+        report.setdefault("condition_columns", {})[os.path.basename(_cif)] = {
             c: {v: (sorted(rs) if len(rs) <= 40 else [f"<{len(rs)} residues>", *sorted(rs)[:8]])
                 for v, rs in sorted(vals.items())}
             for c, vals in per_col.items()
         }
-        report["mmcif_categories"] = names
+        report.setdefault("mmcif_categories", {})[os.path.basename(_cif)] = names
 
     # Resolved Hydra config for the production configuration we intend to run.
     rc, out = _run([
@@ -318,15 +317,28 @@ def main(mode: str = "cpu", num_replicates: int = 4, spec_name: str = _PAID_SPEC
         q.name: q.read_bytes()
         for q in sorted(_HERE.glob("3ave_fc_*.cif")) + sorted(_HERE.glob("*.yaml"))
     }
+    specs = [s.strip() for s in spec_name.split(",") if s.strip()]
+    if mode == "variants" and spec_name == _PAID_SPEC:
+        specs = ["spec_v5_nocrdgrp.yaml", "spec_v7_unindex_b.yaml"]
+
+    # Every spec about to run must have its spec file AND the CIFs it names staged,
+    # or the container allocates (on `gpu`, an A100) and then fails on a missing
+    # input. Checked here, before any remote call.
+    for s in specs:
+        if s not in payload:
+            raise SystemExit(f"spec {s} is not in {_HERE}")
+        for ref in re.findall(rf"{re.escape(_IN_DIR)}/(\S+)", (_HERE / s).read_text(encoding="utf-8")):
+            if ref not in payload:
+                raise SystemExit(f"{s} names {ref}, which is not in {_HERE}")
+
     if mode == "cpu":
-        out = cpu_probe.remote(payload, spec_name)
+        out = cpu_probe.remote(payload, specs[0])
     elif mode == "variants":
-        out = variant_probe.remote(
-            payload,
-            ["spec_v5_nocrdgrp.yaml", "spec_v7_unindex_b.yaml"],
-        )
+        out = variant_probe.remote(payload, specs)
     else:
-        out = gpu_run.remote(payload, num_replicates, spec_name)
-    dest = _HERE / f"{mode}_result.json"
+        out = gpu_run.remote(payload, num_replicates, specs[0])
+    # Never overwrite a result: rung 3 lost its metrics CSV once already, and on a
+    # paid run this file is the only copy of what the money bought.
+    dest = _HERE / f"{mode}_result_{time.strftime('%Y%m%dT%H%M%S')}.json"
     dest.write_text(json.dumps(out, indent=1), encoding="utf-8")
     print(f"wrote {dest}")

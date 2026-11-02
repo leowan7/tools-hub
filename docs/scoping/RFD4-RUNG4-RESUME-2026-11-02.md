@@ -1,9 +1,15 @@
 # RFD4-Proteina rung 4 — PARKED before any GPU spend, 2026-11-02
 
-**Spend so far on rung 4: $0.00 of the ~$1.85 Leo approved. No GPU function has
-ever been invoked** — `gpu_run` in `docs/scoping/rung4-probe/rung4_app.py` was
-only ever *created* by the Modal client, never called; every probe ran through
+**GPU spend so far on rung 4: $0.00 of the ~$1.85 Leo approved. No GPU function
+has ever been invoked** — `gpu_run` in `docs/scoping/rung4-probe/rung4_app.py`
+was only ever *created* by the Modal client, never called; every probe ran through
 `cpu_probe` or `variant_probe` (`cpu=4`, no `gpu=` and no weights volume mounted).
+The evidence is that the committed console logs show only `Created function
+gpu_run` with no invocation of it, and that `rung4-probe/` holds no gpu-mode
+result file at all (`ls` of the directory: only `cpu_result.json` and
+`variants_result_v5v7.json`). **No Modal billing report was pulled**, and the CPU
+probe containers are themselves not free — just small, and not against this budget. The $0.00 is specifically the
+approved GPU budget.
 Parked on the hub lead's instruction because the laptop is going to sleep and the
 approval was for a run Leo can watch.
 
@@ -29,7 +35,7 @@ C/1-B/1, C/1-B/2, C/1-B/3, ...
 `C` is the generated binder chain, `B` the second Fc protomer. **This failure cost
 $0** — it is raised by `scripts/write_condition_spec_cifs.py` on CPU.
 
-## The five spec variants tested, all on free CPU
+## The six spec variants tested, all on free CPU
 
 Specs are in `docs/scoping/rung4-probe/`. Each row is the exit code of
 `write_condition_spec_cifs.py <spec> --out-dir ... --verbose` run inside the §8
@@ -48,14 +54,19 @@ Modal apps: V1 `ap-bHdGlb3K7IHQjH2QioJedb` and `ap-YNFF2ZVyOBhwGBbG9dWHKY`;
 V2/V3/V4 `ap-2uZ3k5ao3MUNNBtbPZ441m`; V5/V7 `ap-ZbtJPgdCrt2GPLeyOz5zhi`. Raw
 result JSON for V5/V7 is `rung4-probe/variants_result_v5v7.json`; **the V2/V3/V4
 result JSON was overwritten by the V5/V7 sweep**, so those three rows were read
-from it in-session and are re-derivable by re-running `--mode variants` with
-those spec names. The V1 rows are evidenced by `rung4-probe/cpu_probe2_console.log`
+from it in-session and are **UNVERIFIED from committed evidence**. Re-deriving
+them now works as written -- `--mode variants` takes `--spec-name` as a
+comma-separated list and writes a timestamped result file -- but in the commit
+first pushed it did not: `main()` hard-coded the V5/V7 pair and ignored
+`--spec-name`. The V1 rows are evidenced by `rung4-probe/cpu_probe2_console.log`
 and by `rung4-probe/cpu_result.json` (`write_cifs_rc: 1`, `built_cifs: []`).
 
 **What the sweep measured, stated narrowly.** V5 fails with the byte-identical
 error, so `C_CRDGRP` is **not** the trigger; so does V2, so splitting the dimer
-across two input files is not a workaround. V7 passes, so **exactly one target
-chain may stay indexed**. Per-chain `molecule_iid` was *not* captured — the
+across two input files is not a workaround. V7 (chain B unindexed) and V3 (both
+chains unindexed) both pass, so the measured rule is **at most one** indexed
+target chain -- not "exactly one", which V3
+contradicts. Per-chain `molecule_iid` was *not* captured — the
 diagnostic failed on an import (`add_id_and_entity_annotations` is not in
 `atomworks.io.utils.selection` in this image; see `moliid_rc: 1` in
 `variants_result_v5v7.json`). **So the mechanism by which the two protomers are
@@ -101,13 +112,20 @@ From the resolved Hydra dump (`rung4-probe/cpu_result.json`, `cfg_rc: 0`) and th
 tag-selection check in the same file (`tagcheck_rc: 0`):
 
 - `inference_experiment=inference_on_user_inputs` keeps the 15-bucket
-  `compile_lengths` (128 through 1024), so the `torch.compile` warm-up **is** paid — which is what
-  question 3 needs re-measured, since rung 3's `quickstart` had it off.
+  `compile_lengths` (128 through 1024), where rung 3's `quickstart` had it off.
+  Whether the `torch.compile` warm-up is therefore actually paid is **INFERRED,
+  not measured**: the same dump also shows `nn.torch_compile_mode: null`, and
+  nothing on CPU exercised compilation. Question 3 is what settles it.
 - `metrics_tags=[design,interchain_interactions,hotspot_conditioning]` selects
-  **11** metrics and skips **42**: 9 inline metrics plus 2 pre-oracle filters,
-  including `amino_acid_composition` (question 1) and `hotspot_obedience`. Every
-  `refolding_oracles.*`, every `refolding_metrics.*` and every `pass_criteria.*`
-  is skipped, so **no AF3 oracle and no PyRosetta container is needed**.
+  **11** metrics and skips **42**. The **selected** 11 are 9 `inline_metrics.*`
+  plus 2 `pre_oracle_filters.*`, and they include `amino_acid_composition`
+  (question 1) and `hotspot_obedience`. The **skipped** 42 are 15
+  `inline_metrics.*`, 11 `pass_criteria.*`, 4 `pre_oracle_filters.*`, 8
+  `refolding_metrics.*` and 4 `refolding_oracles.*` -- every oracle and every
+  pass criterion, so **no AF3 oracle and no PyRosetta container is needed**.
+  (Both lists counted from the `tagcheck` block of `rung4-probe/cpu_result.json`;
+  15+11+4+8+4 = 42. An earlier draft of this bullet attached the 9+2 to the
+  skipped set instead of the selected one.)
 - `delete_failing_pre_oracle=False` is required: tag `design` arms
   `pre_oracle_filters.sequence_adherence_filter`, which would otherwise delete
   outputs we are paying to look at.
@@ -118,12 +136,18 @@ tag-selection check in the same file (`tagcheck_rc: 0`):
 ## The exact fire sequence when Leo is watching
 
 Scratchpad copies may have been cleaned up; the authoritative copies are in
-`docs/scoping/rung4-probe/`. Step 0 rebuilds the three input CIFs from the PDB
-entry, since they are not committed (about 1 MB, regenerable):
+`docs/scoping/rung4-probe/`. **The three input CIFs are now committed there**
+(`3ave_fc_AB.cif`, `3ave_fc_A.cif`, `3ave_fc_B.cif`, ~830 KB in total), so there
+is no rebuild step and the sequence starts at the pre-flight.
 
-```bash
-C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe docs/scoping/rung4-probe/prep_input.py
-```
+On regenerating them — for the record, not for the fire sequence: `prep_input.py`
+takes two positional arguments and writes **one** file
+(`prep_input.py <source> <out.cif>`), and it always keeps chains A and B, so it
+reproduces `3ave_fc_AB.cif` only. The two single-chain files were split by an
+inline `gemmi` command that was **not** committed, so `prep_input.py` alone does
+not reproduce them. That is why the CIFs are committed rather than regenerated:
+an earlier draft of this note claimed a bare `prep_input.py` rebuilt all three,
+which would instead have died on `sys.argv` at the first step of the paid run.
 
 Step 1, free CPU pre-flight — **this has not been run for V4 and must be, to
 confirm the hotspot flags land on the eight intended residues** (author/EU
@@ -135,24 +159,38 @@ confirm the hotspot flags land on the eight intended residues** (author/EU
 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe -m modal run docs/scoping/rung4-probe/rung4_app.py --mode cpu --spec-name spec_v4_chainA.yaml
 ```
 
-Read `condition_columns` in the written `cpu_result.json`: the `C_HOT` column must
-mark exactly those eight residues of chain A and nothing else. **If it does not,
-stop — do not spend.**
+Read `condition_columns` in the written `cpu_result_<timestamp>.json`. It is keyed
+by output CIF file name, one entry per CIF the writer built; in every entry the
+`C_HOT` column must mark exactly those eight residues of chain A and nothing else.
+**If it does not, stop — do not spend.**
 
-Step 2, the one approved paid run (A100-80GB, `timeout=1020` s, which bounds the
-spend at **$1.78 customer** at the §6 rate of $0.0017476 per customer-GPU-second;
-the subprocess self-kills at 870 s so a Modal timeout cannot swallow the outputs):
+Before either step the entrypoint checks locally that the chosen spec and every
+CIF it names are present next to the script, and exits without calling Modal if
+one is missing, so a stale glob cannot allocate an A100 and bill for an input that
+was never staged (`rung4_app.py`, the loop over `specs` in `main()`).
+
+Step 2, the one approved paid run (A100-80GB, `timeout=1020` s). **The two cost
+bases must not be mixed:** §6.1 says its ladder figures, the ~$1.85 for this rung
+included, are our **raw** A100-80GB cost. At the §6 raw rate of
+$0.001028/GPU-second the 1020 s timeout bounds this run at **$1.05 raw**, inside
+the approval; the same ceiling is **$1.78** at the customer rate of
+$0.0017476/customer-GPU-second (raw x 1.70). The subprocess self-kills at 870 s so
+a Modal timeout cannot swallow the outputs:
 
 ```bash
 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe -m modal run docs/scoping/rung4-probe/rung4_app.py --mode gpu --num-replicates 4 --spec-name spec_v4_chainA.yaml
 ```
 
-It writes `gpu_result.json` next to the script with `wall_s`, `rc`, `timed_out`,
-the per-file first-sighting times (for the first-design wall-clock and the
-`"Compiling model for padded length N tokens"` log line), the full stdout/stderr,
-and every output `.cif`/`.csv` inline — rung 3 lost the metrics CSV to a dead
-container and needed a second paid run to get it back, so nothing is left behind
-this time.
+It writes `gpu_result_<timestamp>.json` next to the script — timestamped, so a
+second invocation cannot overwrite the paid run's only artifact — with `wall_s`,
+`rc`, `timed_out`, the per-file first-sighting times (for the first-design wall-clock and the
+`"Compiling model for padded length N tokens"` log line), the stdout/stderr,
+and the output files inline — rung 3 lost the metrics CSV to a dead container and
+needed a second paid run to get it back. The capture is narrower than
+"everything": it takes files whose suffix is `.cif`, `.csv`, `.json`, `.yaml` or
+`.txt`, plus `*.cif.zst`, and it truncates stdout and stderr to the last 200 000
+characters each. `tree` lists every path in the output directory, so anything not
+captured is at least named.
 
 **One run only.** If it fails, stop and report the cost and the proposed change;
 do not retry.
@@ -163,17 +201,29 @@ do not retry.
   and `comparator_seqs.json`, read from the recorded `proteina_direct_out/`
   coordinates (binder is chain C in all eight designs; lengths 113, 98, 74, 107,
   74, 113, 107, 98).
-- §5.8 must carry the comparator's weakness: the longest exact shared block
-  against target chain A is 51/98/4/54/74/51/80/98 residues, so **three of eight
-  comparator binders are verbatim substrings of the target** and most of the rest
-  are largely copied, and the recorded AF2 scores on that run are junk
-  (af2_iptm 0.087–0.100, binder_scrmsd 34–41 A). A favourable head-to-head against
-  this baseline would mean very little, and the write-up must not let it stand
-  unqualified.
+- §5.8 must carry the comparator's weakness. Pairing each binder length with its
+  longest exact shared block against target chain A: 113/51, 98/98, 74/4, 107/54,
+  74/74, 113/51, 107/80, 98/98. **Three of the eight comparator binders are
+  verbatim substrings of the target.** Of the other five the copied fractions are
+  45%, 5%, 50%, 45% and 75%, so "largely copied" fits one of the five, not most —
+  an earlier draft of this line overstated it. The recorded AF2 scores on that run
+  are also junk (af2_iptm 0.087–0.100, binder_scrmsd 34–41 A). A favourable
+  head-to-head against this baseline would mean very little, and the write-up must
+  not let it stand unqualified.
+- **Evidence status for the bullet above:** the eight binder lengths are verified
+  from `rung4-probe/comparator_seqs.json`. The shared-block lengths and the AF2
+  scores were computed in-session from `proteina_direct_out/` and
+  `.proteina_direct_call_state.json`, **neither committed here**, so those two
+  figures are UNVERIFIED from this commit alone.
 
 ## Still open for §5.8
 
-- Questions 1-4 all need the paid run; none can be answered from CPU.
+- Questions 1-4 are the four the rung-4 brief set, not a numbering from the scope
+  doc: (1) sequence credibility under a production configuration, against rung 3's
+  ~70% glutamate; (2) head-to-head against the recorded `proteina` run; (3)
+  first-design wall-clock where the compile warm-up is actually paid; (4) §10 item
+  4, the real `per_example_metrics.csv` header with `metrics_tags` set. All four
+  need the paid run; none can be answered from CPU.
 - §10 item 4, the real `per_example_metrics.csv` header **with** `metrics_tags`
   set, is reachable oracle-free (the tag check above proves the selection, not the
   header) — it closes only if step 2 runs.
