@@ -3,9 +3,10 @@
 Branch `claude/p2-batch-1102-a3b643`, base `origin/main` = `1ede8b57`.
 Commits: `40152fed` (item 5), `28500548` (items 1 and 9).
 
-Parked mid-suite at the lead's instruction. Everything below that says
-"verified" names the command that verified it. The one thing NOT verified is
-the full test suite.
+Parked at the lead's instruction. Everything below that says "verified" names
+the command that verified it. The suite was still running when this note was
+first written; it has since finished green, and the note is corrected to
+match.
 
 ## State
 
@@ -16,18 +17,21 @@ the full test suite.
 | Items that were a writing task | 1 (item 9) |
 | `review-code` | returned, **no code-behaviour findings** |
 | `review-claims` | returned, **17 claims enumerated, none FALSE**, 1 UNVERIFIED (external docs) |
-| Full test suite | **INCOMPLETE — UNVERIFIED.** Reached ~24% with zero failures, then parked. |
+| Full test suite | **PASSED.** 9974 passed, 33 skipped, 3 xfailed in 660.89s, exit 0. |
 | Targeted tests | `tests/test_deploy_paths_exclusions.py` + `tests/test_deploy_trigger_covers_dockerfile_copies.py` → 79 passed |
 
-### The one unfinished step
+### No unfinished step
 
-Re-run the full suite from this branch:
+The full suite had been launched before this session was asked to park, and it
+finished afterwards:
 
     /c/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe -m pytest -q
+    # 9974 passed, 33 skipped, 3 xfailed in 660.89s   (exit 0)
 
-Expect it to pass: the delta is comment-only, proved by AST-with-docstrings-
-stripped identity against the base for every changed Python file. If something
-fails, check whether it already fails on `1ede8b57` before blaming this branch.
+So the earlier "~24%, parked" status in this note's first draft is superseded.
+Consistent with the delta being comment-only, proved by
+AST-with-docstrings-stripped identity against the base for every changed
+Python file.
 
 ### Known imprecision left in place deliberately
 
