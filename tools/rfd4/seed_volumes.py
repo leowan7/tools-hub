@@ -80,9 +80,10 @@ _HF_REPO = "nvidia/RFD4-Proteina"
 # and bump both checkpoints together — see the matched-pair note above.
 _HF_REVISION = "a06e2509c7033b010fc43614e9fd840303588502"
 
-# (path in the HF repo, path on the Volume, sha256, size in bytes). Digests and
-# sizes are upstream's, from release-checkpoints.json at _HF_REVISION; the two
-# .sha256 sidecars in that revision carry the same values.
+# (path in the HF repo, path on the Volume, sha256, size in bytes). Both HF
+# paths, both sizes and both digests were read back off the HuggingFace API at
+# _HF_REVISION on 2026-11-02 — /api/models/nvidia/RFD4-Proteina/tree/<rev>/ for
+# the paths and sizes, and each file's own `.sha256` sidecar for the digest.
 #
 # NOT seeded: flow_checkpoints/rfd4_proteina_flow_pretrain-ema.ckpt (the pretrain
 # variant, a third 1.74 GB file), and the alphafold2/ and openfold3/ oracle
@@ -132,12 +133,19 @@ def seed() -> dict:
         dest = os.path.join(_DATA_MOUNT, vol_path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-        # Idempotent on SIZE only. A re-read of 2.59 GiB of sha256 on every run
-        # buys nothing: the digest below is checked on the bytes this run wrote,
-        # and a file already at its exact size was written by a run that checked
-        # it. A truncated or partial file has the wrong size and is re-fetched.
-        if os.path.isfile(dest) and os.path.getsize(dest) == want_size:
-            print(f"[seed] {vol_path} already present at {want_size} bytes — skip", flush=True)
+        # Idempotent, and on the DIGEST, not just the size. Size alone would skip
+        # a file left over from an earlier release whose checkpoint happens to
+        # serialise to the same length — and _HF_REVISION plus both digests get
+        # bumped together, so the skip is exactly where a half-bumped Volume
+        # would hide. Re-reading 2.59 GiB costs tens of seconds on a script that
+        # runs once per Volume; a wrong pair costs a paid run that returns
+        # nonsense (see the matched-pair note above).
+        if (
+            os.path.isfile(dest)
+            and os.path.getsize(dest) == want_size
+            and _sha256(dest) == want_sha
+        ):
+            print(f"[seed] {vol_path} already present, sha256 ok — skip", flush=True)
             verified.append(vol_path)
             continue
 
