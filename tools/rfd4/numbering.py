@@ -82,7 +82,9 @@ _MODRES_EQUIV = frozenset({
     "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
 })
 
-# Water spellings. `HOH` is the PDB's own; the rest appear in tool output.
+# Water spellings. `HOH` is the PDB's own; which writers emit the others is
+# uncited here (`test_an_atom_record_water_is_not_a_chain_residue` covers
+# only `HOH`).
 _WATER_RESNAMES = frozenset({"HOH", "DOD", "WAT", "H2O"})
 
 
@@ -90,12 +92,12 @@ def _is_polymer(record: str, resname: str) -> bool:
     """Whether a residue occupies a position in its chain's sequence.
 
     The record column decides, not the residue name alone, because
-    ``tools/proteina/run_pipeline.py:775-780`` -- the in-repo statement of what
-    counts as a chain residue -- keys on it: an ``ATOM`` record is a chain
-    residue whatever its name, and a ``HETATM`` record is one only when
-    ``_MODRES_EQUIV`` lists it. Classifying on the name alone makes the two
-    parsers disagree about the same chain: an ``ATOM``-record ``UNK`` in a
-    modelled or cryo-EM target is skipped here and counted there, so every later
+    ``pdb_ca_residues`` in ``tools/proteina/run_pipeline.py`` -- the in-repo
+    statement of what counts as a chain residue -- keys on it: an ``ATOM``
+    record is a chain residue whatever its name, and a ``HETATM`` record is one
+    only when ``_MODRES_EQUIV`` lists it. Classifying on the name alone makes
+    the two parsers disagree about the same chain: an ``ATOM``-record ``UNK``
+    is skipped here and counted there, so every later
     ``label_seq_id`` in that chain is one too low and a hotspot addresses the
     wrong residue with nothing failing -- the module docstring's failure mode
     (``test_an_atom_record_residue_outside_the_name_set_keeps_its_position``,

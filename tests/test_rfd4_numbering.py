@@ -560,9 +560,9 @@ def test_waters_get_their_own_asym_and_entity():
 
 def test_old_style_terminal_oxygens_are_backbone():
     """``OT1``/``OT2`` are terminal-oxygen names used in place of ``OXT``
-    (which writers still emit them is uncited -- ``numbering.py:724-727``); a
-    C-terminal glycine emitting them must still take the CA fallback, not name
-    two oxygens."""
+    (which writers still emit them is uncited -- see the comment above
+    ``numbering.py``'s ``_BACKBONE``); a C-terminal glycine emitting them must
+    still take the CA fallback, not name two oxygens."""
     assert hotspot_atoms_for_residue("GLY", ["N", "CA", "C", "OT1", "OT2"]) == ("CA",)
 
 
@@ -637,9 +637,10 @@ def test_an_atom_record_residue_outside_the_name_set_keeps_its_position():
     """An ``ATOM``-record residue whose name this module does not know still
     occupies a sequence position, so the residues after it are not shifted.
 
-    ``UNK`` is the case that reaches us: modelled and cryo-EM targets carry it
-    on ``ATOM`` records. Classifying on the name alone skipped it here while
-    ``tools/proteina/run_pipeline.py:775-780`` counted it, so every later
+    ``UNK`` is the name this test uses. How often it reaches us is uncited;
+    the defect does not depend on the frequency. Classifying on the name alone
+    skipped it here while ``pdb_ca_residues`` in
+    ``tools/proteina/run_pipeline.py`` counted it, so every later
     ``label_seq_id`` in the chain was one too low and a hotspot addressed the
     residue before the one asked for, with nothing failing.
     """
@@ -660,9 +661,10 @@ def test_a_hetatm_record_standard_residue_is_not_a_chain_residue():
     """A standard amino-acid name on a ``HETATM`` record is a ligand, not a
     chain residue: it takes no sequence position and cannot be addressed.
 
-    The same rule read the other way. ``tools/proteina/run_pipeline.py:775-780``
-    skips it; classifying on the name alone gave it a ``label_seq_id`` here and
-    pushed every later residue in the chain one too high.
+    The same rule read the other way. ``pdb_ca_residues`` in
+    ``tools/proteina/run_pipeline.py`` skips it; classifying on the name alone
+    gave it a ``label_seq_id`` here and pushed every later residue in the chain
+    one too high.
     """
     pdb = (
         "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\n"
