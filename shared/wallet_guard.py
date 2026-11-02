@@ -47,6 +47,13 @@ logger = logging.getLogger(__name__)
 
 REASON_WALLET_EMPTY = "wallet_empty"
 
+# Refused because the submit could not be PRICED (the estimator raised), not
+# because of anything about the wallet. templates/wallet/topup.html has no
+# branch for this slug, so its gate notice falls to the generic ``{% else %}``
+# arm ("Your job did not start ... submit it again"), which is the copy this
+# case wants.
+REASON_ESTIMATE_FAILED = "estimate_failed"
+
 # Live charging (docs/design/LIVE-CHARGING-2026-10-01.md, option (ii)) is on
 # only for the tiers that upload each design mid-run, so a hub-side stop keeps
 # the designs already finished. Pinned by
@@ -320,7 +327,9 @@ def requires_wallet(view_func=None, *, tool_slug=None):
 
     1. Compute the estimate via ``estimated_cost_for_tool`` based on
        the form params. Resolve the parameter scaled hard cap and the
-       user's current balance.
+       user's current balance. An estimator that RAISES ends the request
+       here with the gate (REASON_ESTIMATE_FAILED) -- see the comment
+       at the except clause for why it is not priced at 0.
     2. Block flow on any of these reasons by rendering the 'Top up and
        run' gate (Moment 2 of the plan) or the per tool cap message
        (Moment 3): wallet frozen, insufficient balance, per tool cap
@@ -382,7 +391,33 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                     "requires_wallet: estimate failed for user=%s tool=%s",
                     user_id, resolved_slug, exc_info=True,
                 )
-                estimate = Decimal("0")
+                estimate = None
+
+            # An estimator that RAISED is not a $0 price. It used to land here
+            # as ``Decimal("0")``, which made ``free_run`` below true: live
+            # charging was forced off (``live = not free_run and ...``) and the
+            # hold was skipped, so a PAID run reached the handler with nothing
+            # reserved and nothing metered. The completion side cannot catch
+            # that either -- ``shared/jobs.py``'s
+            # ``_settle_wallet_hold_for_completed_job`` returns early on a
+            # missing ``inputs._wallet.hold_tx_id``, which is the same shape a
+            # genuinely free run leaves behind. So refuse here, where the two
+            # zeroes are still distinguishable. A conservative figure is not
+            # available as a fallback: ``cushioned_hold_usd``
+            # (shared/wallet_estimates.py::cushioned_hold_usd) calls the same
+            # ``estimated_cost_for_tool`` and raises with it. Refusing does not
+            # flap for a paying customer either -- the historical lookup
+            # swallows its own query failures and returns None
+            # (``shared/wallet_estimates.py::_historical_p90_seconds``), so
+            # what is left to raise is parameter- or spec-shaped and
+            # deterministic for this form. Pinned by
+            # tests/test_free_presets_cost_nothing.py::test_a_crashed_estimator_refuses_a_paid_submit.
+            if estimate is None:
+                return _render_topup_gate(
+                    tool_slug=resolved_slug,
+                    reason=REASON_ESTIMATE_FAILED,
+                    form_snapshot=request.form.to_dict() or {},
+                )
 
             # A zero estimate means there is nothing to RESERVE -- it does not
             # mean there is nothing to CHECK. This used to return here, which
@@ -398,9 +433,8 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             # hold, so the SQL check is unreachable for it and preflight is the
             # only one left -- while a validate run still spawns the A100
             # container Ranomics pays for. So free runs go through the same
-            # gate and skip only the hold, below. The same reasoning covers the
-            # estimator-raised fallback a few lines up, which also lands here
-            # as 0.
+            # gate and skip only the hold, below. A failed estimate does NOT reach
+            # this line; it is refused above.
             free_run = estimate <= Decimal("0")
 
             # Detect a missing service client (tests, dev with no

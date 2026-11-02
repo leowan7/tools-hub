@@ -40,7 +40,7 @@ from shared.wallet_estimates import (
     cushioned_hold_usd,
     estimated_cost_for_tool,
 )
-from shared.wallet_guard import requires_wallet
+from shared.wallet_guard import REASON_ESTIMATE_FAILED, requires_wallet
 from tools.base import _REGISTRY
 
 # Phrases that promise the USER pays nothing, matched over a preset's label
@@ -362,3 +362,89 @@ def test_a_paid_preset_still_reserves(offline_estimator):
     assert seen.get("hold_tx_id") == "tx-001"
     assert open_live.call_count == 1
     reserve.assert_not_called()
+
+
+def test_a_crashed_estimator_refuses_a_paid_submit():
+    """An estimator that raises must not look like a free tier.
+
+    The regression: the ``except`` around ``estimated_cost_for_tool`` set the
+    estimate to ``Decimal("0")``, which made ``free_run`` true, forced live
+    charging off and skipped the hold -- a PAID run reaching the handler with
+    nothing reserved and nothing metered, and
+    ``shared/jobs.py::_settle_wallet_hold_for_completed_job`` returns early on
+    a missing ``hold_tx_id``, so completion never bills it either. The wallet
+    is healthy here and the preset is paid: the only thing wrong is that the
+    price is unknown.
+    """
+    seen: dict = {}
+    gate_app = _gate_app("proteina", seen)
+
+    with gate_app.test_client() as client, patch(
+        "shared.wallet_guard.estimated_cost_for_tool",
+        side_effect=RuntimeError("boom"),
+    ), patch(
+        "shared.wallet_guard.wallet_reserve_hold", return_value="tx-002"
+    ) as reserve, patch(
+        "shared.wallet_guard.open_live_run", return_value="tx-001"
+    ) as open_live, patch(
+        "shared.wallet_guard.get_or_create_wallet", return_value=_WALLET_OK
+    ), patch(
+        "shared.wallet.get_or_create_wallet", return_value=_WALLET_OK
+    ), patch(
+        "shared.wallet_guard.render_template", return_value="GATE_RENDERED"
+    ) as render:
+        with client.session_transaction() as sess:
+            sess["user_id"] = "u-1"
+        resp = client.post(
+            "/x", data={"preset": "protein_binder", "num_designs": "8"}
+        )
+
+    assert resp.get_data(as_text=True) == "GATE_RENDERED"
+    assert seen.get("ran") is None, (
+        "handler ran on an unpriceable submit: no hold, no live charge"
+    )
+    reserve.assert_not_called()
+    open_live.assert_not_called()
+    assert render.call_args.kwargs["gate_reason"] == REASON_ESTIMATE_FAILED
+
+
+def test_a_frozen_wallet_is_still_refused_when_the_estimator_crashes():
+    """Both refusals hold at once; the estimate gate is the one that fires.
+
+    Before this fix the crashed estimate went down the free-run path, where
+    ``wallet_preflight`` was the only remaining check -- so the frozen flag was
+    what stopped the run. Now the estimate gate refuses first, which is why
+    the reason is ``estimate_failed`` and not ``wallet_frozen``. Either slug
+    is a refusal; this pins that the ordering change did not open a hole.
+    ``test_a_frozen_wallet_still_refuses_a_free_run`` above still pins the
+    wallet_frozen reason on the working-estimator path.
+    """
+    seen: dict = {}
+    gate_app = _gate_app("proteina", seen)
+    frozen = {"balance_usd": 100.0, "wallet_frozen": True}
+
+    with gate_app.test_client() as client, patch(
+        "shared.wallet_guard.estimated_cost_for_tool",
+        side_effect=RuntimeError("boom"),
+    ), patch(
+        "shared.wallet_guard.wallet_reserve_hold"
+    ) as reserve, patch(
+        "shared.wallet_guard.open_live_run"
+    ) as open_live, patch(
+        "shared.wallet_guard.get_or_create_wallet", return_value=frozen
+    ), patch(
+        "shared.wallet.get_or_create_wallet", return_value=frozen
+    ), patch(
+        "shared.wallet_guard.render_template", return_value="GATE_RENDERED"
+    ) as render:
+        with client.session_transaction() as sess:
+            sess["user_id"] = "u-1"
+        resp = client.post(
+            "/x", data={"preset": "protein_binder", "num_designs": "8"}
+        )
+
+    assert resp.get_data(as_text=True) == "GATE_RENDERED"
+    assert seen.get("ran") is None, "handler ran behind a frozen wallet"
+    reserve.assert_not_called()
+    open_live.assert_not_called()
+    assert render.call_args.kwargs["gate_reason"] == REASON_ESTIMATE_FAILED
