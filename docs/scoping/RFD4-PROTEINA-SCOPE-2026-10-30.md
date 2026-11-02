@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
+Scope of this document: research and scoping, plus the sections later passes have appended. **The 2026-10-30 research pass changed no product code and deployed no Modal app**; later passes recorded in §10A do add code (`tools/rfd4/numbering.py`), and still deploy nothing. GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
@@ -847,9 +847,9 @@ we write — nothing produced by `tools/rfd4/numbering.py` has been through
 `rfd4-generate`. Accepting the generated CIF in the container is a step-2 gate.
 
 ---
-## 11. What this pass did not do
+## 11. What the 2026-10-30 research pass did not do
 
-No product code was changed. No Modal app was deployed. No customer-visible string was edited. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured) and rung 3's run (§5.7, a measured **$0.2908**). A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
+This section is about that pass only; §10A records a later one that does add code. The research pass changed no product code, deployed no Modal app and edited no customer-visible string. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured) and rung 3's run (§5.7, a measured **$0.2908**). A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
 

@@ -4,8 +4,9 @@ The failure mode this file exists to make impossible is a run that addresses the
 WRONG residue and completes normally
 (``docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md`` §10 item 5). A count cannot
 see that, so where the mapping's answer is what is under test the assertion names
-a specific residue -- its author token, its ``label_seq_id`` and its residue
-name. Other tests here assert a refusal, or a count or range where that is
+a specific residue -- its author token and its ``label_seq_id``, plus its residue
+name where the name is part of the point. Other tests here assert a refusal, or
+a count or range where that is
 itself the property (how many rows the CIF carries, what a chain's label range
 is). Read each test's own assertions; this docstring does not try to tally
 them.
@@ -435,7 +436,7 @@ def test_only_the_first_model_is_converted():
     )
     cif, mapping = _convert_text(pdb)
     assert len(mapping.entries) == 1
-    assert len([l for l in cif.splitlines() if l.startswith("ATOM")]) == 1
+    assert len([ln for ln in cif.splitlines() if ln.startswith("ATOM")]) == 1
     assert "1.000" in cif and "9.000" not in cif
 
 
@@ -558,8 +559,10 @@ def test_waters_get_their_own_asym_and_entity():
 
 
 def test_old_style_terminal_oxygens_are_backbone():
-    """``OT1``/``OT2`` are the pre-v3 spellings of ``OXT``; a C-terminal glycine
-    emitting them must still take the CA fallback, not name two oxygens."""
+    """``OT1``/``OT2`` are terminal-oxygen names used in place of ``OXT``
+    (which writers still emit them is uncited -- ``numbering.py:724-727``); a
+    C-terminal glycine emitting them must still take the CA fallback, not name
+    two oxygens."""
     assert hotspot_atoms_for_residue("GLY", ["N", "CA", "C", "OT1", "OT2"]) == ("CA",)
 
 
@@ -623,3 +626,85 @@ def test_a_duplicate_label_seq_id_is_refused():
 
     with pytest.raises(NumberingError, match="duplicate label_seq_id"):
         ResidueMapping([entry(5), entry(6)])
+
+
+# ---------------------------------------------------------------------------
+# What counts as a chain residue: the record column, not the name
+# (review-code, round 3, 2026-11-02)
+# ---------------------------------------------------------------------------
+
+def test_an_atom_record_residue_outside_the_name_set_keeps_its_position():
+    """An ``ATOM``-record residue whose name this module does not know still
+    occupies a sequence position, so the residues after it are not shifted.
+
+    ``UNK`` is the case that reaches us: modelled and cryo-EM targets carry it
+    on ``ATOM`` records. Classifying on the name alone skipped it here while
+    ``tools/proteina/run_pipeline.py:775-780`` counted it, so every later
+    ``label_seq_id`` in the chain was one too low and a hotspot addressed the
+    residue before the one asked for, with nothing failing.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\n"
+        "ATOM      2  CA  UNK A   2       4.000   5.000   6.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       7.000   8.000   9.000  1.00  0.00           C\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    assert mapping.label_for("A", 2) == ("A", 2)
+    assert mapping.author_for("A", 2) == AuthorResidue("A", 2, "")
+    # The residue after it keeps the position it would have had.
+    assert mapping.label_for("A", 3) == ("A", 3)
+    assert [e.resname for e in mapping.polymer_entries("A")] == ["ALA", "UNK", "GLY"]
+
+
+def test_a_hetatm_record_standard_residue_is_not_a_chain_residue():
+    """A standard amino-acid name on a ``HETATM`` record is a ligand, not a
+    chain residue: it takes no sequence position and cannot be addressed.
+
+    The same rule read the other way. ``tools/proteina/run_pipeline.py:775-780``
+    skips it; classifying on the name alone gave it a ``label_seq_id`` here and
+    pushed every later residue in the chain one too high.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\n"
+        "HETATM    2  CA  ALA A   2       4.000   5.000   6.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       7.000   8.000   9.000  1.00  0.00           C\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    with pytest.raises(NumberingError, match="not a polymer residue"):
+        mapping.label_for("A", 2)
+    assert mapping.label_for("A", 3) == ("A", 2)
+    assert mapping.author_for("A", 2) == AuthorResidue("A", 3, "")
+
+
+def test_an_atom_record_water_is_not_a_chain_residue():
+    """Water is the one residue the record column does not get to promote.
+
+    An ``ATOM``-record water would otherwise be handed a sequence position
+    inside the polymer entity -- the merge the non-polymer asym split exists to
+    remove -- so ``_is_polymer`` refuses it on the name whatever the record says.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\n"
+        "ATOM      2  O   HOH A   2       4.000   5.000   6.000  1.00  0.00           O\n"
+        "ATOM      3  CA  GLY A   3       7.000   8.000   9.000  1.00  0.00           C\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    with pytest.raises(NumberingError, match="not a polymer residue"):
+        mapping.label_for("A", 2)
+    assert mapping.label_for("A", 3) == ("A", 2)
+
+
+def test_a_record_type_change_at_one_author_key_is_refused():
+    """One author key whose atoms disagree about ATOM vs HETATM must refuse.
+
+    The record column decides whether the residue takes a sequence position, so
+    letting the first atom's record stand for the rest is the same absorbed-field
+    bug as taking the first atom's residue name. The name is the same here, so
+    the resname guard cannot see it.
+    """
+    pdb = (
+        "ATOM      1  N   ALA A   7       1.000   2.000   3.000  1.00  0.00           N\n"
+        "HETATM    2  CA  ALA A   7       4.000   5.000   6.000  1.00  0.00           C\n"
+    )
+    with pytest.raises(NumberingError, match="mixes ATOM and HETATM records"):
+        _convert_text(pdb)

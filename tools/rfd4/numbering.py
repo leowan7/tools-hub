@@ -81,7 +81,33 @@ _MODRES_EQUIV = frozenset({
     "MSE", "CME", "CSO", "SEP", "TPO", "PTR", "KCX", "HYP", "LLP",
     "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
 })
-_POLYMER_RESNAMES = _STANDARD_AA | _MODRES_EQUIV
+
+# Water spellings. `HOH` is the PDB's own; the rest appear in tool output.
+_WATER_RESNAMES = frozenset({"HOH", "DOD", "WAT", "H2O"})
+
+
+def _is_polymer(record: str, resname: str) -> bool:
+    """Whether a residue occupies a position in its chain's sequence.
+
+    The record column decides, not the residue name alone, because
+    ``tools/proteina/run_pipeline.py:775-780`` -- the in-repo statement of what
+    counts as a chain residue -- keys on it: an ``ATOM`` record is a chain
+    residue whatever its name, and a ``HETATM`` record is one only when
+    ``_MODRES_EQUIV`` lists it. Classifying on the name alone makes the two
+    parsers disagree about the same chain: an ``ATOM``-record ``UNK`` in a
+    modelled or cryo-EM target is skipped here and counted there, so every later
+    ``label_seq_id`` in that chain is one too low and a hotspot addresses the
+    wrong residue with nothing failing -- the module docstring's failure mode
+    (``test_an_atom_record_residue_outside_the_name_set_keeps_its_position``,
+    ``test_a_hetatm_record_standard_residue_is_not_a_chain_residue``).
+
+    Water is the one departure from that rule: an ``ATOM``-record water would
+    otherwise be given a sequence position inside the polymer entity, which is
+    the merge the non-polymer asym split exists to remove.
+    """
+    if record == "HETATM":
+        return resname in _MODRES_EQUIV
+    return resname not in _WATER_RESNAMES
 
 
 class NumberingError(ValueError):
@@ -449,21 +475,21 @@ def pdb_to_cif(
 ) -> tuple[str, ResidueMapping]:
     """Convert PDB text to mmCIF text, returning the CIF and its residue mapping.
 
-For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
+    For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
     id and one ``polymer`` entity is emitted per chain. Both are deliberate: it
     means the only numbering that differs between the two systems is the
     sequence id, which is the one this module exists to track, and it keeps the
-    mapping readable to a human debugging a run. It is NOT what the PDB's own
-    deposition pipeline does -- a deposited CIF renames chains and merges
-    identical sequences into one entity -- so a ``label_asym_id`` from this
-    writer must not be compared against one from an RCSB file.
+    mapping readable to a human debugging a run. Whether the PDB's own
+    deposition pipeline assigns ``label_asym_id`` the same way is UNVERIFIED
+    here, so a ``label_asym_id`` from this writer must not be compared against
+    one from an RCSB file.
 
     Non-polymer residues do NOT stay in that asym. In PDB format a water,
-    glycan or metal normally carries the protein's own chain id, so leaving
-    them there would declare one ``polymer`` entity holding both a protein and
-    106 non-polymer residues -- 103 waters and 3 NAG -- which is what
-    ``static/example/1HEW.pdb`` presents (counted by calling this function on it,
-    2026-11-02). Each
+    glycan or metal normally carries a protein chain's own id, so leaving them
+    there would declare a ``polymer`` entity holding both a protein and its
+    non-polymer residues: ``static/example/1HEW.pdb`` carries 106 of them, 103
+    waters on chain A and 3 NAG on chain B, so chain A's own entity would absorb
+    the 103 (counted by calling this function on it, 2026-11-02). Each
     ``(chain, resname)`` group therefore gets its own ``non-polymer`` entity and
     its own asym id, written ``<chain>_<resname>``
     (``test_waters_get_their_own_asym_and_entity``). An author chain id is one
@@ -479,17 +505,18 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
     residues differently. That divergence is why the mapping must travel with
     the CIF this function wrote, and not be re-derived from any other file.
 
-    Non-polymer residues (anything outside the twenty standard amino acids and
-    the modified residues ``_MODRES_EQUIV`` lists) are written with
+    Which residues those are is decided by :func:`_is_polymer`, on the record
+    column and not the residue name alone. Non-polymer residues are written with
     ``label_seq_id`` ``.`` and are not part of any entity sequence, so a hotspot
     on one is refused by :meth:`ResidueMapping.label_for` rather than given a
-    made-up position.
+    made-up position
+    (``test_a_hetatm_record_standard_residue_is_not_a_chain_residue``).
     """
     atoms = _parse_atoms(pdb_text)
     # mmCIF has no empty asym id, and a hotspot built on one renders with the
-    # chain field missing, which addresses nothing. Tool-generated PDBs with
-    # column 22 blank are common, so this is a refusal the caller must handle
-    # rather than an impossible case (`test_a_blank_chain_id_is_refused`).
+    # chain field missing, which addresses nothing. How often tool-generated
+    # PDBs leave column 22 blank is uncited here; the refusal is cheap either
+    # way and the caller must handle it (`test_a_blank_chain_id_is_refused`).
     # Assigning a chain id during staging instead is step 2's option; nothing
     # does that today.
     for atom in atoms:
@@ -504,13 +531,16 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
     # A key that comes back AFTER a different residue intervened is a second
     # residue claiming an identity already taken -- what a concatenated file, a
     # relax output that reuses chain ids, or a multi-model file with a missing
-    # ENDMDL produces. Collapsing the two would give one `label_seq_id` two
-    # sets of coordinates and write a CIF with two rows identical in
-    # label_asym_id + label_seq_id + label_atom_id, which is this module's own
-    # failure mode: a hotspot would name both residues and the run would
-    # complete (`test_a_repeated_author_residue_is_refused_not_merged`).
+    # ENDMDL produces. Collapsing the two would give one author id two sets of
+    # coordinates, so a hotspot naming it would address both residues and the
+    # run would complete -- this module's own failure mode
+    # (`test_a_repeated_author_residue_is_refused_not_merged`). For a polymer
+    # residue that also writes two rows sharing one label_asym_id +
+    # label_seq_id + label_atom_id; for a non-polymer, where label_seq_id is
+    # `.`, such rows are normal and only auth_seq_id tells them apart.
     residue_keys: list[tuple[str, int, str]] = []
     residue_resname: dict[tuple[str, int, str], str] = {}
+    residue_record: dict[tuple[str, int, str], str] = {}
     seen: set[tuple[str, int, str]] = set()
     previous_key: Optional[tuple[str, int, str]] = None
     for atom in atoms:
@@ -525,6 +555,7 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
             seen.add(key)
             residue_keys.append(key)
             residue_resname[key] = atom.resname
+            residue_record[key] = atom.record
             previous_key = key
         elif atom.resname != residue_resname[key]:
             # Same author key, different residue name: two residues, not one.
@@ -533,14 +564,29 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
             # chain's asym and a `label_seq_id`, and deposited
             # microheterogeneity (two residue types at one position) would write
             # two rows identical in label_asym_id + label_seq_id +
-            # label_atom_id. The guard above cannot see either, because the key
-            # never changes
+            # label_atom_id. The repeated-key guard above cannot see either,
+            # because the key never changes
             # (`test_a_resname_change_at_one_author_key_is_refused`,
             # `test_a_nonpolymer_sharing_a_polymer_author_number_is_refused`).
             raise NumberingError(
                 f"author residue {atom.chain}{atom.seq}{atom.icode} carries two "
                 f"residue names ({residue_resname[key]} and {atom.resname}); "
                 "this parser will not guess which one a hotspot means"
+            )
+        elif atom.record != residue_record[key]:
+            # Same author key and the same residue name, but one atom is an
+            # ATOM record and the other a HETATM. The record column is a
+            # classification input (`_is_polymer`), so absorbing the difference
+            # would let the first atom's record decide the whole residue's
+            # entity and `label_seq_id` -- the same shape of bug as the resname
+            # check above, for the other field. Checked after that one, so a
+            # pair differing in BOTH fields reports the resname, which is the
+            # more specific fact
+            # (`test_a_record_type_change_at_one_author_key_is_refused`).
+            raise NumberingError(
+                f"author residue {atom.chain}{atom.seq}{atom.icode} mixes "
+                f"{residue_record[key]} and {atom.record} records; this parser "
+                "will not guess whether it is a chain residue"
             )
 
     # One asym per author chain for the polymer, plus one asym per
@@ -556,7 +602,7 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
     asym_of: dict[tuple[str, int, str], str] = {}
     for key in residue_keys:
         chain, _seq, _icode = key
-        polymer = residue_resname[key] in _POLYMER_RESNAMES
+        polymer = _is_polymer(residue_record[key], residue_resname[key])
         asym = chain if polymer else chain + "_" + residue_resname[key]
         asym_of[key] = asym
         if asym not in asym_type:
@@ -571,7 +617,7 @@ For a POLYMER residue, ``label_asym_id`` is kept equal to the author chain
         chain, seq, icode = key
         resname = residue_resname[key]
         asym = asym_of[key]
-        if resname in _POLYMER_RESNAMES:
+        if _is_polymer(residue_record[key], resname):
             label_seq: Optional[int] = next_label_seq[asym]
             next_label_seq[asym] += 1
         else:
