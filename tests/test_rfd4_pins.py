@@ -92,8 +92,10 @@ def test_the_image_builds_from_a_clone_and_copies_nothing():
 def test_seeder_names_its_files_instead_of_snapshotting_the_repo():
     """`snapshot_download` would pull the licence-excluded oracle runtimes.
 
-    ~71.4 GiB of the pinned 82.57 GiB revision is alphafold2/runtime/** and
-    openfold3/runtime/**; the two checkpoints we seed are ~2.6 GiB of it.
+    ~71.4 GB of the pinned 82.57 GB revision is alphafold2/runtime/** and
+    openfold3/runtime/**; the two checkpoints we seed are 2.59 GiB of it.
+    (GB for the two upstream figures, which the scope doc reports in GB; GiB for
+    ours, which is the two byte counts in ``_FILES`` added up.)
     """
     # Matched as a CALL: the seeder's own docstring names `snapshot_download` to
     # say it is not used, and a bare substring test reads that as the thing it

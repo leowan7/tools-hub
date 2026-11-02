@@ -13,12 +13,13 @@
 #
 # The oracle images (alphafold2/runtime/**, openfold3/runtime/**) are NOT in this
 # image and NOT on the weights Volume — excluded on licence grounds, which is why
-# only ~2.6 GiB of the 82.57 GiB weights revision is seeded
+# only 2.59 GiB of the 82.57 GB weights revision is seeded
 # (tools/rfd4/seed_volumes.py). Step 2's run_pipeline.py will have to pass
 # `'~metrics'` so no oracle metric group is composed; nothing in THIS file
 # enforces that, and nothing here can.
 #
-# PIN: by DIGEST, not by tag — upstream's own pin, carried over verbatim. A bare
+# PIN: by DIGEST, not by tag — read off upstream's own Dockerfile at ${RFD4_SHA},
+# which pins the same digest. A bare
 # tag can be retagged upstream, silently changing this image on the next rebuild
 # with nothing in this repo changing (the deploy workflow rebuilds on any
 # tools/** push). To bump: re-verify with
@@ -129,7 +130,9 @@ RUN python -m pip install --no-cache-dir "certifi==2026.10.23"
 RUN mkdir -p /data /opt/rfd4/cache/huggingface /workspace
 WORKDIR /workspace
 
-# Self-verifying build gate (upstream's smoke test, unchanged), HARD-fail so drift
+# Self-verifying build gate (upstream's smoke test, plus the two assertions that
+# read RFD4_ACCELERATOR: the torch wheel suffix and the tmol-ops-* set), HARD-fail
+# so drift
 # surfaces at build rather than on a paying run. It asserts the things that are
 # actually checkable without a GPU: that torch carries the wheel suffix matching
 # RFD4_ACCELERATOR, that OpenBabel parses, that tmol's compiled LJ/LK operators

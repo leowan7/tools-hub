@@ -12,9 +12,9 @@ set in ``tools/rfd4/Dockerfile.modal``) so that upstream's
   ``autoencoder_ckpt_path: ${oc.env:DATA_PATH}/ae_checkpoints/...ckpt``   (:46)
 
 Source: HuggingFace ``nvidia/RFD4-Proteina`` at the revision upstream itself
-pins (``configs/inference.yaml:30``), listed below. Two files out of a 82.57 GiB
+pins (``configs/inference.yaml:30``), listed below. Two files out of a 82.57 GB
 revision, named one by one — ``snapshot_download`` is NOT used here, and must not
-be: ~71.4 GiB of that revision is the AlphaFold2 and OpenFold3 oracle runtimes,
+be: ~71.4 GB of that revision is the AlphaFold2 and OpenFold3 oracle runtimes,
 excluded on licence grounds. An allow-list that names its files cannot acquire a
 new one when upstream adds one.
 
@@ -132,7 +132,7 @@ def seed() -> dict:
         dest = os.path.join(_DATA_MOUNT, vol_path)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
 
-        # Idempotent on SIZE only. A re-read of 2.6 GiB of sha256 on every run
+        # Idempotent on SIZE only. A re-read of 2.59 GiB of sha256 on every run
         # buys nothing: the digest below is checked on the bytes this run wrote,
         # and a file already at its exact size was written by a run that checked
         # it. A truncated or partial file has the wrong size and is re-fetched.

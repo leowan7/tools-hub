@@ -411,7 +411,7 @@ def test_every_tools_init_py_is_globbed():
 def test_copy_scan_actually_detects_an_adapter_copy():
     """Non-vacuity floor for ``_init_paths_pulled`` itself.
 
-    Four of the eight Dockerfiles carry no COPY at all, so half of
+    Five of the nine Dockerfiles carry no COPY at all, so most of
     ``test_dockerfile_copies_no_adapter_package`` asserts nothing (correctly —
     Modal builds no context mount there), and no app uses
     ``dockerfile_commands`` today. Without this, a change in Modal's parser or
@@ -1149,7 +1149,7 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 
     ``_DOCKERFILES`` is a glob of ``tools/*/Dockerfile.modal``; nothing else
     proves those are the files the apps actually build from. If an app switched
-    to a Dockerfile somewhere else, the glob would still find eight files, still
+    to a Dockerfile somewhere else, the glob would still find nine files, still
     scan them, and still pass — over a Dockerfile no longer in use.
 
     A slug in ``_UNDEPLOYED_DOCKERFILE_SLUGS`` has no modal_app.py to scan, so it
