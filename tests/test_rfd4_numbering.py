@@ -46,6 +46,8 @@ from tools.rfd4.numbering import (
     _CCD_COVERED_RESIDUES,
     _MODRES_EQUIV,
     _WATER_RESNAMES,
+    _cif_value,
+    _is_polymer,
     format_hotspot_selection,
     hotspot_atoms_for_residue,
     label_range_for_chain,
@@ -415,19 +417,83 @@ def test_entity_poly_seq_rows_match_the_polymer_residue_count():
     assert rows == len(mapping.polymer_entries())
 
 
-def test_five_digit_resseq_is_refused_not_misparsed():
-    """A resSeq overflowing into the insertion-code column is a refusal.
+def _pdb_line(
+    serial: int, name: str, resname: str, chain: str, resseq: str, icode: str,
+    z: float = 3.0, element: str = "C", altloc: str = " ",
+    record: str = "ATOM  ",
+) -> str:
+    """One ATOM/HETATM record with every field placed by PDB column.
 
-    ``pdb_ca_residues``'s docstring in `tools/proteina/run_pipeline.py`
-    records that the same input is a silent misparse in that parser. The hazard is a residue addressed under a
-    number four of its five digits long.
+    ``resseq`` and ``icode`` are strings, not an int, because the tests below
+    are about which COLUMNS a number occupies: columns 23-26 are resSeq and
+    column 27 is the insertion code, and these tests need to put a digit in
+    column 27 without the formatting deciding for them.
     """
-    line = (
-        "ATOM      1  CA  ALA A10000       1.000   2.000   3.000  1.00  0.00"
-        "           C"
+    return (
+        f"{record:<6s}{serial:>5d} {name:^4s}{altloc}{resname:>3s} {chain}"
+        f"{resseq:>4s}{icode}   "
+        f"{1.0:8.3f}{2.0:8.3f}{z:8.3f}{1.0:6.2f}{0.0:6.2f}"
+        f"{'':10s}{element:>2s}"
+    )
+
+
+def test_a_four_digit_resseq_with_a_digit_insertion_code_is_accepted():
+    """``1234`` plus insertion code ``5`` is legal PDB, and was refused.
+
+    The previous revision refused any five consecutive digits across columns
+    23-27 as a resSeq overflow. That set contains every legal four-digit
+    residue number carrying a DIGIT insertion code -- column 27 is one
+    character wide and the format does not restrict it to letters -- so a
+    conforming file was rejected outright.
+    """
+    pdb = (
+        _pdb_line(1, "CA", "ALA", "A", "1234", " ") + "\n"
+        + _pdb_line(2, "CA", "GLY", "A", "1234", "5", z=4.0) + "\n"
+        + "END\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    keys = [(e.author.seq, e.author.icode, e.label_seq_id) for e in mapping.entries]
+    assert keys == [(1234, "", 1), (1234, "5", 2)]
+
+
+def test_an_overflowed_resseq_after_9999_is_refused():
+    """Residue 10000 written after 9999 is caught by continuity, not by shape.
+
+    A residue numbered >= 10000 overflows columns 23-26 into column 27, where
+    its first four digits read as the resSeq and its fifth as an insertion
+    code. Nothing in the line says which reading was meant: the coordinates
+    stay aligned at columns 31-54 either way, so the bytes of a legal
+    ``1234`` + ``5`` and of an overflowed ``12345`` are indistinguishable. The
+    one discriminator the FILE carries is that the five-digit reading continues
+    the chain -- 10000 directly after 9999 -- and that is what is refused here.
+    ``pdb_ca_residues`` in `tools/proteina/run_pipeline.py` misparses the same
+    input silently, as its own docstring records.
+    """
+    pdb = (
+        _pdb_line(1, "CA", "ALA", "A", "9999", " ") + "\n"
+        + _pdb_line(2, "CA", "GLY", "A", "1000", "0", z=4.0) + "\n"
+        + "END\n"
     )
     with pytest.raises(NumberingError, match="overflows"):
-        pdb_to_cif(line + "\nEND\n")
+        pdb_to_cif(pdb)
+
+
+def test_an_overflowed_resseq_with_no_predecessor_misparses_silently():
+    """The ceiling of the continuity rule, pinned as it behaves.
+
+    Continuity needs a predecessor. A chain whose FIRST residue is >= 10000,
+    or whose numbering skips the 9999 boundary, offers none, so the same bytes
+    are read literally: resSeq 1000, insertion code ``0``. If the file meant
+    10000 then that is the wrong residue and nothing fails -- the defect class
+    this module exists to prevent, NOT closed here. This test asserts the wrong
+    reading deliberately, so that a later fix fails here and has to say so.
+    Closing it needs information the line does not carry; the route is to
+    require an mmCIF for such a structure, which is a scope decision and not
+    this PR's.
+    """
+    pdb = _pdb_line(1, "CA", "ALA", "A", "1000", "0") + "\nEND\n"
+    _cif, mapping = _convert_text(pdb)
+    assert [(e.author.seq, e.author.icode) for e in mapping.entries] == [(1000, "0")]
 
 
 def test_only_the_first_model_is_converted():
@@ -749,6 +815,17 @@ def _polymer_author_keys(path: Path) -> set[tuple[str, int, str]]:
 # got wrong, plus the GROMACS water spelling that is absent from
 # `_WATER_RESNAMES`. Each is a single chain A of three residues.
 _CONFORMANCE_CRAFTED = {
+    # A calcium ion on an ATOM record. BOTH parsers count it as a chain
+    # residue; `test_an_atom_record_ion_is_a_chain_residue_in_both_parsers`
+    # measures that and says why it is pinned rather than fixed. It is in this
+    # corpus so that excluding the name in `_is_polymer` alone fails
+    # `test_polymer_eligibility_matches_pdb_ca_residues` instead of passing it,
+    # which is the loophole that test's own docstring warns about.
+    "atom_record_ion_with_a_ca_atom": (
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  CA  A   2       1.000   0.000   0.000  1.00  0.00          CA\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
     "atom_record_nonstandard_with_ca": (
         "ATOM      1  CA  UNK A   1       0.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
@@ -1165,3 +1242,120 @@ def test_every_polymer_residue_name_has_a_ccd_element_table():
         "add these to MODRES in scripts/generate_rfd4_atom_elements.py and "
         f"re-run it: {missing}"
     )
+def test_an_atom_record_ion_is_a_chain_residue_in_both_parsers(tmp_path):
+    """A calcium ion named ``CA`` enters the sequence. Both parsers admit it.
+
+    A monatomic calcium is deposited as residue ``CA`` whose single atom is
+    also named ``CA``. On an ``ATOM`` record `_is_polymer` sees an atom named
+    ``CA`` and returns true, so the ion takes a position in
+    ``_entity_poly_seq`` and in the contig. It is not a chain residue, and
+    every residue after it in that chain is shifted by one.
+
+    This is NOT fixed here, because the flaw is SHARED. ``pdb_ca_residues`` in
+    `tools/proteina/run_pipeline.py` applies the same three conditions and
+    admits the same ion -- measured below: both return all three residues of
+    this fixture. Excluding the name in `_is_polymer` alone would make the two
+    parsers disagree, and a disagreement shifts ``label_seq_id`` in exactly the
+    way this module exists to prevent. So both behaviours are pinned here, and
+    the input is in `_CONFORMANCE_CRAFTED`, which means a one-sided change
+    fails this test and `test_polymer_eligibility_matches_pdb_ca_residues`
+    together instead of passing both.
+
+    Fixing it for real means changing both parsers in one commit, which reaches
+    outside this PR's files. It is reported as an open item, not as done.
+    """
+    from tools.proteina.run_pipeline import pdb_ca_residues
+
+    path = tmp_path / "ion.pdb"
+    path.write_text(_CONFORMANCE_CRAFTED["atom_record_ion_with_a_ca_atom"] + "END\n")
+
+    assert _is_polymer("ATOM  ", "CA", True) is True
+
+    reference, n_unparsable = pdb_ca_residues(path)
+    assert n_unparsable == 0
+    assert reference == [("A", 1, ""), ("A", 2, ""), ("A", 3, "")]
+
+    _cif, mapping = _convert(path)
+    assert [
+        (e.resname, e.label_seq_id) for e in mapping.entries
+    ] == [("ALA", 1), ("CA", 2), ("GLY", 3)]
+
+
+def _cif_tokens(line: str) -> list[str]:
+    """Split one CIF data line into values, honouring quoted strings.
+
+    `_atom_site_rows` splits on whitespace, which is enough for the rows every
+    other test here reads. It cannot read a value that CONTAINS whitespace, and
+    the quoting round-trip is what the next test is about. The whole rule: a
+    quoted string ends at its own delimiter followed by whitespace or
+    end-of-line, and CIF has no escape character, so a delimiter anywhere else
+    is ordinary content.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(line):
+        if line[i].isspace():
+            i += 1
+        elif line[i] in "'" + '"':
+            quote = line[i]
+            j = i + 1
+            while j < len(line) and not (
+                line[j] == quote
+                and (j + 1 == len(line) or line[j + 1].isspace())
+            ):
+                j += 1
+            assert j < len(line), "unterminated quote in " + repr(line)
+            out.append(line[i + 1:j])
+            i = j + 1
+        else:
+            j = i
+            while j < len(line) and not line[j].isspace():
+                j += 1
+            out.append(line[i:j])
+            i = j
+    return out
+
+
+def test_an_apostrophe_round_trips_without_a_backslash():
+    """An apostrophe in a value came back with a backslash welded to it.
+
+    `_cif_value` quoted with ``'`` and put a backslash before every inner
+    ``'``. CIF has no escape mechanism, so that backslash is not an escape --
+    it is a character added to the value. An apostrophe in the altLoc column,
+    which is one character wide and accepts any character, therefore read back
+    as two. Nothing failed: the row keeps its column count, so the CIF is well
+    formed and one cell is wrong.
+    """
+    pdb = _pdb_line(1, "CA", "ALA", "A", "1", " ", altloc="'") + "\nEND\n"
+    cif, _mapping = _convert_text(pdb)
+    cols = [
+        ln.strip().split(".", 1)[1]
+        for ln in cif.splitlines() if ln.strip().startswith("_atom_site.")
+    ]
+    row = next(
+        _cif_tokens(ln) for ln in cif.splitlines() if ln.strip().startswith("ATOM")
+    )
+    assert len(row) == len(cols)
+    assert row[cols.index("label_alt_id")] == "'"
+
+
+def test_a_value_that_cannot_be_quoted_is_refused():
+    """Neither delimiter can hold it, so it is refused rather than mangled.
+
+    An apostrophe only ends a single-quoted string when whitespace follows it,
+    so most apostrophes need no escape and no second delimiter: ``O'Brien x``
+    is written between apostrophes unchanged. One followed by whitespace does
+    end the string, and there is the double quote to fall back on. A value
+    carrying BOTH quote characters followed by whitespace closes whichever
+    delimiter is chosen, and the remaining CIF form is a semicolon-delimited
+    text field, which cannot sit inside a loop row. That case is refused. It is
+    reachable only from a value this module does not write -- every cell comes
+    from a fixed PDB column -- and the refusal is the alternative to emitting a
+    cell that reads back as several.
+    """
+    assert _cif_value("plain") == "plain"
+    assert _cif_value("a b") == "'a b'"
+    assert _cif_value("O'Brien x") == "'" + "O'Brien x" + "'"
+    assert _cif_value("a' b") == '"' + "a' b" + '"'
+    with pytest.raises(NumberingError, match="mmCIF string"):
+        _cif_value("a' b" + '" c')
