@@ -41,6 +41,7 @@ from shared.wallet_estimates import (
     estimated_cost_for_tool,
     gpu_class_for_job,
 )
+from tools import base as tool_base
 from tools.esmfold2_design import N_SEEDS_MAX
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,49 @@ def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
     return params
 
 
+def _priced_params(tool_slug: str) -> dict:
+    """The params to price a submit at: the tool's own validated inputs.
+
+    Pricing the raw form let a key the tool never reads set the price: a
+    boltzgen POST with ``num_designs=100`` scaled its cap to $300, while
+    ``tools/boltzgen/__init__.py::validate`` drops that key and
+    ``build_payload`` sends a fixed 200. The validated inputs are what
+    ``tool_submit`` stores on the job and what ``build_payload`` receives, and
+    the settle and the live meter price from them
+    (``shared/jobs.py::_tool_params``), so the gate now prices the same dict,
+    minus the same underscore keys. A key ``validate`` does not emit is
+    dropped from the price and never reaches the run.
+
+    Runs ``blueprints/tools.py::_run_validate``, the call ``tool_submit``
+    makes, then rewinds the uploads so that call can read them again
+    (``tools/af2/__init__.py::validate`` reads ``fasta_file``). A form that
+    fails or raises validation, or a slug with no adapter, falls back to
+    :func:`_wallet_params_from_form`: ``tool_submit`` refuses those before
+    ``create_job``, so the hold priced here is released unused.
+    """
+    from blueprints.tools import _run_validate  # noqa: PLC0415
+
+    adapter = tool_base.get(tool_slug)
+    inputs = None
+    if adapter is not None:
+        try:
+            inputs, _ = _run_validate(adapter)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "requires_wallet: validate raised for tool=%s", tool_slug,
+                exc_info=True,
+            )
+        finally:
+            for _, upload in request.files.items(multi=True):
+                upload.stream.seek(0)
+    if not isinstance(inputs, dict):
+        return _wallet_params_from_form(request.form)
+    return {
+        k: v for k, v in inputs.items()
+        if isinstance(k, str) and not k.startswith("_")
+    }
+
+
 def _render_topup_gate(
     *,
     tool_slug: str,
@@ -381,7 +425,7 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                 g.wallet_tool_slug = resolved_slug
                 return f(*args, **kwargs)
 
-            params = _wallet_params_from_form(request.form)
+            params = _priced_params(resolved_slug)
             try:
                 estimate = estimated_cost_for_tool(
                     user_id, resolved_slug, params
