@@ -123,9 +123,11 @@ a target protomer into the binder, which would contaminate the one question rung
 exists to answer. **Not tested on GPU — this is a documentation read, not a
 measurement.**
 
-**The cost to question 2, stated plainly:** V4 designs against one protomer, while
-the recorded `proteina` comparator designed against the A+B dimer. The head-to-head
-is therefore **not** like-for-like on target composition, and §5.8 must say so.
+**This no longer costs anything, because question 2 is withdrawn** (Leo,
+2026-11-03, see "Question 2 is withdrawn" below). For the record of why it would
+have: V4 designs against one protomer, while the recorded `proteina` comparator
+designed against the A+B dimer, so the head-to-head would not have been
+like-for-like on target composition.
 
 ## Production configuration, already verified on CPU
 
@@ -275,7 +277,9 @@ do not retry.
   and `comparator_seqs.json`, read from the recorded `proteina_direct_out/`
   coordinates (binder is chain C in all eight designs; lengths 113, 98, 74, 107,
   74, 113, 107, 98).
-- §5.8 must carry the comparator's weakness. Pairing each binder length with its
+- **Superseded: question 2 is withdrawn, so §5.8 carries none of this bullet or
+  the next.** Kept as the record of why the comparison would have been weak.
+  §5.8 must carry the comparator's weakness. Pairing each binder length with its
   longest exact shared block against target chain A: 113/51, 98/98, 74/4, 107/54,
   74/74, 113/51, 107/80, 98/98. **Three of the eight comparator binders are
   verbatim substrings of the target.** Of the other five the copied fractions are
@@ -292,9 +296,37 @@ do not retry.
 
 ## Still open for §5.8
 
+## Question 2 is withdrawn (Leo, 2026-11-03)
+
+Leo withdrew question 2 — the `proteina` head-to-head — before the paid run, in
+his own words: *"our users choose the tools, not us, we don't have to tell them
+whats better or not, that will change depending on target."* It is a product
+decision, not a measurement problem, and it stands.
+
+Two consequences:
+
+1. **The Fc target is no longer required, only incidental.** The target was never
+   recorded as a decision anywhere in the scope doc; what forced it was question
+   2's need to match the one recorded `proteina` comparator run. With question 2
+   gone, nothing forces this target. It is kept for the paid run anyway, because
+   switching would throw away the free pre-flight that verified the hotspot
+   readback on these exact inputs and would need a fresh spend approval. §5.8
+   must present the target as incidental, and must not imply it was chosen on
+   its merits.
+2. **The comparator analysis is history, not a deliverable.** The binder-length
+   and shared-block figures below, and the junk AF2 scores, were gathered to let
+   §5.8 qualify a head-to-head. There is no head-to-head now, so §5.8 carries
+   none of it. The bullets stay here as the record of why that comparison would
+   have been weak, and the chain-A-vs-dimer mismatch above stops being a cost at
+   all.
+
+The paid run itself is unchanged: same command, same spec, same four designs. It
+answers questions 1, 3 and 4.
+
 - Questions 1-4 are the four the rung-4 brief set, not a numbering from the scope
   doc: (1) sequence credibility under a production configuration, against rung 3's
-  ~70% glutamate; (2) head-to-head against the recorded `proteina` run; (3)
+  ~70% glutamate; (2) head-to-head against the recorded `proteina` run —
+  **WITHDRAWN by Leo 2026-11-03, not answered and not to be answered**; (3)
   first-design wall-clock where the compile warm-up is actually paid; (4) §10 item
   4, the real `per_example_metrics.csv` header with `metrics_tags` set. All four
   need the paid run; none can be answered from CPU.
