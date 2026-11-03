@@ -68,15 +68,13 @@ __all__ = [
     "pdb_to_cif",
 ]
 
-# The twenty standard amino acids, plus the modified residues biotite/atomworks
-# treat as protein when building a structure. Copied deliberately from
+# The modified residues biotite/atomworks treat as protein when building a
+# structure. Copied deliberately from
 # `tools/proteina/run_pipeline.py:_MODRES_EQUIV` (:722-725) rather than imported:
 # that module is a standalone container file and importing across tools would
-# break the one-file mount this module's docstring cites.
-_STANDARD_AA = frozenset({
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
-    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
-})
+# break the one-file mount this module's docstring cites. Because the copy can
+# drift from its original, `test_polymer_eligibility_matches_pdb_ca_residues`
+# runs both implementations over a corpus and fails if they ever disagree.
 _MODRES_EQUIV = frozenset({
     "MSE", "CME", "CSO", "SEP", "TPO", "PTR", "KCX", "HYP", "LLP",
     "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
@@ -88,28 +86,32 @@ _MODRES_EQUIV = frozenset({
 _WATER_RESNAMES = frozenset({"HOH", "DOD", "WAT", "H2O"})
 
 
-def _is_polymer(record: str, resname: str) -> bool:
+def _is_polymer(record: str, resname: str, has_ca: bool) -> bool:
     """Whether a residue occupies a position in its chain's sequence.
 
-    The record column decides, not the residue name alone, because
-    ``pdb_ca_residues`` in ``tools/proteina/run_pipeline.py`` -- the in-repo
-    statement of what counts as a chain residue -- keys on it: an ``ATOM``
-    record is a chain residue whatever its name, and a ``HETATM`` record is one
-    only when ``_MODRES_EQUIV`` lists it. Classifying on the name alone makes
-    the two parsers disagree about the same chain: an ``ATOM``-record ``UNK``
-    is skipped here and counted there, so every later
-    ``label_seq_id`` in that chain is one too low and a hotspot addresses the
-    wrong residue with nothing failing -- the module docstring's failure mode
-    (``test_an_atom_record_residue_outside_the_name_set_keeps_its_position``,
-    ``test_a_hetatm_record_standard_residue_is_not_a_chain_residue``).
+    The three conditions are copied from ``pdb_ca_residues`` in
+    ``tools/proteina/run_pipeline.py``, the in-repo statement of what counts as
+    a chain residue: the residue must carry an atom named ``CA``, and a
+    ``HETATM`` record counts only when ``_MODRES_EQUIV`` lists it, while an
+    ``ATOM`` record with a ``CA`` counts whatever its residue name is.
 
-    Water is the one departure from that rule: an ``ATOM``-record water would
-    otherwise be given a sequence position inside the polymer entity, which is
-    the merge the non-polymer asym split exists to remove.
+    There is deliberately NO residue-name test for ``ATOM`` records, because
+    ``pdb_ca_residues`` has none; adding one would make the two parsers
+    disagree about an ``ATOM``-record ``UNK``, and any disagreement shifts every
+    later ``label_seq_id`` in that chain so a hotspot addresses the wrong
+    residue with nothing failing -- this module's reason to exist. The agreement
+    is enforced, not asserted: ``test_polymer_eligibility_matches_pdb_ca_residues``
+    runs both implementations over a corpus and fails on any disagreement.
+
+    Water needs no special case here. A water carries no ``CA``, so the ``CA``
+    condition already excludes it
+    (``test_an_atom_record_water_is_not_a_chain_residue``).
     """
+    if not has_ca:
+        return False
     if record == "HETATM":
         return resname in _MODRES_EQUIV
-    return resname not in _WATER_RESNAMES
+    return True
 
 
 class NumberingError(ValueError):
@@ -225,7 +227,13 @@ class ResidueMapping:
         (``tools/proteina/run_pipeline.py:706-715``). Refusing here makes the
         question moot, before the GPU is touched.
         """
-        entry = self._by_author.get((chain, int(seq), icode or ""))
+        # `.strip()`, not `or ""`: a blank PDB insertion code is a SPACE in
+        # column 27, and `" "` is truthy, so `" " or ""` is `" "` and the lookup
+        # missed a residue that is present. `_parse_atoms` strips the column, so
+        # only a caller passing column 27 through raw hit it -- which is what
+        # staging code reading the PDB itself would do
+        # (`test_a_space_insertion_code_is_the_same_residue_as_no_insertion_code`).
+        entry = self._by_author.get((chain, int(seq), (icode or "").strip()))
         if entry is None:
             raise NumberingError(
                 f"residue {chain}{seq}{icode} is not in this structure; "
@@ -308,7 +316,9 @@ class ResidueMapping:
                 author=AuthorResidue(
                     chain=row["auth_asym_id"],
                     seq=int(row["auth_seq_id"]),
-                    icode=row.get("pdbx_PDB_ins_code") or "",
+                    # `.strip()` for the same reason as in `label_for`: a CIF
+                    # written from a PDB can carry a space here.
+                    icode=(row.get("pdbx_PDB_ins_code") or "").strip(),
                 ),
                 resname=row["comp_id"],
                 label_asym_id=row["label_asym_id"],
@@ -507,8 +517,9 @@ def pdb_to_cif(
     residues differently. That divergence is why the mapping must travel with
     the CIF this function wrote, and not be re-derived from any other file.
 
-    Which residues those are is decided by :func:`_is_polymer`, on the record
-    column and not the residue name alone. Non-polymer residues are written with
+    Which residues those are is decided by :func:`_is_polymer`, which copies
+    ``pdb_ca_residues``' three conditions: a ``CA`` atom, the record column, and
+    ``_MODRES_EQUIV`` for ``HETATM`` records. Non-polymer residues are written with
     ``label_seq_id`` ``.`` and are not part of any entity sequence, so a hotspot
     on one is refused by :meth:`ResidueMapping.label_for` rather than given a
     made-up position
@@ -536,13 +547,17 @@ def pdb_to_cif(
     # ENDMDL produces. Collapsing the two would give one author id two sets of
     # coordinates, so a hotspot naming it would address both residues and the
     # run would complete -- this module's own failure mode
-    # (`test_a_repeated_author_residue_is_refused_not_merged`). For a polymer
-    # residue that also writes two rows sharing one label_asym_id +
-    # label_seq_id + label_atom_id; for a non-polymer, where label_seq_id is
-    # `.`, such rows are normal and only auth_seq_id tells them apart.
+    # (`test_a_repeated_author_residue_is_refused_not_merged`). That also writes
+    # two rows sharing one label_asym_id + label_seq_id + label_atom_id. Such
+    # rows are normal for WATER, which RCSB does put in one asym distinguished
+    # only by auth_seq_id, and are NOT normal for any other non-polymer: RCSB
+    # gives each ligand copy its own label_asym_id, which is what the asym
+    # assignment below does
+    # (`test_each_ligand_copy_gets_its_own_asym`).
     residue_keys: list[tuple[str, int, str]] = []
     residue_resname: dict[tuple[str, int, str], str] = {}
     residue_record: dict[tuple[str, int, str], str] = {}
+    residue_has_ca: dict[tuple[str, int, str], bool] = {}
     seen: set[tuple[str, int, str]] = set()
     previous_key: Optional[tuple[str, int, str]] = None
     for atom in atoms:
@@ -558,6 +573,7 @@ def pdb_to_cif(
             residue_keys.append(key)
             residue_resname[key] = atom.resname
             residue_record[key] = atom.record
+            residue_has_ca[key] = False
             previous_key = key
         elif atom.resname != residue_resname[key]:
             # Same author key, different residue name: two residues, not one.
@@ -590,22 +606,53 @@ def pdb_to_cif(
                 f"{residue_record[key]} and {atom.record} records; this parser "
                 "will not guess whether it is a chain residue"
             )
+        # Carrying a `CA` is one of the three polymer conditions, and it is a
+        # property of the RESIDUE rather than of any one atom, so it is
+        # accumulated over every atom of the key -- the `CA` is rarely the
+        # first atom of a residue. `atom.name` is `line[12:16].strip()`, the
+        # same slice `pdb_ca_residues` compares against "CA"
+        # (`numbering.py` `_parse_atoms`).
+        if atom.name == "CA":
+            residue_has_ca[key] = True
 
-    # One asym per author chain for the polymer, plus one asym per
-    # (chain, resname) for everything else. In PDB format waters, glycans and
-    # metals normally carry the protein's own chain id, so leaving them inside
-    # the polymer asym would declare an entity of type `polymer` that holds
-    # water, and a reader re-deriving numbering over that asym would count the
-    # waters (`test_waters_get_their_own_asym_and_entity`). A non-polymer asym
-    # id is written `<chain>_<resname>`; an author chain id is one column wide,
-    # so it can never collide with one.
+    # One asym per author chain for the polymer. In PDB format waters, glycans
+    # and metals normally carry the protein's own chain id, so leaving them
+    # inside the polymer asym would declare an entity of type `polymer` that
+    # holds water, and a reader re-deriving numbering over that asym would count
+    # the waters (`test_waters_get_their_own_asym_and_entity`).
+    #
+    # For everything else, one asym per ligand COPY, as RCSB does. Grouping
+    # non-polymers by `(chain, resname)` instead is the defect this replaces:
+    # non-polymer `label_seq_id` is `.`, so N copies of one ligand in a chain
+    # became N residues identical in label_asym_id + label_seq_id +
+    # label_comp_id + label_atom_id, and a reader grouping by label identity --
+    # which is what upstream RFD4 does, per this module's opening docstring --
+    # saw ONE ligand carrying N copies of each atom. Measured on the shipped
+    # examples before the fix: 14 such duplicate keys in 1HEW and 50 in 3ave,
+    # whose chain C is an N-glycan with four NAGs
+    # (`test_each_ligand_copy_gets_its_own_asym`).
+    #
+    # Water keeps the per-chain grouping, because RCSB genuinely does put a
+    # chain's waters in one asym told apart only by `auth_seq_id`
+    # (`test_waters_get_their_own_asym_and_entity`).
+    #
+    # A non-polymer asym id is written `<chain>_<resname>` for water and
+    # `<chain>_<resname>_<author seq><icode>` for a ligand copy; an author chain
+    # id is one column wide, so neither can collide with one, and the author
+    # suffix is unique because the residue keys it comes from are.
     asym_order: list[str] = []
     asym_type: dict[str, str] = {}
     asym_of: dict[tuple[str, int, str], str] = {}
     for key in residue_keys:
         chain, _seq, _icode = key
-        polymer = _is_polymer(residue_record[key], residue_resname[key])
-        asym = chain if polymer else chain + "_" + residue_resname[key]
+        resname = residue_resname[key]
+        polymer = _is_polymer(residue_record[key], resname, residue_has_ca[key])
+        if polymer:
+            asym = chain
+        elif resname in _WATER_RESNAMES:
+            asym = chain + "_" + resname
+        else:
+            asym = f"{chain}_{resname}_{_seq}{_icode}"
         asym_of[key] = asym
         if asym not in asym_type:
             asym_order.append(asym)
@@ -619,7 +666,7 @@ def pdb_to_cif(
         chain, seq, icode = key
         resname = residue_resname[key]
         asym = asym_of[key]
-        if _is_polymer(residue_record[key], resname):
+        if _is_polymer(residue_record[key], resname, residue_has_ca[key]):
             label_seq: Optional[int] = next_label_seq[asym]
             next_label_seq[asym] += 1
         else:

@@ -41,6 +41,7 @@ from tools.rfd4.numbering import (
     NumberingError,
     ResidueEntry,
     ResidueMapping,
+    _WATER_RESNAMES,
     format_hotspot_selection,
     hotspot_atoms_for_residue,
     label_range_for_chain,
@@ -710,3 +711,171 @@ def test_a_record_type_change_at_one_author_key_is_refused():
     )
     with pytest.raises(NumberingError, match="mixes ATOM and HETATM records"):
         _convert_text(pdb)
+
+
+# ---------------------------------------------------------------------------
+# Label identity, rebuilt (2026-11-03)
+#
+# Rounds 3, 4 and 5 each found a defect in how label identity was decided, and
+# round 4's was inside round 3's repair for round 3's. The cause was that
+# "which residues get a label position" and "which rows share a label identity"
+# were each re-guessed from scratch. The two tests below are the definitions,
+# not illustrations of them: the first makes disagreement with the in-repo rule
+# a test failure, the second makes a duplicate label identity one.
+# ---------------------------------------------------------------------------
+
+def _polymer_author_keys(path: Path) -> set[tuple[str, int, str]]:
+    """The residues this module gives a ``label_seq_id``, as author keys."""
+    _cif, mapping = _convert(path)
+    return {
+        (e.author.chain, e.author.seq, e.author.icode)
+        for e in mapping.entries
+        if e.is_polymer
+    }
+
+
+# Inputs chosen so the corpus witnesses the two directions the earlier rounds
+# got wrong, plus the GROMACS water spelling that is absent from
+# `_WATER_RESNAMES`. Each is a single chain A of three residues.
+_CONFORMANCE_CRAFTED = {
+    "atom_record_nonstandard_with_ca": (
+        "ATOM      1  CA  UNK A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "atom_record_cap_without_ca": (
+        "ATOM      1  CH3 ACE A   0       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   2       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "hetatm_record_standard_resname": (
+        "HETATM    1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "hetatm_record_modres": (
+        "HETATM    1  CA  MSE A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "atom_record_water": (
+        "ATOM      1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "atom_record_gromacs_water": (
+        "ATOM      1  OW  SOL A   1       0.000   0.000   0.000  1.00  0.00           O\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "atom_record_ion_without_ca": (
+        "ATOM      1 ZN    ZN A   1       0.000   0.000   0.000  1.00  0.00          ZN\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+    "side_chain_only_standard_resname": (
+        "ATOM      1  CB  LEU A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  ALA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+    ),
+}
+
+
+def test_polymer_eligibility_matches_pdb_ca_residues(tmp_path):
+    """Both implementations of "is this a chain residue" must agree, always.
+
+    ``numbering.py`` cannot import ``pdb_ca_residues``: the rfd4 container
+    mounts one tools-side file, which is why ``_MODRES_EQUIV`` is copied there
+    rather than imported. A copy drifts, and the drift is silent -- a residue
+    one parser counts and the other skips shifts every later ``label_seq_id`` in
+    that chain, so a hotspot addresses its neighbour and the run completes. This
+    test is therefore the shared definition: it runs both implementations over a
+    corpus and fails on any disagreement, which is the only thing that makes the
+    copy safe.
+    """
+    from tools.proteina.run_pipeline import pdb_ca_residues
+
+    corpus = [LYSOZYME, FC_DIMER, IGG_FV]
+    for name, text in _CONFORMANCE_CRAFTED.items():
+        path = tmp_path / f"{name}.pdb"
+        path.write_text(text + "END\n")
+        corpus.append(path)
+
+    disagreements = {}
+    for path in corpus:
+        reference, n_unparsable = pdb_ca_residues(path)
+        assert n_unparsable == 0, f"{path.name}: corpus must parse cleanly"
+        ours = _polymer_author_keys(path)
+        if ours != set(reference):
+            disagreements[path.name] = {
+                "ours_only": sorted(ours - set(reference)),
+                "reference_only": sorted(set(reference) - ours),
+            }
+    assert not disagreements, f"polymer eligibility diverged: {disagreements}"
+
+
+def _duplicate_non_water_label_keys(path: Path) -> dict:
+    """Label identities that more than one atom row shares, waters excluded.
+
+    Water is excluded because RCSB genuinely does put a chain's waters in one
+    asym told apart only by ``auth_seq_id``
+    (``test_waters_get_their_own_asym_and_entity``). For every other
+    non-polymer it gives each copy its own ``label_asym_id``, so a shared
+    identity there is a defect.
+    """
+    cif, _mapping = _convert(path)
+    cols: list[str] = []
+    rows: list[list[str]] = []
+    for line in cif.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("_atom_site."):
+            cols.append(stripped.split(".", 1)[1])
+        elif cols and stripped.startswith(("ATOM", "HETATM")):
+            rows.append(stripped.split())
+        elif cols and rows and not stripped.startswith(("ATOM", "HETATM")):
+            break
+    ix = {c: i for i, c in enumerate(cols)}
+    counts: dict[tuple[str, str, str, str], int] = {}
+    for row in rows:
+        if row[ix["label_comp_id"]].upper() in _WATER_RESNAMES:
+            continue
+        key = (
+            row[ix["label_asym_id"]], row[ix["label_seq_id"]],
+            row[ix["label_atom_id"]], row[ix["label_alt_id"]],
+        )
+        counts[key] = counts.get(key, 0) + 1
+    return {k: v for k, v in counts.items() if v > 1}
+
+
+@pytest.mark.parametrize("fixture", [LYSOZYME, FC_DIMER, IGG_FV])
+def test_each_ligand_copy_gets_its_own_asym(fixture):
+    """No two atom rows may share a label identity, water aside.
+
+    Non-polymer ``label_seq_id`` is ``.``, so grouping non-polymers by
+    ``(chain, resname)`` made N copies of one ligand indistinguishable in label
+    numbering: same asym, same ``.``, same ``label_comp_id``, same
+    ``label_atom_id``. A reader grouping by label identity -- what upstream RFD4
+    does, per the module docstring -- then sees one ligand carrying N copies of
+    each atom. Measured on the pre-fix code these fixtures produced 14 such keys
+    (1HEW) and 50 (3ave, whose chain C is an N-glycan with four NAGs); 1igt_fv
+    carries no non-polymer records and produced 0, which is why it cannot
+    witness the defect on its own.
+    """
+    assert _duplicate_non_water_label_keys(fixture) == {}
+
+
+def test_a_space_insertion_code_is_the_same_residue_as_no_insertion_code():
+    """``" "`` from PDB column 27 must address the residue with no icode.
+
+    ``" "`` is truthy, so the old ``icode or ""`` left it as ``" "`` and the
+    lookup refused a residue that is present. ``_parse_atoms`` strips the
+    column, so this only bit a caller handing column 27 over raw -- which is
+    what staging code reading the PDB itself does.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   7       1.000   2.000   3.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY A   8       4.000   5.000   6.000  1.00  0.00           C\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    assert mapping.label_for("A", 7, " ") == mapping.label_for("A", 7, "")
+    assert mapping.label_for("A", 7, " ") == ("A", 1)
