@@ -17,7 +17,16 @@ import time
 import modal
 
 _HERE = pathlib.Path(__file__).parent
-_REPO_RFD4 = _HERE.parents[2] / "tools" / "rfd4"
+# This module is re-imported INSIDE the container, where the script is mounted at
+# /root and has no repo above it. So search upward for the real tools/rfd4 and fall
+# back to a path that is never dereferenced there: from_dockerfile reads the file
+# lazily, at local declare time only. Indexing parents[] directly crash-looped
+# every container on 2026-11-03 with IndexError.
+_REPO_RFD4 = next(
+    (p / "tools" / "rfd4" for p in _HERE.parents
+     if (p / "tools" / "rfd4" / "Dockerfile.modal").is_file()),
+    _HERE / "tools" / "rfd4",
+)
 
 weights = modal.Volume.from_name("rfd4-proteina-weights")
 

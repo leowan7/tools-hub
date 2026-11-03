@@ -7,9 +7,30 @@ was only ever *created* by the Modal client, never called; every probe ran throu
 The evidence is that the committed console logs show only `Created function
 gpu_run` with no invocation of it, and that `rung4-probe/` holds no gpu-mode
 result file at all (`ls` of the directory: only `cpu_result.json` and
-`variants_result_v5v7.json`). **No Modal billing report was pulled**, and the CPU
-probe containers are themselves not free — just small, and not against this budget. The $0.00 is specifically the
-approved GPU budget.
+`variants_result_v5v7.json`). The CPU probe containers are themselves not free — just
+small, and not against this budget. The $0.00 is specifically the approved GPU
+budget.
+
+The CPU side is now measured rather than left open. `modal billing report --start
+2026-10-28 --json`, filtered to the four rung-4 probe app ids, totals
+**$0.04012393**, every row dated 2026-11-02 (ap-2uZ3k5ao3MUNNBtbPZ441m
+$0.01981090, ap-bHdGlb3K7IHQjH2QioJedb $0.01108102, ap-ZbtJPgdCrt2GPLeyOz5zhi
+$0.00613846, ap-YNFF2ZVyOBhwGBbG9dWHKY $0.00309355). `modal billing report --for
+today` shows `0E-8` — $0.00000000 — for 2026-11-03. An earlier version of this
+paragraph said no billing report had been pulled; that was true when written and
+is not now.
+
+**A crash-loop on 2026-11-03 cost $0.00 and is fixed.** The review fix that
+replaced the hardcoded `_REPO_RFD4` path with `_HERE.parents[2]` crash-looped
+every container (`IndexError: 2`, quoted in full in
+`rung4-probe/crashloop_20261103.log`), because Modal mounts the script at
+`/root/rung4_app.py` and **re-executes its module-level code inside the
+container**, where `_HERE` is `/root` and has one parent. The hardcoded path had
+never been dereferenced remotely — `Image.from_dockerfile` reads its argument
+lazily, at local declare time. `_REPO_RFD4` now searches upward for a real
+`tools/rfd4/Dockerfile.modal` and falls back, so the import cannot raise in
+either place. The local-side check that passed before the push covered only the
+local side; the container path was never exercised by it.
 Parked on the hub lead's instruction because the laptop is going to sleep and the
 approval was for a run Leo can watch.
 
