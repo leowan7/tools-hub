@@ -89,12 +89,19 @@ def fetch_atoms(comp_id: str) -> list[tuple[str, str]] | None:
     a four-atom component.
 
     ``None`` means the dictionary has no such component, and ONLY that: a 404.
-    Every other failure raises. An earlier revision returned ``None`` for any
-    exception, which made a timeout or a 5xx indistinguishable from absence --
-    and the ion loop skips a ``None``, so one transient fault would have
-    written a smaller ion table and pushed those residues back onto the shape
+    Every other outcome raises, including a 200 whose body parses to no atoms
+    at all.
+
+    Two earlier revisions were looser in the same direction, and the ion loop
+    is why it matters: it SKIPS a ``None``, so anything that reads as absence
+    writes a smaller ion table and pushes those residues back onto the shape
     fallback this script exists to retire, with the run still reporting
-    success.
+    success. The first revision returned ``None`` for every exception, so a
+    timeout or a 5xx read as absence. The second fixed that but kept an
+    ``or None`` tail, so a 200 this parser could not read -- a dictionary
+    format change, a truncated body, an error page served as 200 -- read as
+    absence too, which is the failure the paragraph above claimed was gone
+    (``test_a_200_that_parses_to_no_atoms_raises``).
     """
     try:
         with urllib.request.urlopen(URL.format(comp_id), timeout=60) as fh:
@@ -104,7 +111,13 @@ def fetch_atoms(comp_id: str) -> list[tuple[str, str]] | None:
             raise
         print(f"  {comp_id}: not in the dictionary (404)", file=sys.stderr)
         return None
-    return _parse_loop(text) or _parse_single(text) or None
+    atoms = _parse_loop(text) or _parse_single(text)
+    if not atoms:
+        raise RuntimeError(
+            f"{comp_id}: served {len(text)} bytes that parse to no atoms; "
+            "the CCD format or the response has changed"
+        )
+    return atoms
 
 
 def _split(s: str) -> list[str]:

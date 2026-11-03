@@ -468,8 +468,9 @@ def test_a_low_numbered_resseq_with_a_digit_insertion_code_is_accepted():
     ``52`` with insertion code ``3`` joins to 523, one past 522, and was
     refused outright.
 
-    Two digits and three are both exercised, because the defect was in the
-    arithmetic rather than at a particular width.
+    Both a two-digit and a one-digit resSeq in columns 23-26 are exercised
+    (``52`` after residue 522, and ``1`` after residue 12), because the defect
+    was in the arithmetic rather than at a particular width.
     """
     pdb = (
         _pdb_line(1, "CA", "ALA", "A", "522", " ") + "\n"
@@ -981,6 +982,80 @@ def _duplicate_non_water_label_keys(path: Path) -> dict:
         )
         counts[key] = counts.get(key, 0) + 1
     return {k: v for k, v in counts.items() if v > 1}
+
+
+def _load_generator():
+    """Import `scripts/generate_rfd4_atom_elements.py` by path.
+
+    `scripts/` is not a package, and that script's work sits behind
+    ``if __name__ == "__main__"``, so importing it runs nothing and fetches
+    nothing.
+    """
+    import importlib.util
+
+    path = REPO / "scripts" / "generate_rfd4_atom_elements.py"
+    spec = importlib.util.spec_from_file_location("_gen_rfd4_atoms", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_200_that_parses_to_no_atoms_raises():
+    """``fetch_atoms`` returns None for an absent component and nothing else.
+
+    The ion loop in that script SKIPS a ``None``, so anything that reads as
+    absence quietly writes a smaller ion table and pushes those residues back
+    onto the shape fallback the script exists to retire -- while the run still
+    prints success. A 200 whose body this parser cannot read is not absence, and
+    an ``or None`` tail used to report it as absence anyway.
+
+    No network: ``urlopen`` is replaced with a stub, which is also what makes
+    this a test of the error path rather than of the dictionary. A fresh module
+    object is loaded here, so the replacement cannot leak into another test.
+    """
+    import contextlib
+    import io
+    import urllib.error
+
+    gen = _load_generator()
+
+    @contextlib.contextmanager
+    def _serves(body: str):
+        yield io.BytesIO(body.encode())
+
+    gen.urllib.request.urlopen = lambda *a, **k: _serves("<html>nope</html>")
+    with pytest.raises(RuntimeError, match="parse to no atoms"):
+        gen.fetch_atoms("ZN")
+
+    # An empty body is the same case, not a special one.
+    gen.urllib.request.urlopen = lambda *a, **k: _serves("")
+    with pytest.raises(RuntimeError, match="parse to no atoms"):
+        gen.fetch_atoms("ZN")
+
+    # A real 404 is still the one thing that means absence.
+    def _404(*a, **k):
+        raise urllib.error.HTTPError("u", 404, "Not Found", None, None)
+
+    gen.urllib.request.urlopen = _404
+    assert gen.fetch_atoms("ZZZ") is None
+
+    # Anything else propagates.
+    def _503(*a, **k):
+        raise urllib.error.HTTPError("u", 503, "Unavailable", None, None)
+
+    gen.urllib.request.urlopen = _503
+    with pytest.raises(urllib.error.HTTPError):
+        gen.fetch_atoms("ZN")
+
+    # And a well-formed monatomic body still parses, so the guard above is not
+    # simply refusing everything.
+    gen.urllib.request.urlopen = lambda *a, **k: _serves(
+        "_chem_comp_atom.comp_id ZN\n"
+        "_chem_comp_atom.atom_id ZN\n"
+        "_chem_comp_atom.type_symbol ZN\n"
+    )
+    assert gen.fetch_atoms("ZN") == [("ZN", "Zn")]
 
 
 def test_two_ligand_copies_an_insertion_code_apart_get_distinct_asyms():

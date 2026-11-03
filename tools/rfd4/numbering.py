@@ -760,7 +760,7 @@ def pdb_to_cif(
     the chains is not, and was read off the fixture).
     Non-polymers therefore get their own ``non-polymer`` entity and their own
     asym id: each LIGAND COPY gets its own, written
-    ``<chain>_<resname>_<author seq><icode>``
+    ``<chain>_<resname>_<author seq>_<icode>``
     (``test_each_ligand_copy_gets_its_own_asym``), while a chain's WATERS stay
     grouped in one asym written ``<chain>_<resname>`` and are told apart only by
     ``auth_seq_id`` (``test_waters_get_their_own_asym_and_entity``).
@@ -927,11 +927,14 @@ def pdb_to_cif(
     # `label_seq_id` is `.` and `ResidueMapping.__init__` checks `by_label`
     # only for entries whose `label_seq_id` is not None
     # (`test_two_ligand_copies_an_insertion_code_apart_get_distinct_asyms`,
-    # which failed before the separator was added). With it, the id is
-    # `_`-joined over fields none of which contains `_`: a chain id is one
-    # column, an insertion code is one column, and a resname cannot contain one
-    # in any PDB this module accepts, so the join is injective on the residue
-    # key.
+    # which failed before the separator was added). With it the join is
+    # injective on the residue key, because the insertion code is the LAST
+    # field and at most one column wide (`line[26:27]`): the text after the
+    # final `_` is the whole insertion code, and the integer before it is the
+    # whole author sequence number, so the id splits back to exactly one key.
+    # That holds whatever the residue name contains -- nothing rejects a `_` in
+    # `resname`, which is `line[17:20].strip().upper()` with no filter -- and
+    # it is the field WIDTHS doing the work, not an assumption about the name.
     asym_order: list[str] = []
     asym_type: dict[str, str] = {}
     asym_of: dict[tuple[str, int, str], str] = {}
