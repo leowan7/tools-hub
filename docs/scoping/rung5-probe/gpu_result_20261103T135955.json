@@ -1,0 +1,164 @@
+{
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "timings": [
+    {
+      "seed": 1,
+      "rc": 0,
+      "wall_s": 166.3
+    },
+    {
+      "seed": 2,
+      "rc": 0,
+      "wall_s": 162.0
+    },
+    {
+      "seed": 3,
+      "rc": 0,
+      "wall_s": 161.1
+    }
+  ],
+  "summary": [
+    {
+      "design": "pdl1_binder_0",
+      "binder_len": 108,
+      "iptm": [
+        0.2651,
+        0.2253,
+        0.3228
+      ],
+      "plddt": [
+        0.9152,
+        0.9128,
+        0.8857
+      ],
+      "n_folded": 3,
+      "median": 0.2651,
+      "spread": 0.0975
+    },
+    {
+      "design": "pdl1_binder_1",
+      "binder_len": 101,
+      "iptm": [
+        0.4412,
+        0.359,
+        0.5378
+      ],
+      "plddt": [
+        0.9072,
+        0.9029,
+        0.9131
+      ],
+      "n_folded": 3,
+      "median": 0.4412,
+      "spread": 0.1788
+    },
+    {
+      "design": "pdl1_binder_2",
+      "binder_len": 75,
+      "iptm": [
+        0.9262,
+        0.932,
+        0.9227
+      ],
+      "plddt": [
+        0.9534,
+        0.9533,
+        0.9582
+      ],
+      "n_folded": 3,
+      "median": 0.9262,
+      "spread": 0.0093
+    },
+    {
+      "design": "pdl1_binder_3",
+      "binder_len": 109,
+      "iptm": [
+        0.9226,
+        0.9293,
+        0.9251
+      ],
+      "plddt": [
+        0.9487,
+        0.9482,
+        0.947
+      ],
+      "n_folded": 3,
+      "median": 0.9251,
+      "spread": 0.0067
+    },
+    {
+      "design": "pdl1_binder_4",
+      "binder_len": 116,
+      "iptm": [
+        0.9229,
+        0.9124,
+        0.9195
+      ],
+      "plddt": [
+        0.94,
+        0.9426,
+        0.9427
+      ],
+      "n_folded": 3,
+      "median": 0.9195,
+      "spread": 0.0105
+    },
+    {
+      "design": "pdl1_binder_5",
+      "binder_len": 58,
+      "iptm": [
+        0.8787,
+        0.8628,
+        0.8834
+      ],
+      "plddt": [
+        0.9542,
+        0.955,
+        0.9523
+      ],
+      "n_folded": 3,
+      "median": 0.8787,
+      "spread": 0.0206
+    },
+    {
+      "design": "pdl1_binder_6",
+      "binder_len": 68,
+      "iptm": [
+        0.9233,
+        0.921,
+        0.926
+      ],
+      "plddt": [
+        0.9585,
+        0.957,
+        0.9577
+      ],
+      "n_folded": 3,
+      "median": 0.9233,
+      "spread": 0.005
+    },
+    {
+      "design": "pdl1_binder_7",
+      "binder_len": 99,
+      "iptm": [
+        0.8241,
+        0.7369,
+        0.8873
+      ],
+      "plddt": [
+        0.8937,
+        0.8997,
+        0.9005
+      ],
+      "n_folded": 3,
+      "median": 0.8241,
+      "spread": 0.1504
+    }
+  ],
+  "gpu": "A100-40GB",
+  "timeout_s": 1150
+}

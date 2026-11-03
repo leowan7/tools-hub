@@ -1,0 +1,54 @@
+{
+  "target_seq": "NAFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRARLLKDQLSLGNAALQITDVKLQDAGVYRCMISYGGADYKRITVKVN",
+  "target_len": 115,
+  "designs": [
+    {
+      "name": "pdl1_binder_0",
+      "binder_chain": "B",
+      "binder_seq": "SDIQLTQSPGALSTSVGENVTLSCSASQDISSHTLGWYRQFPGKEREFVISSSSSGSVTNADSISSRFTIDRSKNSLTISSVRPTDTAVYYCTVDDTYWGQGTTLTVL",
+      "binder_len": 108
+    },
+    {
+      "name": "pdl1_binder_1",
+      "binder_chain": "B",
+      "binder_seq": "TQPSSVSVSLGQTATITCKASQDVSTNLAWYQQKPGKAPKLLIYDASTLESGVPSRFFGSGSGTDFTLTILNVQPEDEAVYYCQQYYSLRTFGQGTKLTVL",
+      "binder_len": 101
+    },
+    {
+      "name": "pdl1_binder_2",
+      "binder_chain": "B",
+      "binder_seq": "DSDLTELVSFLEKALQADSLTDCQTFAKRALDIAESLDIPDEVVEFLEKATEADSLEMCQMFAKLALKVLEDYLA",
+      "binder_len": 75
+    },
+    {
+      "name": "pdl1_binder_3",
+      "binder_chain": "B",
+      "binder_seq": "STALAVTNITMPSSVSVTEGKTVTLTCTWSSSSPSQVGYYNVKWKKDGKLLKFKWLSSSQTSDTLVLTNVTLADAGTYRCEVQAVPKEGNTSYVAGSWTSASTTLTVLP",
+      "binder_len": 109
+    },
+    {
+      "name": "pdl1_binder_4",
+      "binder_chain": "B",
+      "binder_seq": "VEDEFDKLLSDFDSAAEEYESTGDPTSLFNVRRKINNSLKHFSFSEQLRFCISLVKMAQKKKYSSFVVMQVAVIVDDTLRHHGLHSEAAEVKTLLREQHFDEALTILKTLLEDAES",
+      "binder_len": 116
+    },
+    {
+      "name": "pdl1_binder_5",
+      "binder_chain": "B",
+      "binder_seq": "LSSTYLTLLRLASSLASQEQYDEAISVLELGIKLATDEENATALDVFTAHLDLLKTKV",
+      "binder_len": 58
+    },
+    {
+      "name": "pdl1_binder_6",
+      "binder_chain": "B",
+      "binder_seq": "SMVDFSSLSDEEQKDYLLNTFFSAYNKGKTFDQALEMVAEETGLSTSAVISKLEKFNLLDFLKMVYES",
+      "binder_len": 68
+    },
+    {
+      "name": "pdl1_binder_7",
+      "binder_chain": "B",
+      "binder_seq": "STVTVPQDSVSVSSGKSVTLTCTLSSSSSITSSDVFVFWEKQVDGTSVKYFSPSSVSISGSSLTSTLTLNSVTSADSATYTCHVIYSGTHTASVTLTVS",
+      "binder_len": 99
+    }
+  ]
+}

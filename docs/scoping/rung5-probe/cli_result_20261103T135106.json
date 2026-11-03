@@ -1,0 +1,7 @@
+{
+  "rc": 0,
+  "boltz_version": "2.2.1",
+  "has_seed_flag": true,
+  "seed_help_line": "--seed INTEGER                  Seed to use for random number generator.",
+  "fold_chunk": 10
+}
