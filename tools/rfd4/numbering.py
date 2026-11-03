@@ -392,10 +392,11 @@ class _Atom:
 # checks it. An element missing from it falls back to its first letter, which
 # is the behaviour this list exists to avoid, so a wrong `type_symbol` on an
 # exotic element is still reachable; columns 77-78 settle it whenever the file
-# supplies them, which all four PDB files in this repository do (measured: 0
-# atom rows with a blank element column in each) -- a property of those files,
-# NOT a cited general rule about deposited PDBs. Needed because a two-letter
-# element
+# supplies them, which all four PDB files in this repository do -- measured by
+# scanning columns 77-78 of every ATOM/HETATM row: 0 blank of 1147
+# (`1HEW`), 3796 (`3ave_igg1_fc_dimer`), 1044 (`3s7g_fc_ab`) and 1836
+# (`1igt_fv_trimmed`). That is a property of those four files, NOT a cited
+# general rule about deposited PDBs. Needed because a two-letter element
 # cannot be recovered from an atom name's first character
 # (`test_a_two_letter_element_survives_a_blank_element_column`).
 _TWO_LETTER_ELEMENTS = frozenset({
