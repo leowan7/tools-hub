@@ -918,9 +918,9 @@ Upstream's protein-binder pass criterion has three terms (§7A.2). Status of eac
 
 - The writer saves a **full token-pair PAE matrix** as `pae_<id>_model_<n>.npz`, and at `v2.2.1` that write is gated on **`"pae" in prediction`** (`src/boltz/data/write/writer.py:231-238`) — *not* on the `--write_full_pae` CLI flag. `write_full_pae` is declared (`src/boltz/main.py:890-894`) and threaded into `predict_args` (`:1305`), but the writer body contains no reference to it.
 - `prediction["pae"]` is populated when the model's **`alpha_pae > 0`** (`src/boltz/model/models/boltz2.py:1100-1101`). `alpha_pae` is a model hyperparameter (`:73`, default `0.0`) read from the checkpoint, **not** a CLI flag — `main.py` never sets it.
-- **So whether the npz exists for *our* run turns on what the released `boltz2_conf.ckpt` sets `alpha_pae` to, which this session did not read. UNVERIFIED.** The honest claim is: at `v2.2.1` nothing in the *CLI* suppresses the PAE write, and our pipeline passes no flag that would.
+- ~~**So whether the npz exists for *our* run turns on what the released `boltz2_conf.ckpt` sets `alpha_pae` to, which this session did not read. UNVERIFIED.**~~ **RESOLVED 2026-11-03 by existence, not by reading the checkpoint - the npz is there. See §7C.9.** At `v2.2.1` nothing in the *CLI* suppresses the PAE write, and our pipeline passes no flag that would.
 - **And if it is written, we already have it.** `archive_raw_outputs` tars the **entire** work tree before teardown (`tools/boltz2/run_pipeline.py:550-575`) onto the raw Volume `ranomics-boltz2-raw` (`tools/boltz2/modal_app.py:97`), precisely because the pipeline keeps only four confidence scalars and the function's own docstring names "the PA(E)/PDE npz" among what it would otherwise lose. **So the $0 check is: pull one parked tar from a past `boltz2` run and look for `pae_*.npz`.** That is a Modal volume read, free, no approval needed, and it answers the question without folding anything. It was not done in this session.
-- **A second free quantity we currently throw away.** The confidence JSON at `v2.2.1` also carries `chains_ptm` and the full **`pair_chains_iptm`** matrix (`writer.py:202-213`). Our pipeline reads four scalars from that file (`run_pipeline.py:862-865`) and discards the rest. Per-chain-pair ipTM is the *binder-to-target* confidence specifically, which is closer to upstream's `_coi` ("chain of interest") framing than the global `iptm` we use. Also $0, also already on disk.
+- **A second free quantity we currently throw away.** The confidence JSON at `v2.2.1` also carries `chains_ptm` and the full **`pair_chains_iptm`** matrix (`writer.py:202-213`). Our pipeline reads four scalars from that file (`run_pipeline.py:862-865`) and discards the rest. ~~Per-chain-pair ipTM is the *binder-to-target* confidence specifically, which is closer to upstream's `_coi` ("chain of interest") framing than the global `iptm` we use.~~ **That was wrong, and §7C.9 corrects it: for a two-chain complex the global `iptm` we already store *is* `pair_chains_iptm['1']['0']`, bit for bit, so there is no extra chain-pair signal to recover here.** It would matter for a multi-chain target. `chains_ptm` is still discarded and is still free.
 
 **The `_num` hazard, restated because it is the one that would ship a wrong number silently.** `_sanitize_candidate` stores `"i_pae": _num(cand.get("i_pae"))` where `_num` is `round(float(value), 4)` with **no range gate and no unit check** (`webhooks/modal.py:437-441, 517`). PAE is an Angstrom-like quantity and ipTM-like scores are 0-1; the hub has already been bitten by a 0-1 vs 0-100 split on pLDDT, and `shared/score_legends.py:1533-1536` records a deliberate decision to leave `pAE` out of the `pxdesign` bar for exactly this reason — "a leg that can silently pass everything is worse than no leg". **If we compute an interface PAE from a Boltz-2 matrix, the unit must be fixed at the point of computation and asserted there**, because nothing downstream will catch it.
 
@@ -1008,6 +1008,28 @@ Raised by Leo 2026-11-03 - "I find it weird that the design scores from 0.26 to 
 **So the honest statement is the opposite of the alarming one.** Boltz-2 is *not* unreliable on things it is confident about - a 0.95 cognate reproduces to 0.3%. It is unreliable on things it is *unsure* about, which is exactly where a weak design sits. §7B.3 says "five byte-identical copies of one input" without naming that input as a decoy, and §7C's first draft repeated the 0.263-0.830 figure as though it applied to any design. **Both readings were too pessimistic.**
 
 **This changes what rung 5 is for, and makes it a better experiment.** The question is no longer "how noisy is Boltz-2" but **"is the per-design spread tight for confident designs and wide only for weak ones?"** If it is, the spread is not noise to be averaged away - it is a *discrimination signal in its own right*, and a design whose three folds disagree is telling us something a single median would hide. If instead a confident-looking RFD4 design also swings 0.5, the column cannot be shipped at n=1 at all. One measurement separates those, which is why n=1 vs n=3 and the sort key were left undecided pending it.
+
+### 7C.9 The $0 archive read: the PAE matrix is there, and it discriminates
+
+Done 2026-11-03, before the paid run and as a condition of it. Free: one `modal volume get` from `ranomics-boltz2-raw` plus local arithmetic. The script and its output are committed beside this doc as `docs/scoping/rung5-probe/pae_from_parked_tar.py` and `pae_check_result.json`; every figure below is read from that JSON.
+
+**The npz exists.** `gate1-standalone-1789842854.tgz` holds 83 members, among them **3 `pae_*.npz`, 3 `pde_*.npz` and 3 `plddt_*.npz`** - one each for the three records of that run. So `alpha_pae > 0` in the released `boltz2_conf.ckpt`, established by the file being written rather than by reading the checkpoint, and §7C.3's UNVERIFIED is closed. Every past `boltz2` run has been parking this.
+
+**It is Angstrom-scale, which makes the `_num` hazard real rather than theoretical.** `pae` is a single `float32` (n, n) matrix - 351x351 here - with values from **0.25 to 29.8**. Nothing in `_num` would reject that if it were ever stored in a field a 0-1 legend reads (§7C.3, `webhooks/modal.py:437-441`).
+
+**Interface PAE separates the cognate from both decoys, more cleanly than ipTM does.** Taking both off-diagonal blocks (PAE is asymmetric) with the split read from the run's own `chains.res_num` rather than guessed from a length:
+
+| record | chains | i_pAE mean | i_pAE min | ipTM |
+|---|---|---|---|---|
+| `cd45_decoy_0p102` | 244 + 107 | **12.62 A** | 4.40 | 0.6187 |
+| `IL4_decoy_0p621` | 242 + 107 | **10.45 A** | 4.12 | 0.7187 |
+| `TIGIT_cognate_0p949` | 246 + 107 | **4.16 A** | 1.26 | 0.9527 |
+
+Cognate to nearest decoy is **2.5x on i_pAE** against **1.33x on ipTM**. **Caveat, and it is exactly what rung 5 exists to answer: one stochastic draw each, so this is a separation, not a stability claim.** Upstream's bound is `min_ipae_coi` max 1.5 and the cognate's block minimum is 1.26, so the sign is right - but a block mean is not upstream's statistic and must not be printed against their 1.5.
+
+**A correction to §7C.3.** The global `iptm` we store is **exactly** `pair_chains_iptm['1']['0']` for all three records (0.6187190413475037, 0.7187153100967407, 0.9527387619018555 - identical values, not rounded matches). The matrix is asymmetric (`['0']['1']` is 0.5330 where `['1']['0']` is 0.6187) and its diagonal holds each chain's own ptm. So for a **two-chain** complex there is nothing extra to recover; §7C.3 claimed otherwise and was wrong.
+
+**One bonus.** Rung A's `tigit_cognate` ipTM reproduced from the parked archive to all sixteen digits (0.9527387619018555), independently corroborating `docs/VALIDATION-LOG.md` on the one number §7C.8 rests on.
 
 ## 8. Work plan, in PR-sized steps
 

@@ -1,0 +1,96 @@
+{
+  "tar": "a.tgz",
+  "n_members": 83,
+  "n_pae_npz": 3,
+  "n_pde_npz": 3,
+  "n_plddt_npz": 3,
+  "designs": [
+    {
+      "record": "cd45_decoy_0p102",
+      "pae_dtype": "float32",
+      "pae_shape": [
+        351,
+        351
+      ],
+      "chain_names": [
+        "A",
+        "B"
+      ],
+      "chain_res_num": [
+        244,
+        107
+      ],
+      "pae_min": 0.25,
+      "pae_max": 29.7914,
+      "i_pae_mean": 12.6187,
+      "i_pae_min": 4.4005,
+      "iptm": 0.6187190413475037,
+      "pair_chains_iptm": {
+        "0->0": 0.944377064704895,
+        "0->1": 0.5330118536949158,
+        "1->0": 0.6187190413475037,
+        "1->1": 0.9653270840644836
+      },
+      "iptm_equals_pair_1_0": true,
+      "pair_matrix_symmetric": false
+    },
+    {
+      "record": "IL4_decoy_0p621",
+      "pae_dtype": "float32",
+      "pae_shape": [
+        349,
+        349
+      ],
+      "chain_names": [
+        "A",
+        "B"
+      ],
+      "chain_res_num": [
+        242,
+        107
+      ],
+      "pae_min": 0.25,
+      "pae_max": 28.5956,
+      "i_pae_mean": 10.4523,
+      "i_pae_min": 3.7742,
+      "iptm": 0.7187153100967407,
+      "pair_chains_iptm": {
+        "0->0": 0.9500256180763245,
+        "0->1": 0.6344636678695679,
+        "1->0": 0.7187153100967407,
+        "1->1": 0.9717867374420166
+      },
+      "iptm_equals_pair_1_0": true,
+      "pair_matrix_symmetric": false
+    },
+    {
+      "record": "TIGIT_cognate_0p949",
+      "pae_dtype": "float32",
+      "pae_shape": [
+        353,
+        353
+      ],
+      "chain_names": [
+        "A",
+        "B"
+      ],
+      "chain_res_num": [
+        246,
+        107
+      ],
+      "pae_min": 0.25,
+      "pae_max": 27.0401,
+      "i_pae_mean": 4.1619,
+      "i_pae_min": 0.599,
+      "iptm": 0.9527387619018555,
+      "pair_chains_iptm": {
+        "0->0": 0.9598758220672607,
+        "0->1": 0.921621561050415,
+        "1->0": 0.9527387619018555,
+        "1->1": 0.9822556972503662
+      },
+      "iptm_equals_pair_1_0": true,
+      "pair_matrix_symmetric": false
+    }
+  ]
+}
