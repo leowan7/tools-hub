@@ -43,6 +43,8 @@ from tools.rfd4.numbering import (
     NumberingError,
     ResidueEntry,
     ResidueMapping,
+    _CCD_COVERED_RESIDUES,
+    _MODRES_EQUIV,
     _WATER_RESNAMES,
     format_hotspot_selection,
     hotspot_atoms_for_residue,
@@ -1046,16 +1048,31 @@ def test_common_side_chain_names_are_not_metals():
 
 
 def test_element_fallback_ceilings():
-    """The two cases the resname rule does NOT settle, pinned as they behave.
+    """The two cases the element LOOKUP does not reach, pinned as they behave.
 
-    Rule 2 -- the resname IS the element -- carries any copy number, so a
-    conforming four-character ``MG10`` resolves. The two ceilings are a
-    four-character name in a residue NOT named after its element (``FE12``
-    inside an Fe-S cluster falls to ``F``, the pre-fix defect class), and a
-    non-standard residue whose atom name happens to begin with an element
-    symbol (a ligand carbon named ``CD1`` is written ``Cd``). Both need a blank
-    element column AND a left-justifying writer; this test asserts the WRONG
-    values deliberately, so that a later fix fails here and has to say so.
+    Neither CCD table closes either ceiling: both residues here are in neither
+    of them -- ``FES`` is a four-atom cluster, not a covered residue and not a
+    monatomic component, and ``LIG`` is not a real component at all -- so both
+    atoms fall through to the shape rule that every earlier version of
+    `_element_of` used. What the lookup did close is every residue the
+    generator covers, which is where the oscillating defects were; the two
+    ceilings were always confined to ligands and to modified residues outside
+    ``_MODRES_EQUIV``, and they still are.
+
+    The monatomic-ion rule carries any copy number, so a conforming
+    four-character ``MG10`` in residue ``MG`` does resolve. The ceilings are a
+    four-character name in a residue that is NOT a monatomic component
+    (``FE12`` inside an Fe-S cluster falls to ``F``, the pre-fix defect class),
+    and a residue whose atom name begins with two letters that spell an element
+    (a ligand carbon named ``CD1`` is written ``Cd``). Lifting the shape rule's
+    one-digit limit would close the first and open the second wider -- a
+    ligand's ``HG12`` would become mercury -- which is the trade that produced
+    two wrong repairs in a row; the route out is to cover the residue in
+    `scripts/generate_rfd4_atom_elements.py`, not to refine the guess.
+
+    Both need a blank element column AND a left-justifying writer. This test
+    asserts the WRONG values deliberately, so that a later fix fails here and
+    has to say so.
     """
     pdb = (
         "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00\n"
@@ -1088,3 +1105,56 @@ def test_other_terminal_oxygen_spellings_are_backbone():
         assert hotspot_atoms_for_residue(
             "GLY", ["N", "CA", "C", *spellings]
         ) == ("CA",), spellings
+def test_selenomethionine_epsilon_carbon_is_not_cerium():
+    """``CE`` in an ``MSE`` was written ``Ce``: cerium, in a polymer residue.
+
+    The previous revision read a column-13 two-letter element prefix for any
+    residue outside the 20 standard amino acids -- which includes every name in
+    ``_MODRES_EQUIV``, the modified residues this module treats AS polymer. So
+    selenomethionine, the commonest modified residue in the PDB, had its
+    epsilon carbon turned into a lanthanide while its ``SE`` was right by
+    accident. The CCD gives both: ``MSE.CE`` is ``C`` and ``MSE.SE`` is ``Se``,
+    and `_CCD_ELEMENT_EXCEPTIONS` carries the second because it is the one that
+    the name's first letter gets wrong.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "HETATM    2  CA  MSE A   2       4.000   5.000   5.000  1.00  0.00\n"
+        "HETATM    3 CE   MSE A   2       4.000   5.000   6.000  1.00  0.00\n"
+        "HETATM    4 SE   MSE A   2       4.000   5.000   7.000  1.00  0.00\n"
+        "HETATM    5 CG   MSE A   2       4.000   5.000   8.000  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    got = {
+        (r[ix["label_comp_id"]], r[ix["label_atom_id"]]): r[ix["type_symbol"]]
+        for r in rows
+    }
+    assert got == {
+        ("ALA", "CA"): "C",
+        ("MSE", "CA"): "C",
+        ("MSE", "CE"): "C",
+        ("MSE", "SE"): "Se",
+        ("MSE", "CG"): "C",
+    }
+
+
+def test_every_polymer_residue_name_has_a_ccd_element_table():
+    """A name added to ``_MODRES_EQUIV`` alone would be guessed, not looked up.
+
+    ``_MODRES_EQUIV`` decides what counts as polymer; ``_CCD_COVERED_RESIDUES``
+    decides whose atoms get their element from the dictionary. A residue in the
+    first but not the second falls through to the shape rule, which is exactly
+    the `MSE` ``CE`` -> cerium defect
+    (`test_selenomethionine_epsilon_carbon_is_not_cerium`). This fails if the
+    two drift, which they do silently: adding a modified residue to
+    ``_MODRES_EQUIV`` without re-running
+    `scripts/generate_rfd4_atom_elements.py` changes no behaviour that any
+    other test here observes.
+    """
+    missing = sorted(set(_MODRES_EQUIV) - _CCD_COVERED_RESIDUES)
+    assert missing == [], (
+        "add these to MODRES in scripts/generate_rfd4_atom_elements.py and "
+        f"re-run it: {missing}"
+    )
