@@ -415,7 +415,7 @@ exited before any container started.
    design we paid for could be deleted before we read it.
 
 **Spend.** The pre-flight is CPU-only — `cpu_probe` declares `cpu=4`,
-`memory=16384`, no `gpu=` and no `volumes=` (`rung4_app.py:71`). `modal billing
+`memory=16384`, no `gpu=` and no `volumes=` (`rung4_app.py:70`, the `@app.function` decorator; `:71` is `def cpu_probe`). `modal billing
 report --for today` does not yet itemise `ap-nBkWyfPz7zJbLE0xAmIUsN`; the
 identical earlier probe `ap-URDXzh8fvVRksAPNWLjbcC` cost **$0.00466825**, so this
 one is expected to be the same order. That figure is **unverified for this app**
