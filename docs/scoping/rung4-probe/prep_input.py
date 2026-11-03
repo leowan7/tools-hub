@@ -28,9 +28,13 @@ for model in st:
         for res in ch:
             res.subchain = ch.name
 # One entity PER chain: the Fc protomers have no covalent path between them in
-# this fragment (it starts past the hinge cysteines), and upstream's
-# index_group_molecule_must_be_connected invariant rejects two unbonded chains
-# that share a molecule id.
+# this fragment, which starts past the hinge cysteines.
+# UNVERIFIED rationale: the intent was to avoid upstream's
+# index_group_molecule_must_be_connected rejection of two unbonded chains sharing
+# a molecule id. It does NOT achieve that -- V1 and V5 still fail with the same
+# error (cpu_result.json, variants_result_v5v7.json), so separate entities are
+# not what the invariant keys on. Kept as an honest description of the structure,
+# not as a fix.
 ents = gemmi.EntityList()
 for idx, ch in enumerate(st[0], start=1):
     e = gemmi.Entity(str(idx))

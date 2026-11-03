@@ -19,8 +19,8 @@ import modal
 _HERE = pathlib.Path(__file__).parent
 # This module is re-imported INSIDE the container, where the script is mounted at
 # /root and has no repo above it. So search upward for the real tools/rfd4 and fall
-# back to a path that is never dereferenced there: from_dockerfile reads the file
-# lazily, at local declare time only. Indexing parents[] directly crash-looped
+# back to a path that is never dereferenced there. The laziness of from_dockerfile
+# is an inference from the crash-loop log, not a measured property of Modal. Indexing parents[] directly crash-looped
 # every container on 2026-11-03 with IndexError.
 _REPO_RFD4 = next(
     (p / "tools" / "rfd4" for p in _HERE.parents
@@ -344,12 +344,16 @@ def main(mode: str = "cpu", num_replicates: int = 4, spec_name: str = _PAID_SPEC
             if ref not in payload:
                 raise SystemExit(f"{s} names {ref}, which is not in {_HERE}")
 
+    # Spell the paid mode out. As a fall-through default, any typo in --mode
+    # ("cpus", "dry", "cpu-probe") allocated an A100 and billed a real run.
     if mode == "cpu":
         out = cpu_probe.remote(payload, specs[0])
     elif mode == "variants":
         out = variant_probe.remote(payload, specs)
-    else:
+    elif mode == "gpu":
         out = gpu_run.remote(payload, num_replicates, specs[0])
+    else:
+        raise SystemExit(f"unknown --mode {mode!r}; expected cpu, variants or gpu")
     # Never overwrite a result: rung 3 lost its metrics CSV once already, and on a
     # paid run this file is the only copy of what the money bought.
     dest = _HERE / f"{mode}_result_{time.strftime('%Y%m%dT%H%M%S')}.json"

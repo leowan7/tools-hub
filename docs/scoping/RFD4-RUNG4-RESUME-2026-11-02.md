@@ -1,19 +1,33 @@
-# RFD4-Proteina rung 4 — PARKED before any GPU spend, 2026-11-02
+# RFD4-Proteina rung 4 — the decision record, 2026-11-02
 
-**GPU spend so far on rung 4: $0.00 of the ~$1.85 Leo approved. No GPU function
-has ever been invoked** — `gpu_run` in `docs/scoping/rung4-probe/rung4_app.py`
+> **SUPERSEDED IN PART, 2026-11-03.** This file was written while rung 4 was
+> parked, and its present tense describes that state. **The paid run has since
+> run**: 217.4 s on one A100-80GB, returncode 0, 8/8 designs, result artefact
+> `rung4-probe/gpu_result_20261103T114437.json`, written up in §5.8 of
+> `RFD4-PROTEINA-SCOPE-2026-10-30.md`, which is the authority for the result.
+> This file is kept for the decision record — why the spec variants were chosen,
+> what the free pre-flight proved, and the two decisions Leo made on 2026-11-03.
+> Read every "has not run", "still needs" and "$0.00 so far" below as true of
+> 2026-11-02, not of now.
+
+**As of 2026-11-02, GPU spend on rung 4 was $0.00 of the ~$1.85 Leo approved,
+and no GPU function had been invoked.** (Superseded: one paid GPU run has since
+executed — see the banner above.) At the time of writing, — `gpu_run` in `docs/scoping/rung4-probe/rung4_app.py`
 was only ever *created* by the Modal client, never called; every probe ran through
 `cpu_probe` or `variant_probe` (`cpu=4`, no `gpu=` and no weights volume mounted).
 The evidence is that the committed console logs show only `Created function
 gpu_run` with no invocation of it, and that `rung4-probe/` holds no gpu-mode
-result file at all (`ls` of the directory: only `cpu_result.json` and
-`variants_result_v5v7.json`). The CPU probe containers are themselves not free — just
+result file at all (`ls` of the directory at that time: only `cpu_result.json`
+and `variants_result_v5v7.json`; it now also holds the paid run's
+`gpu_result_20261103T114437.json` and two timestamped CPU results). The CPU probe containers are themselves not free — just
 small, and not against this budget. The $0.00 is specifically the approved GPU
 budget.
 
 The CPU side is now measured rather than left open. `modal billing report --start
 2026-10-28 --json`, filtered to the four rung-4 probe app ids, totals
-**$0.04012393**, every row dated 2026-11-02 (ap-2uZ3k5ao3MUNNBtbPZ441m
+**$0.04012393** (the four per-app amounts below do sum to it; **the CLI output
+itself is not committed, so these are readings, not artefacts**), every row dated
+2026-11-02 (ap-2uZ3k5ao3MUNNBtbPZ441m
 $0.01981090, ap-bHdGlb3K7IHQjH2QioJedb $0.01108102, ap-ZbtJPgdCrt2GPLeyOz5zhi
 $0.00613846, ap-YNFF2ZVyOBhwGBbG9dWHKY $0.00309355). `modal billing report --for
 today` shows `0E-8` — $0.00000000 — for 2026-11-03. An earlier version of this
@@ -26,8 +40,9 @@ every container (`IndexError: 2`, quoted in full in
 `rung4-probe/crashloop_20261103.log`), because Modal mounts the script at
 `/root/rung4_app.py` and **re-executes its module-level code inside the
 container**, where `_HERE` is `/root` and has one parent. The hardcoded path had
-never been dereferenced remotely — `Image.from_dockerfile` reads its argument
-lazily, at local declare time. `_REPO_RFD4` now searches upward for a real
+never been dereferenced remotely. **The mechanism is an inference, not a
+measurement:** that is consistent with `Image.from_dockerfile` reading its
+argument only at local declare time, but nothing here measures the laziness. `_REPO_RFD4` now searches upward for a real
 `tools/rfd4/Dockerfile.modal` and falls back, so the import cannot raise in
 either place. The local-side check that passed before the push covered only the
 local side; the container path was never exercised by it.
@@ -195,8 +210,10 @@ What it checked, and what each check settles:
    residue (input `label_seq_id` 10-220, so output = input − 9), and after that
    shift the flagged set is identical to the intended set in both number and
    amino acid — input labels 17/19/20/22/36/38/40/77, which are author/EU
-   241/243/244/246/260/262/264/301. Asserted, not eyeballed: the check is the
-   `assert remapped == got` run against the result file and `3ave_fc_A.cif`.
+   241/243/244/246/260/262/264/301. Asserted, not eyeballed, and now reproducible: run
+   `rung4-probe/check_hotspot_readback.py`, which re-derives the remap from the
+   committed `cpu_result_20261103T103209.json` and asserts the flagged set matches
+   by number **and** by residue identity (PHE PHE PRO LYS THR VAL VAL ARG).
    Read naively off the numbers alone this looks like an off-by-9 wrong-epitope
    bug, which is the §10 item-5 failure class; it is not one here.
 3. **`C_CRDGRP` covers the whole target chain.** CoordinateGroup `1` holds 211
@@ -223,7 +240,8 @@ What it checked, and what each check settles:
 **Still UNKNOWN after the pre-flight:** §10 item 4, the real
 `per_example_metrics.csv` header with `metrics_tags` set. The tag gate shows
 which metrics are *selected*; only a run that writes the CSV shows the header.
-Questions 1-4 all still need the paid run.
+Questions 1-4 all still need the paid run. (Superseded: the paid run answered
+1, 3 and 4; question 2 was withdrawn. §5.8 carries the answers.)
 
 Step 1, free CPU pre-flight — **this has not been run for V4 and must be, to
 confirm the hotspot flags land on the eight intended residues** (author/EU
@@ -279,15 +297,15 @@ do not retry.
   74, 113, 107, 98).
 - **Superseded: question 2 is withdrawn, so §5.8 carries none of this bullet or
   the next.** Kept as the record of why the comparison would have been weak.
-  §5.8 must carry the comparator's weakness. Pairing each binder length with its
+  Pairing each binder length with its
   longest exact shared block against target chain A: 113/51, 98/98, 74/4, 107/54,
   74/74, 113/51, 107/80, 98/98. **Three of the eight comparator binders are
   verbatim substrings of the target.** Of the other five the copied fractions are
   45%, 5%, 50%, 45% and 75%, so "largely copied" fits one of the five, not most —
   an earlier draft of this line overstated it. The recorded AF2 scores on that run
   are also junk (af2_iptm 0.087–0.100, binder_scrmsd 34–41 A). A favourable
-  head-to-head against this baseline would mean very little, and the write-up must
-  not let it stand unqualified.
+  head-to-head against this baseline would mean very little — which is part of why
+  dropping it costs us nothing.
 - **Evidence status for the bullet above:** the eight binder lengths are verified
   from `rung4-probe/comparator_seqs.json`. The shared-block lengths and the AF2
   scores were computed in-session from `proteina_direct_out/` and
@@ -397,12 +415,13 @@ exited before any container started.
    design we paid for could be deleted before we read it.
 
 **Spend.** The pre-flight is CPU-only — `cpu_probe` declares `cpu=4`,
-`memory=16384`, no `gpu=` and no `volumes=` (`rung4_app.py:68`). `modal billing
+`memory=16384`, no `gpu=` and no `volumes=` (`rung4_app.py:71`). `modal billing
 report --for today` does not yet itemise `ap-nBkWyfPz7zJbLE0xAmIUsN`; the
 identical earlier probe `ap-URDXzh8fvVRksAPNWLjbcC` cost **$0.00466825**, so this
 one is expected to be the same order. That figure is **unverified for this app**
-until billing catches up. GPU spend to date remains **$0.00** of the approved
-~$1.85.
+until billing catches up. GPU spend as at 2026-11-02 was **$0.00** of the approved ~$1.85. (Superseded by
+the paid run; §5.8's spend table is the authority, and at the time of writing it
+the GPU app was still not itemised by `modal billing report`.)
 
 **The paid command this changes to**, 8 replicates to match §5.7 design-for-design:
 
@@ -411,7 +430,7 @@ python -X utf8 -m modal run docs/scoping/rung4-probe/rung4_app.py --mode gpu   -
 ```
 
 A100-80GB, `timeout=1020` on the Modal function with an inner subprocess
-self-kill at 870 s (`rung4_app.py:249`). Projecting §5.7's measured
+self-kill at 870 s (`rung4_app.py:293`; the `timeout=1020` is at `rung4_app.py:252`). Projecting §5.7's measured
 `65 + 12.3 x N` to N=8 gives 163 s eager; the production preset adds a
 `torch.compile` warm-up upstream describes as costing minutes, which is the thing
 question 3 exists to measure. The 1020 s ceiling bounds raw spend near **$1.05**,

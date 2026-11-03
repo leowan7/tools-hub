@@ -10,9 +10,10 @@
 # auth -> label = auth - 224 (234 - 10 = 237 - 13 = 224).
 #
 # The CIF has ONE ENTITY PER CHAIN, not one shared entity: prep_input.py assigns a
-# separate entity to each protomer, because upstream's
-# index_group_molecule_must_be_connected invariant rejects two unbonded chains that
-# share a molecule id. An earlier version of this comment said "one shared
+# separate entity to each protomer. That was INTENDED to avoid upstream's
+# index_group_molecule_must_be_connected rejection of two unbonded chains sharing a
+# molecule id, but it does not achieve it -- see prep_input.py's note; the variants
+# still fail with that same error. An earlier version of this comment said "one shared
 # entity", contradicting prep_input.py in the same commit.
 fc_binder:
   input: /tmp/rfd4_in/3ave_fc_AB.cif
