@@ -268,10 +268,10 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
     # run_pipeline.py::_run_batch uploads each fold under the key built below,
     # and the upload-URL endpoint (webhooks/uploads.py) mints each key's URL
     # for the storage path shared/storage.py::_output_object_path gives it.
-    # That function normalises the key again, so "binder 1", "_binder_1" and
-    # "binder_1" land on one object as surely as two "VHH-12"s do, and so do
-    # names that differ only after character 60. Pinned by
-    # tests/test_fold_duplicate_record_names.py.
+    # Names share one object when the key merges them ("binder 1"/"binder_1",
+    # or names whose re.sub output agrees in its first 60 characters) or that
+    # function does ("_binder_1"/"binder_1"), as surely as two "VHH-12"s do.
+    # Pinned by tests/test_fold_duplicate_record_names.py.
     saved_as: dict[str, str] = {}
     for r in records:
         name = r["name"]
