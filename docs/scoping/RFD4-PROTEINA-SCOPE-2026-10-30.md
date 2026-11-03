@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
+Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** through rung 3, plus rung 2's uncaptured seeding bounded under $0.62 and rung 4's one GPU run whose billing read has **not yet landed** (estimated ~$0.22 raw, UNVERIFIED) (§§5.4–5.8, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
@@ -510,6 +510,134 @@ Two independent estimates of the marginal cost agree to 4%. A working model for 
 
 ---
 
+### 5.8 Rung 4 RESULT — the production configuration fixes the sequences, 2026-11-03
+
+**Leo approved ~$1.85 for this one run on 2026-11-03. One GPU function ran; the rung PASSED.** App `ap-19HVd6i5HKpXr5tke3hs4E`, `returncode 0`, no timeout, 217.4 s wall, 8/8 designs plus both metrics CSVs. Probe `docs/scoping/rung4-probe/rung4_app.py`, result artefact `docs/scoping/rung4-probe/gpu_result_20261103T114437.json` (committed — the local client is the only thing that writes it). The app is **stopped**, confirmed by `modal app list` after the run.
+
+**The target changed, on Leo's instruction, and that is the single most important thing to know when reading this section.** Rung 4 was scoped against our own Fc target. Leo withdrew question 2 (the `proteina` head-to-head) on 2026-11-03 — *"we dont need the head to head comparison"* — and then redirected the run: *"switch to the same as rung 3, so we see if the settings give us a protein without poly Glu"*. So rung 4 ran **rung 3's exact input**, `/opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml`, with the configuration as the only variable. The full decision record is in `docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md`. **No comparison with our existing `proteina` tool was run and none may be inferred from this section.** The Fc hotspot-numbering readback was banked separately on a free CPU probe (`docs/scoping/rung4-probe/cpu_result_20261103T112936.json`) and cost nothing.
+
+**The invocation that ran:**
+
+```
+rfd4-generate inference_experiment=inference_on_user_inputs hf_ckpt_path=null \
+  ckpt_name=rfd4_proteina_flow-ema.ckpt \
+  inputs=/opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml \
+  num_replicates=8 metrics_tags=[design,interchain_interactions,hotspot_conditioning] \
+  delete_failing_pre_oracle=False out_dir=/tmp/rfd4_run
+```
+
+Four deltas from rung 3: `inference_experiment=quickstart` → `inference_on_user_inputs`, `metrics_tags` set, `delete_failing_pre_oracle=False` made explicit, and nothing else. The §5.3 pins are unchanged and remain the configuration of record; the variant that ran is cu13 on A100-80GB with the renamed `-ema.ckpt` flow checkpoint, as at rung 3.
+
+#### Question 1 — sequence credibility. **The poly-glutamate is gone.**
+
+Composition computed from the CIFs with `gemmi`, selecting the designed chain by **sequence identity** against the revealed 115 aa target (the target chain is byte-identical in all eight files); a length threshold is not safe here, because `pdl1_binder_4`'s designed chain is 116 aa and would be mistaken for the target by any length rule.
+
+| Design | Designed length | Glu | Glu fraction | Most common residue | Distinct residues |
+|---|---|---|---|---|---|
+| `pdl1_binder_0` | 108 | 3 | **2.8%** | S 20% | 19 |
+| `pdl1_binder_1` | 101 | 3 | **3.0%** | T 12% | 18 |
+| `pdl1_binder_2` | 75 | 9 | **12.0%** | L 17% | 16 |
+| `pdl1_binder_3` | 109 | 3 | **2.8%** | T 17% | 19 |
+| `pdl1_binder_4` | 116 | 12 | **10.3%** | L 12% | 19 |
+| `pdl1_binder_5` | 58 | 5 | **8.6%** | L 22% | 16 |
+| `pdl1_binder_6` | 68 | 7 | **10.3%** | S 13% | 15 |
+| `pdl1_binder_7` | 99 | 1 | **1.0%** | S 28% | 18 |
+| | | | **min 1.0%, max 12.0%, mean 6.3%** | | |
+| **Rung 3, same input, `quickstart`** | 67 | 47 | **70.1%** | E 70% | — |
+
+**Answered plainly: yes, this is a credible binder set, and rung 3's was not.** Glutamate sits at or below the ~6–7% background frequency of a natural proteome in seven of eight designs and reaches 12% in the eighth; no design is dominated by any single residue (the highest single-residue fraction anywhere is 28%); every design uses 15–19 of the 20 standard amino acids. The designed lengths spread 58–116 aa across the example's 50–120 contig, so the length draw is working too.
+
+A cross-check from an independent source agrees: `amino_acid_composition.n_standard_residues` in the metrics CSV reads 173, 183, 190, 214, 216, 223, 224, 231, which is exactly each designed length plus the 115 aa target. The structural quality columns are clean across all eight — `clash_metrics.frac_atoms_clashing_1p5A` 0.0, `bond_length_metrics.bond_length.frac_unreasonable` 0.0, `amino_acid_composition.n_generated_unknown_residues` 0.0, `sequence_adherence.sequence_adherence` 1.0 with 0 violations — and `sse_distribution` splits the designs into two families, five with `helix_fraction_coi` 0.72–0.90 and sheet 0.0, three with `sheet_fraction_coi` 0.34–0.52 and helix 0.0.
+
+**This narrows §10 item 11, and it eliminates one of §5.7's three candidate explanations.** `generation.args.inverse_folding` reads `0.0` in this run's manifest — **identical to rung 3** — so that hyperparameter cannot be what caused rung 3's 70% glutamate. What differed was the experiment preset, which is also what changed the `torch.compile` behaviour below. Upstream issue #81 (high alanine fraction on the non-interacting face) is a separate claim and is **not** addressed here: `amino_acid_composition.ala_fraction` averages 0.0692 over the eight designs, which is unremarkable, but that is a whole-chain figure and #81 is about one face, which we did not compute.
+
+**One caveat that must travel with this result.** This is sequence *composition* and upstream's own geometric checks, not a binding result. Nothing here says these eight designs bind PD-L1. §7A.1 and §7B still hold in full: the CSV contains no score, and whether any of these is a binder is a question only our own Boltz-2 chain can begin to answer.
+
+#### Question 3 — first-design wall-clock, and where the warm-up is paid
+
+| | Rung 3 (`quickstart`, eager) | Rung 4 (`inference_on_user_inputs`) |
+|---|---|---|
+| Total wall, 8 designs | 159.2 s | **217.4 s** |
+| First design visible at | 68.1 s | **128.2 s** |
+| Designs after the first | one every ~12.3 s | **4.0–8.0 s, or 17.5–29.1 s — see below** |
+| Tail after last design | 5.1 s | **21.1 s** |
+
+First-sighting times from the probe's 0.5 Hz watcher: 128.2, 128.2, 145.7, 153.7, 182.8, 186.8, 190.8, 196.3 s. The two at 128.2 s are a genuine same-second pair, not a rounding artefact.
+
+**The warm-up is paid per padded-length bucket, not once per run, and it is not cached between runs.** The log records three compile events — `rfproteina.utils.torch_compile` "Compiling model for padded length N tokens (batch size 1)" at log-relative t+18.7 s (N=224), t+57.3 s (N=192) and t+89.5 s (N=256) — and one further line: *"This shape may need recompiling in later runs; set `TORCH_COMPILE_CACHE_BLOB` to a persistent file path to preserve the cache."* That variable was **not** set, so every run pays its compiles again.
+
+The bucket mapping is consistent and explains the whole cadence. Each design's total token count is `n_standard_residues`; the smallest bucket at or above it is the one it needs:
+
+| Bucket | Designs | First needed by |
+|---|---|---|
+| 224 | `_0` (223), `_1` (216), `_3` (224), `_7` (214) | `_0` — compile #1 |
+| 192 | `_2` (190), `_5` (173), `_6` (183) | `_2` — compile #2 |
+| 256 | `_4` (231) | `_4` — compile #3 |
+
+Three distinct buckets, three compile events, in exactly the order the designs first needed them. And the sighting gaps separate cleanly into two populations: a design that reuses an already-compiled bucket lands **0.0, 8.0, 4.0, 4.0 or 5.5 s** after the previous one, while the two designs that forced a new compile — `_2` and `_4` — land **17.5 s** and **29.1 s** after theirs. By subtraction a compile costs roughly **13–25 s** and marginal sampling under a compiled model is roughly **4–8 s/design**, against rung 3's eager **12.29 s/design**.
+
+**So the preset's own promise holds: `torch.compile` pays for itself, and §5.7's warning that 12.3 s/design was an upper bound is confirmed.** A working model, with B = number of distinct padded-length buckets:
+
+> `gpu_seconds ≈ 128 + 4.3 × (N − 1) + 20 × (B − 1) + 21`
+
+At N=8, B=3 that gives **219.1 s against the measured 217.4 s — 0.8% high**, and high is the safe direction on money. **One run, three buckets, no variance estimate**; the 128 s constant itself contains the first compile, so it is not separable from startup on this data.
+
+**Verdict on the $1.00 start minimum: it still covers the pre-first-design stretch, with the headroom roughly halved.** At the $0.0017476/customer-GPU-second rate (§6), 128.2 s to the first design is **$0.2240 of customer money**, so a $1.00 start minimum has **4.46× headroom** — down from rung 3's 68.1 s / $0.1190 / **8.40×**. §7.1 records the $1.00 figure as a Leo decision, and it survives this measurement.
+
+**But the headroom is no longer a fixed quantity, and that is the finding to carry into §7.1.** Because compiles scale with the *spread* of binder lengths rather than with N, a customer run whose length range covers more buckets pays more before its first design. The arithmetic is still comfortable — after the measured $0.2240, a $1.00 minimum leaves $0.7760, which is 444 further GPU-seconds, or room for roughly a dozen more compiles of the size measured here — so **no change to the $1.00 figure is needed**. Two cheap follow-ups are worth noting and neither is a blocker: setting `TORCH_COMPILE_CACHE_BLOB` to a path on the weights volume would remove the compile cost from every run after the first, and clamping the form's binder-length range to fewer buckets would reduce it directly. **Both are unmeasured proposals, not results.**
+
+#### Question 4 — the real header with `metrics_tags` set. **§10 item 4 is now CLOSED.**
+
+**With `metrics_tags=[design,interchain_interactions,hotspot_conditioning]` the file has 89 columns and 8 rows** — against 44 columns for rung 3's no-metrics run. The 45 added columns are:
+
+| Group | Columns | Added |
+|---|---|---|
+| `amino_acid_composition.*` | 5 | `n_generated_unknown_residues`, `n_standard_residues`, `ala_fraction`, `val_fraction`, `gly_fraction` |
+| `bond_length_metrics.*` | 5 | `frac_unreasonable` plus 4 breakdowns |
+| `clash_metrics.*` | 6 | `frac_atoms_clashing_1p5A` plus 5 breakdowns |
+| `hotspot_obedience.*` | 1 | `hotspot_obedience` |
+| `interchain_interactions.*` | 12 | hbond / pistack / pication / saltbridge / hydrophobic / metal_coord, each as a count and a pair-count, all `_coi` |
+| `sequence_adherence.*` | 2 | `sequence_adherence`, `n_violations` |
+| `sequence_probability_adherence.*` | 6 | zero/one adherence, condition and violation counts |
+| `sse_distribution.*` | 8 | helix / sheet / loop fraction and element count, whole-structure and `_coi` |
+| `(flat)` | 1 | `pre_oracle_pass` |
+
+**Still not one refold, confidence or ipTM column, and that is the point.** The tag-gated set contains no `refolding_oracles.*` and no `pass_criteria.*` — the free CPU pre-flight predicted exactly this and the paid run confirms it. **So §7B stands unchanged: every score on our results page must come from our own Boltz-2 chain.** `aggregated_metrics.csv` is a 5-column long-format roll-up (`dataset,metric,reduction,value,n`) of the same metrics with `reduction=mean, n=8`; it adds no new quantity.
+
+Three smaller readings, each narrow:
+
+1. **`hotspot_obedience` is populated and non-trivial**: 1.0 on two designs, 0.8333 on five, 0.6667 on one. The values quantise in sixths against three conditioned hotspot residues, so the denominator is 6 and **I have not identified what the six units are** — do not read these as "5 of 6 hotspots hit" without reading the metric's implementation.
+2. **`pre_oracle_pass` is 1.0 on all eight**, and `sequence_adherence` 1.0 with 0 violations. The pre-flight showed `pre_oracle_filters.sequence_adherence_filter` armed, so `delete_failing_pre_oracle=False` was a live protection — but **no design failed, so the flag was never exercised**. §10 item 9 stays "not applicable to our configuration" on stronger ground than before: the filter now genuinely runs, and still deleted nothing.
+3. **One seed per run, shared by all replicates.** `seed` reads `575229289.0` on all eight rows — same shape as rung 3, and the same float-serialisation caveat applies: read it as an integer, never round-trip it through the CSV.
+
+#### Question 2 — withdrawn
+
+Leo withdrew the `proteina` head-to-head on 2026-11-03, on the grounds that customers choose between tools and we do not need to. **No comparator run was made, no comparator number appears in this section, and §9 q3 should be read as closed by that decision rather than by evidence.**
+
+#### Spend
+
+| | App | Wall | Cost | Source |
+|---|---|---|---|---|
+| Free pre-flight (CPU) | `ap-nBkWyfPz7zJbLE0xAmIUsN` | ~70 s | not yet itemised | `modal billing report --for today` |
+| Local-guard abort, 0 containers | `ap-EsMINGnFqAI1Hx9kqmOonA` | — | $0, nothing started | app list: stopped the same minute it was created |
+| **Paid run (A100-80GB)** | `ap-19HVd6i5HKpXr5tke3hs4E` | **217.4 s** | **not yet itemised** | — |
+| Earlier CPU probe, same app name | `ap-URDXzh8fvVRksAPNWLjbcC` | ~100 s | **$0.00466825** | billing report, read 2026-11-03 |
+| Earlier CPU probe, same app name | `ap-TiIWZoy6v2LJU4r1OXU5dN` | ~52 min | **$0E-8** | billing report, read 2026-11-03 |
+
+**The paid run's exact cost is NOT YET CAPTURED.** `modal billing report --for today` was read three times after the run, the last roughly 20 minutes after the app stopped, and on every read the GPU app and the 11:28 pre-flight were **absent from the table** — Modal's itemisation lags. At the raw A100-80GB rate of $0.001028/GPU-second, 217.4 s of wall implies **about $0.22 raw / $0.38 customer, and that figure is arithmetic, not a billing read — treat it as UNVERIFIED.** Rung 2's uncaptured cost is already a permanent gap in this document and must not be repeated: **this row must be filled from a billing read before §5.8 is treated as complete.** The ~$0.22 estimate is 12% of the $1.85 approved, so there is no prospect of the approval having been exceeded.
+
+Both apps that could have carried GPU time ran under the one approval. **No retry was made and none is requested here.** The pre-flight functions carry no `gpu=` and no `volumes=`, which is what made them free.
+
+#### What rung 4 does not settle
+
+- **VRAM was not captured** — §10 item 8 is untouched, still rung 5.
+- **`batch_size` was left at the preset default**, so the eight designs still ran one at a time. Batching remains unmeasured.
+- **Nothing was run on our own Fc target on a GPU.** The hotspot-numbering readback for it is closed on CPU; its runtime, its sequences and its VRAM are not measured. §4.3's size envelope is still anchored on a 115 aa target.
+- **No binding evidence of any kind.** Eight plausible sequences with clean geometry is not eight binders.
+
+
+---
+
 ## 6. Cost: what a run will bill, and what validating it costs
 
 **Our raw Modal A100-80GB rate is $0.001028/GPU-second** (`shared/wallet_estimates.py:74`). Live charging bills at the marked-up rate: `WALLET_MARKUP = 1.70` (`shared/wallet_estimates.py:54`) → **$0.0017476/customer-GPU-second ≈ $6.29/hour**. Computed this session:
@@ -759,7 +887,7 @@ Each step is one PR with a gate. Sizes are rough.
 1. ~~**Does Modal's A100-80GB present a CUDA-13-capable driver?**~~ **ANSWERED 2026-10-30, yes.** Driver 610.57.04 on an A100-SXM4-80GB, sm_80, a real kernel launch, `rfd4-generate --help` exit 0. Cost ~3¢ (§5.5).
 2. ~~**Real wall-clock and cost of an 8-design run on our hardware.**~~ **ANSWERED 2026-10-30: 159.2 s, ~$0.28 customer, ≈ `65 + 12.3 × N` seconds (§5.7).** Measured eager, with no `torch.compile` warm-up and no batching, so the per-design figure is an upper bound and the startup a floor.
 3. ~~**Do structure files land per design or only at run end?**~~ **ANSWERED 2026-10-30: per design**, one every ~12 s from 68.1 s onward (§5.7). Save-as-you-go is feasible. The watcher must skip the hidden `.generated-cif-*` temp directory each design is written through.
-4. **The real `per_example_metrics.csv` header.** **PARTLY ANSWERED 2026-10-30 (§5.7):** observed for the no-metrics configuration we intend to ship — 44 columns, none of them a score. Still UNKNOWN for a run with `metrics_tags` set, which rung 3 did not exercise.
+4. ~~**The real `per_example_metrics.csv` header.**~~ **ANSWERED 2026-11-03 (§5.8).** 44 columns with no metrics group composed (rung 3), **89 columns with `metrics_tags=[design,interchain_interactions,hotspot_conditioning]`** (rung 4). The 45 added columns are the composition, bond-length, clash, hotspot-obedience, interchain-interaction, sequence-adherence, sequence-probability-adherence and SSE groups plus `pre_oracle_pass` — and **still no refold, confidence or ipTM column**, which is hard confirmation of §7B.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
 6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
 7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure was a single-file number; the volume must hold the matched flow/autoencoder pair.
@@ -777,7 +905,7 @@ Each step is one PR with a gate. Sizes are rough.
 
 ## 11. What this pass did not do
 
-No product code was changed. No Modal app was deployed. No customer-visible string was edited. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured) and rung 3's run (§5.7, a measured **$0.2908**). A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
+No product code was changed. No Modal app was deployed. No customer-visible string was edited. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured), rung 3's run (§5.7, a measured **$0.2908**) and rung 4's single run (§5.8, one A100 container, 217.4 s, **billing read still pending** — estimated ~$0.22 raw, UNVERIFIED). Rung 4 also ran two CPU-only probe functions that carry no `gpu=` and no `volumes=`. A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
 
