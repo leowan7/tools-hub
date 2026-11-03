@@ -972,28 +972,22 @@ def collect_design_cifs(out_dir: Path) -> list[Path]:
 
     HIDDEN TEMP DIRECTORY. Upstream writes each design through a hidden
     ``.generated-cif-*`` directory before its final name (scope §10 item 3), so
-    a plain recursive glob takes a design twice: once under the temp path and
-    once under its real one. Any path component starting with ``.`` is skipped,
-    which covers that directory by name and by family. The probe watcher in
-    ``docs/scoping/rung4-probe/rung4_app.py`` skipped the same thing by
-    substring.
+    a glob that descended into it would take a design twice: once under the
+    temp path and once under its real one. ``glob.glob`` does not descend into
+    a directory whose name starts with ``.`` unless ``include_hidden=True``, so
+    the pattern below excludes that directory on its own -- that default is the
+    only thing enforcing it here, and
+    ``test_the_hidden_temp_directory_is_skipped`` fails if it is turned off
+    (verified by mutation: the test reports 2 == 1). The probe watcher in
+    ``docs/scoping/rung4-probe/rung4_app.py`` excluded the same directory by
+    substring instead.
 
     The ``*_generated.cif`` suffix is the final name measured in scope §5.8's
     output tree, so a file matching here has been renamed into place: that is
     why there is no size-stability gate like iggm's (tools/iggm/run_pipeline.py
     ``_looks_complete``), whose upstream writes straight to the final path.
     """
-    found: list[Path] = []
-    for raw in glob.glob(f"{out_dir}/**/{DESIGN_GLOB}", recursive=True):
-        path = Path(raw)
-        try:
-            parts = path.relative_to(out_dir).parts
-        except ValueError:
-            parts = path.parts
-        if any(part.startswith(".") for part in parts):
-            continue
-        found.append(path)
-    return sorted(found)
+    return sorted(Path(p) for p in glob.glob(f"{out_dir}/**/{DESIGN_GLOB}", recursive=True))
 
 
 def collect_artifacts(out_dir: Path) -> list[Path]:
@@ -1001,7 +995,7 @@ def collect_artifacts(out_dir: Path) -> list[Path]:
     arts: list[Path] = []
     for ext in ("*.csv", "*.png"):
         arts += [Path(p) for p in sorted(glob.glob(f"{out_dir}/**/{ext}", recursive=True))]
-    return [p for p in arts if not any(part.startswith(".") for part in p.parts)]
+    return arts
 
 
 KEEPALIVE_INTERVAL_S = 60
