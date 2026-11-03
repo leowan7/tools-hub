@@ -12,8 +12,9 @@ NOT the same model line as ``tools/proteina/`` (NVIDIA Proteina-Complexa).
 
 Reachability: ``rfd4`` is absent from the deploy matrix in
 ``.github/workflows/deploy-modal.yml`` and from the tool catalog, so nothing in
-this file is reachable by a customer. Scope doc §8 adds the deploy at step 6
-and the feature flag at step 8.
+this file is reachable by a customer. Scope doc §8 adds the adapter with the
+feature flag OFF at step 3 (line 1088), the deploy at step 6, and the flag flip
+at step 8.
 
 NUMBERING. Upstream resolves every residue id in a condition spec against the
 mmCIF ``label_seq_id``, not author numbering (scope §4.1). Customers submit
@@ -89,7 +90,7 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # The invocation of record
 # ---------------------------------------------------------------------------
 #
-# ONE module-level constant for the Hydra override list, per scope §9 line 364,
+# ONE module-level constant for the Hydra override list, per scope §5.3 line 364,
 # so the guard test asserts on the thing the run uses rather than on a
 # reconstruction of it.
 #
@@ -106,7 +107,7 @@ RFD4_OVERRIDES: tuple[str, ...] = (
     "delete_failing_pre_oracle=False",
 )
 
-# The metric groups rung 4 composed. Scope §9 line 346 asks that no oracle
+# The metric groups rung 4 composed. Scope §5.2 line 346 asks that no oracle
 # metric group is ever selected, by ``'~metrics'`` *or an inline-only metrics
 # tag*, and asks for a guard test asserting that our invocation disables the
 # oracle group. This is the second of those two forms: rung 4's own invocation
@@ -128,11 +129,12 @@ RFD4_METRICS_TAGS: tuple[str, ...] = (
 )
 
 # Tag names that would select an oracle metric group. Enumerated from the
-# oracle families scope §9 and tools/rfd4/Dockerfile.modal:14-16 name
+# oracle families scope §5.2 line 345 and tools/rfd4/Dockerfile.modal:14-16 name
 # (alphafold2, openfold3) plus the refold/confidence vocabulary of upstream's
 # own reward columns as they appear in shared/job_recovery.py:59-62
-# (``af2_iptm``, ``af2_plddt``, ``rf3_score``). It is an allow-list guard on
-# RFD4_METRICS_TAGS, enforced by tests/test_rfd4_pipeline.py; it is NOT a claim
+# (``af2_iptm``, ``af2_plddt``, ``rf3_score``). It is a DENY-list over
+# RFD4_METRICS_TAGS: a tag containing one of these substrings fails the test, and
+# a tag containing none of them passes, enforced by tests/test_rfd4_pipeline.py; it is NOT a claim
 # that upstream has no other oracle tag name.
 RFD4_ORACLE_TAG_SUBSTRINGS: tuple[str, ...] = (
     "af2",
@@ -160,7 +162,9 @@ MAX_HOTSPOTS = 64
 # The spec's one example key. Upstream names each generated file after it --
 # rung 4's spec key ``pdl1_binder`` produced
 # ``inference_samples/pdl1_binder_<n>/pdl1_binder_<n>_generated.cif`` (scope
-# §5.8 output tree) -- so this is also the stem the watcher matches.
+# §5.8 output tree). The watcher does not match on this stem: it globs
+# ``DESIGN_GLOB`` under the per-design directories (``collect_design_cifs``,
+# :950-976), so a key change cannot break collection.
 SPEC_KEY = "rfd4_binder"
 DESIGN_GLOB = "*_generated.cif"
 
@@ -255,7 +259,8 @@ def _ship_raw(work_dir: Path, dest: str | None = None) -> None:
 
 
 # ===========================================================================
-# Heartbeat + upload helpers (contract identical to iggm / boltz2)
+# Heartbeat + upload helpers (byte-identical to tools/iggm/run_pipeline.py's;
+# boltz2 sends the same heartbeat body but names its upload helper differently)
 # ===========================================================================
 
 
@@ -463,12 +468,17 @@ def read_atom_site(cif_text: str) -> list[dict[str, str]]:
             dict(zip(fields, tokens[k : k + len(fields)]))
             for k in range(0, len(tokens), len(fields))
         ]
-        # Only the first model. A multi-model NMR ensemble would otherwise make
-        # every residue a duplicate author residue, which ResidueMapping refuses
-        # outright (tools/rfd4/numbering.py:254-266).
+        # A multi-model structure is refused, not reduced to its first model.
+        # Dropping models 2+ here would make OUR mapping, contig and hotspots
+        # describe model 1 while ``load_target`` still hands upstream the file
+        # as uploaded (:595), so the run would be conditioned on one
+        # structure and generated against another.
         if rows and "pdbx_PDB_model_num" in fields:
-            first = rows[0]["pdbx_PDB_model_num"]
-            rows = [r for r in rows if r["pdbx_PDB_model_num"] == first]
+            models = {r["pdbx_PDB_model_num"] for r in rows}
+            if len(models) > 1:
+                raise ValueError(
+                    f"the structure has {len(models)} models; upload a single model"
+                )
         return rows
     raise ValueError("no _atom_site loop found in the structure")
 
@@ -615,7 +625,11 @@ def load_target(
 # Condition spec
 # ===========================================================================
 
-_HOTSPOT_TOKEN = re.compile(r"^([A-Za-z])?[\s_:-]*(-?\d+)$")
+# ``-`` is NOT a separator here: in ``[\s_:-]*`` it swallowed the sign of a
+# negative author residue number, so ``A-5`` read as residue 5. The hub's own
+# parser reads it as -5 (shared/pdb_inspect.py:367, :375) and the two
+# vocabularies have to agree.
+_HOTSPOT_TOKEN = re.compile(r"^([A-Za-z])?[\s_:]*(-?\d+)$")
 
 
 def _polymer_chains(mapping: numbering.ResidueMapping) -> list[str]:
@@ -692,25 +706,52 @@ def validate_sizes(
     against.
     """
     n_res = len(mapping.polymer_entries(chain))
+    # The two maxima are enforced on the chain's LABEL SPAN, not on its observed
+    # residue count, because the span is what the contig hands upstream
+    # (``build_contig``, :898). An uploaded mmCIF with unobserved residues
+    # leaves gaps in ``_atom_site``, so the span can exceed the count without
+    # limit; capping only the count would let a gapped file past the guard that
+    # bounds what the GPU is given.
+    lo, hi = numbering.label_range_for_chain(mapping, chain)
+    span = hi - lo + 1
     if n_res < MIN_TARGET_AA:
         _fail(
             "input", "target_size",
             f"target chain {chain} has {n_res} residues; the minimum is {MIN_TARGET_AA}",
         )
-    if n_res > HARD_CAP_TARGET_AA:
+    if span > HARD_CAP_TARGET_AA:
         _fail(
             "input", "target_size",
-            f"target chain {chain} has {n_res} residues; the maximum is "
+            f"target chain {chain} spans {span} residues; the maximum is "
             f"{HARD_CAP_TARGET_AA}",
         )
-    combined = n_res + binder_length[1]
+    combined = span + binder_length[1]
     if combined > HARD_CAP_COMBINED_AA:
         _fail(
             "input", "target_size",
-            f"target ({n_res} aa) plus the longest binder ({binder_length[1]} aa) "
+            f"target ({span} aa) plus the longest binder ({binder_length[1]} aa) "
             f"is {combined} aa; the maximum is {HARD_CAP_COMBINED_AA}",
         )
     return n_res
+
+
+def parse_num_designs(raw: Any) -> int:
+    """How many designs this run generates.
+
+    ``int(raw or DEFAULT)`` is the house idiom (tools/proteina/run_pipeline.py:2788)
+    and it sends 0 and ``"0"`` to the default, so a request for zero designs
+    would run -- and bill -- the default eight. Only an absent value defaults.
+    """
+    if raw is None or raw == "":
+        raw = DEFAULT_NUM_DESIGNS
+    try:
+        num_designs = int(raw)
+    except (TypeError, ValueError):
+        _fail("input", "nsamples", f"nsamples is not an integer: {raw!r}")
+        raise
+    if num_designs < 1:
+        _fail("input", "nsamples", f"nsamples must be at least 1, got {num_designs}")
+    return num_designs
 
 
 def parse_binder_length(raw: Any) -> tuple[int, int]:
@@ -1020,7 +1061,7 @@ def sweep_designs(
     within one sweep they follow the sorted path. They are not quality ranks.
 
     The final sweep carries the MEASURED total rather than the plan, for the
-    same reason iggm's does (tools/iggm/run_pipeline.py:694-705): a run that
+    same reason iggm's does (tools/iggm/run_pipeline.py:693, comment at :670-678): a run that
     produced fewer designs than planned would otherwise leave the snapshot
     short, and ``shared/job_recovery.py::_completion_signal`` reads that
     snapshot to decide whether a killed container's designs are delivered.
@@ -1086,7 +1127,7 @@ def rfd4_command(spec_path: Path, out_dir: Path, num_designs: int) -> list[str]:
     """The full ``rfd4-generate`` argv for this run.
 
     Built from ``RFD4_OVERRIDES`` and ``RFD4_METRICS_TAGS`` so the guard test
-    can assert on the constants rather than on a reconstruction (scope §9
+    can assert on the constants rather than on a reconstruction (scope §5.3
     line 364).
     """
     return [
@@ -1148,13 +1189,7 @@ def main() -> None:
         _fail("preflight", "env", "upload_urls_endpoint missing from the payload")
 
     binder_length = parse_binder_length(job_spec.get("binder_length"))
-    try:
-        num_designs = int(job_spec.get("nsamples") or DEFAULT_NUM_DESIGNS)
-    except (TypeError, ValueError):
-        _fail("input", "nsamples", f"nsamples is not an integer: {job_spec.get('nsamples')!r}")
-        raise
-    if num_designs < 1:
-        _fail("input", "nsamples", f"nsamples must be at least 1, got {num_designs}")
+    num_designs = parse_num_designs(job_spec.get("nsamples"))
 
     send_heartbeat(webhook_url, job_id, stage="preparing", designs_total=num_designs)
 

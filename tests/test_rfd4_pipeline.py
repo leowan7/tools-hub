@@ -40,6 +40,7 @@ from tools.rfd4.run_pipeline import (
     rfd4_command,
     run_rfd4,
     sweep_designs,
+    parse_num_designs,
     validate_sizes,
     write_condition_spec,
 )
@@ -109,12 +110,13 @@ def test_the_command_is_rung_4s_command():
 
 
 def test_no_oracle_metric_group_is_selected():
-    """Scope §9 line 346's asked-for guard, asserted on the constant (§9 line 364).
+    """Scope §5.2 line 346's asked-for guard, asserted on the constant (§5.3 line 364).
 
     The oracle weights are not in the image
     (tools/rfd4/Dockerfile.modal:14-19), so a tag that composed one would fail
-    the run at weight load. This is the allow-list that keeps a tag from being
-    added without that being noticed.
+    the run at weight load. This is a DENY-list: it catches a tag whose name
+    contains one of the enumerated oracle substrings, and says nothing about a
+    tag that contains none of them.
     """
     for tag in RFD4_METRICS_TAGS:
         for bad in RFD4_ORACLE_TAG_SUBSTRINGS:
@@ -178,6 +180,9 @@ def test_the_start_beat_is_sent_before_any_work():
 # The _atom_site reader
 # ===========================================================================
 
+_EOL = """
+"""
+_MODEL_NUM_FIELD = "_atom_site.pdbx_PDB_model_num" + _EOL
 _MINIMAL_HEAD = """data_X
 loop_
 _atom_site.group_PDB
@@ -228,17 +233,22 @@ def test_a_structure_with_no_atom_site_is_refused():
         read_atom_site("data_X\n_cell.length_a 1.0\n")
 
 
-def test_only_the_first_model_is_read():
-    """A second model would make every residue a duplicate author residue.
+def test_a_multi_model_structure_is_refused():
+    """Taking model 1 silently would condition on a structure we do not send.
 
-    ``ResidueMapping.__init__`` refuses those outright
-    (tools/rfd4/numbering.py:254-266), so dropping models 2+ is what lets an
-    NMR ensemble be used at all.
+    ``load_target`` hands upstream the uploaded CIF unmodified
+    (tools/rfd4/run_pipeline.py:595), so a mapping built from model 1 of a
+    20-model ensemble would describe one structure while ``rfd4-generate``
+    received another.
     """
-    head = _MINIMAL_HEAD + "_atom_site.pdbx_PDB_model_num\n"
-    text = head + "ATOM 1 CA GLY A 1 1 A 1 1\nATOM 2 CA GLY A 1 1 A 1 2\n"
-    rows = read_atom_site(text)
-    assert len(rows) == 1
+    head = _MINIMAL_HEAD + _MODEL_NUM_FIELD
+    text = head + """ATOM 1 CA GLY A 1 1 A 1 1
+ATOM 2 CA GLY A 1 1 A 1 2
+"""
+    with pytest.raises(ValueError, match="2 models"):
+        read_atom_site(text)
+    assert len(read_atom_site(head + """ATOM 1 CA GLY A 1 1 A 1 1
+""")) == 1
 
 
 def test_the_reader_round_trips_the_writers_own_cif():
@@ -310,6 +320,29 @@ def test_an_unknown_chain_is_refused(results):
     assert results()["error"]["check"] == "chain"
 
 
+def test_a_negative_author_residue_keeps_its_sign():
+    """The separator class ate the minus, so ``A-5`` read as residue 5.
+
+    The hub's own parser reads these as negative
+    (shared/pdb_inspect.py:367, :375); a sign dropped here conditions the GPU
+    on a different residue while the run reports success.
+    """
+    assert run_pipeline._HOTSPOT_TOKEN.match("A-5").groups() == ("A", "-5")
+    assert run_pipeline._HOTSPOT_TOKEN.match("-5").groups() == (None, "-5")
+    assert run_pipeline._HOTSPOT_TOKEN.match("A:-12").groups() == ("A", "-12")
+    assert run_pipeline._HOTSPOT_TOKEN.match("A 35").groups() == ("A", "35")
+
+
+def test_zero_designs_is_refused_not_defaulted(results):
+    """``int(raw or DEFAULT)`` would run eight paid designs for a request of 0."""
+    assert parse_num_designs(None) == run_pipeline.DEFAULT_NUM_DESIGNS
+    assert parse_num_designs("3") == 3
+    for zero in (0, "0"):
+        with pytest.raises(SystemExit):
+            parse_num_designs(zero)
+        assert results()["error"]["check"] == "nsamples"
+
+
 def test_the_contig_covers_the_whole_chain_in_label_numbering():
     """Shape from ``docs/scoping/rung4-probe/spec_v4_chainA.yaml``."""
     _, mapping, _ = _mapping(LYSOZYME)
@@ -320,6 +353,27 @@ def test_the_size_guards_refuse_outside_section_4_3(results, monkeypatch):
     _, mapping, _ = _mapping(LYSOZYME)
     assert validate_sizes(mapping, "A", (60, 120)) == 129
     monkeypatch.setattr(run_pipeline, "HARD_CAP_TARGET_AA", 100)
+    with pytest.raises(SystemExit):
+        validate_sizes(mapping, "A", (60, 120))
+    assert results()["error"]["check"] == "target_size"
+
+
+def test_the_caps_bound_the_label_span_a_gapped_cif_hands_upstream(results):
+    """A gapped mmCIF upload defeats a cap counted on observed residues.
+
+    ``build_contig`` spans the chain's whole LABEL range
+    (tools/rfd4/run_pipeline.py:898), so unobserved residues make the segment
+    upstream receives larger than the count -- without limit. 76 observed
+    residues over a 440-residue span is 560 aa combined, over §4.3's 520.
+    """
+    head = _MINIMAL_HEAD + _MODEL_NUM_FIELD
+    rows = [
+        f"ATOM {n} CA GLY A 1 {seq} A {seq} 1"
+        for n, seq in enumerate(list(range(1, 36)) + list(range(400, 441)), 1)
+    ]
+    mapping = mapping_from_atom_site(read_atom_site(head + _EOL.join(rows) + _EOL))
+    assert len(mapping.polymer_entries("A")) == 76
+    assert build_contig(mapping, "A", (60, 120)) == "60-120, /0, A1-440"
     with pytest.raises(SystemExit):
         validate_sizes(mapping, "A", (60, 120))
     assert results()["error"]["check"] == "target_size"

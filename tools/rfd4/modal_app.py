@@ -64,8 +64,8 @@ _RAW_MOUNT = "/raw"
 # Must match RAW_ARCHIVE_PATH in run_pipeline.py — the subprocess cannot mount a
 # Volume, so it tars to this fixed path and the wrapper moves it onto /raw.
 _RAW_ARCHIVE = "/tmp/raw_archive.tgz"
-# 45 min. §5.8's 8-design run took 217.4 s wall end to end on a 211-residue
-# target, so this is ~12x that measured figure; the headroom is for a target at
+# 45 min. §5.8's 8-design run took 217.4 s wall end to end on a 115 aa target
+# (§5.8 line 550), binders 58-116 aa, so this is ~12x that measured figure; the headroom is for a target at
 # §4.3's hard_cap_combined_aa and for a cold container paging 2.59 GiB of
 # checkpoints off the Volume. A ceiling, not a budget: the wallet's own runtime
 # ceiling is step 4's and is not set here.

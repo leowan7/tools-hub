@@ -190,6 +190,7 @@ _EXPECTED_TOOLS = frozenset(
         "mpnn",
         "opendde",
         "proteina",
+        "rfd4",
     }
 )
 
