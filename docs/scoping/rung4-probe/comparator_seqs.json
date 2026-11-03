@@ -1,0 +1,414 @@
+[
+ {
+  "design": "design_000.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 113
+  },
+  "binder_chain": "C",
+  "len": 113,
+  "seq": "REPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKLGVLPGKDDEEETPPVLDSDGSFFLYSKLTVDKSRWQQGNVFSCSVMHEALHNHYTQKSLSLSS",
+  "top3": [
+   [
+    "S",
+    14,
+    12.4
+   ],
+   [
+    "L",
+    12,
+    10.6
+   ],
+   [
+    "E",
+    9,
+    8.0
+   ]
+  ],
+  "E_pct": 8.0,
+  "A_pct": 1.8,
+  "counts": {
+   "A": 2,
+   "C": 2,
+   "D": 7,
+   "E": 9,
+   "F": 4,
+   "G": 6,
+   "H": 3,
+   "I": 1,
+   "K": 7,
+   "L": 12,
+   "M": 1,
+   "N": 6,
+   "P": 8,
+   "Q": 6,
+   "R": 3,
+   "S": 14,
+   "T": 6,
+   "V": 9,
+   "W": 2,
+   "Y": 5
+  }
+ },
+ {
+  "design": "design_001.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 98
+  },
+  "binder_chain": "C",
+  "len": 98,
+  "seq": "REPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKTTPPVLDSDGSFFLYSKLTVDKSRWQQGNVFSCSVMHEALHNHYTQKSL",
+  "top3": [
+   [
+    "S",
+    11,
+    11.2
+   ],
+   [
+    "L",
+    9,
+    9.2
+   ],
+   [
+    "V",
+    8,
+    8.2
+   ]
+  ],
+  "E_pct": 6.1,
+  "A_pct": 2.0,
+  "counts": {
+   "A": 2,
+   "C": 2,
+   "D": 5,
+   "E": 6,
+   "F": 4,
+   "G": 4,
+   "H": 3,
+   "I": 1,
+   "K": 6,
+   "L": 9,
+   "M": 1,
+   "N": 6,
+   "P": 7,
+   "Q": 6,
+   "R": 3,
+   "S": 11,
+   "T": 7,
+   "V": 8,
+   "W": 2,
+   "Y": 5
+  }
+ },
+ {
+  "design": "design_002.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 74
+  },
+  "binder_chain": "C",
+  "len": 74,
+  "seq": "KQTVAVCEVRGFYPADIDVTLSVNGVSTQTTPVENLGKNDYRVRSYALVTPEDTVTCSVNHETLDETQTKTLKF",
+  "top3": [
+   [
+    "T",
+    12,
+    16.2
+   ],
+   [
+    "V",
+    11,
+    14.9
+   ],
+   [
+    "E",
+    5,
+    6.8
+   ]
+  ],
+  "E_pct": 6.8,
+  "A_pct": 4.1,
+  "counts": {
+   "A": 3,
+   "C": 2,
+   "D": 5,
+   "E": 5,
+   "F": 2,
+   "G": 3,
+   "H": 1,
+   "I": 1,
+   "K": 4,
+   "L": 5,
+   "N": 4,
+   "P": 3,
+   "Q": 3,
+   "R": 3,
+   "S": 4,
+   "T": 12,
+   "V": 11,
+   "Y": 3
+  }
+ },
+ {
+  "design": "design_003.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 107
+  },
+  "binder_chain": "C",
+  "len": 107,
+  "seq": "GQPREPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKTTSPVLDSDGSFFLYSKLTVDKSHWQQGNVFSCSVMHEALHNHYTQKSLSLSLST",
+  "top3": [
+   [
+    "S",
+    15,
+    14.0
+   ],
+   [
+    "L",
+    11,
+    10.3
+   ],
+   [
+    "V",
+    8,
+    7.5
+   ]
+  ],
+  "E_pct": 5.6,
+  "A_pct": 1.9,
+  "counts": {
+   "A": 2,
+   "C": 2,
+   "D": 5,
+   "E": 6,
+   "F": 4,
+   "G": 5,
+   "H": 4,
+   "I": 1,
+   "K": 6,
+   "L": 11,
+   "M": 1,
+   "N": 6,
+   "P": 7,
+   "Q": 7,
+   "R": 2,
+   "S": 15,
+   "T": 8,
+   "V": 8,
+   "W": 2,
+   "Y": 5
+  }
+ },
+ {
+  "design": "design_004.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 74
+  },
+  "binder_chain": "C",
+  "len": 74,
+  "seq": "KGQPREPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKTTPPVLDSDGSFFLYSKLTVD",
+  "top3": [
+   [
+    "P",
+    8,
+    10.8
+   ],
+   [
+    "L",
+    7,
+    9.5
+   ],
+   [
+    "S",
+    7,
+    9.5
+   ]
+  ],
+  "E_pct": 6.8,
+  "A_pct": 1.4,
+  "counts": {
+   "A": 1,
+   "C": 1,
+   "D": 5,
+   "E": 5,
+   "F": 3,
+   "G": 4,
+   "I": 1,
+   "K": 5,
+   "L": 7,
+   "N": 4,
+   "P": 8,
+   "Q": 4,
+   "R": 2,
+   "S": 7,
+   "T": 6,
+   "V": 6,
+   "W": 1,
+   "Y": 4
+  }
+ },
+ {
+  "design": "design_005.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 113
+  },
+  "binder_chain": "C",
+  "len": 113,
+  "seq": "SKKLKSCLVKGFYPSDIAVEWESNGQPVKTGIVTGALGKGGKPSTIAVEINQNGQPENNYKTTPPVLDSDGSFFLYSKLTVDKSRWQQGNVFSCSVMHEALHNLYTQKSLSLS",
+  "top3": [
+   [
+    "S",
+    14,
+    12.4
+   ],
+   [
+    "K",
+    11,
+    9.7
+   ],
+   [
+    "L",
+    10,
+    8.8
+   ]
+  ],
+  "E_pct": 4.4,
+  "A_pct": 3.5,
+  "counts": {
+   "A": 4,
+   "C": 2,
+   "D": 4,
+   "E": 5,
+   "F": 4,
+   "G": 10,
+   "H": 2,
+   "I": 4,
+   "K": 11,
+   "L": 10,
+   "M": 1,
+   "N": 7,
+   "P": 6,
+   "Q": 6,
+   "R": 1,
+   "S": 14,
+   "T": 7,
+   "V": 9,
+   "W": 2,
+   "Y": 4
+  }
+ },
+ {
+  "design": "design_006.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 107
+  },
+  "binder_chain": "C",
+  "len": 107,
+  "seq": "GQPREPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKTTPPVLDSDGSFFLYSKLTVDKSRWQQGMSLSCSVMHEALHNHYTQKSLSLNSDG",
+  "top3": [
+   [
+    "S",
+    14,
+    13.1
+   ],
+   [
+    "L",
+    11,
+    10.3
+   ],
+   [
+    "P",
+    8,
+    7.5
+   ]
+  ],
+  "E_pct": 5.6,
+  "A_pct": 1.9,
+  "counts": {
+   "A": 2,
+   "C": 2,
+   "D": 6,
+   "E": 6,
+   "F": 3,
+   "G": 6,
+   "H": 3,
+   "I": 1,
+   "K": 6,
+   "L": 11,
+   "M": 2,
+   "N": 6,
+   "P": 8,
+   "Q": 7,
+   "R": 3,
+   "S": 14,
+   "T": 7,
+   "V": 7,
+   "W": 2,
+   "Y": 5
+  }
+ },
+ {
+  "design": "design_007.pdb",
+  "chains": {
+   "A": 211,
+   "B": 208,
+   "C": 98
+  },
+  "binder_chain": "C",
+  "len": 98,
+  "seq": "EPQVYTLPPSRDELTKNQVSLTCLVKGFYPSDIAVEWESNGQPENNYKTTPPVLDSDGSFFLYSKLTVDKSRWQQGNVFSCSVMHEALHNHYTQKSLS",
+  "top3": [
+   [
+    "S",
+    12,
+    12.2
+   ],
+   [
+    "L",
+    9,
+    9.2
+   ],
+   [
+    "V",
+    8,
+    8.2
+   ]
+  ],
+  "E_pct": 6.1,
+  "A_pct": 2.0,
+  "counts": {
+   "A": 2,
+   "C": 2,
+   "D": 5,
+   "E": 6,
+   "F": 4,
+   "G": 4,
+   "H": 3,
+   "I": 1,
+   "K": 6,
+   "L": 9,
+   "M": 1,
+   "N": 6,
+   "P": 7,
+   "Q": 6,
+   "R": 2,
+   "S": 12,
+   "T": 7,
+   "V": 8,
+   "W": 2,
+   "Y": 5
+  }
+ }
+]

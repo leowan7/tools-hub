@@ -1,0 +1,37 @@
+# Rung 4: de-novo binder against our own target -- 3AVE fucosylated IgG1 Fc dimer,
+# chains A and B, the same target and hotspots as the recorded `proteina` run
+# (.proteina_direct_call_state.json: target_chain "A,B", 16 EU-numbered hotspots,
+# binder_length [60, 120]).
+#
+# res_id below is mmCIF label_seq_id, NOT the author/EU numbering, per
+# docs/reference/yaml-json.md "contig tokens". The mapping was computed from the
+# written CIF by prep_input.py: chain A label_seq 10..220 == auth 234..444,
+# chain B label_seq 13..220 == auth 237..444, and both chains share the mapping
+# auth -> label = auth - 224 (234 - 10 = 237 - 13 = 224).
+#
+# The CIF has ONE ENTITY PER CHAIN, not one shared entity: prep_input.py assigns a
+# separate entity to each protomer. That was INTENDED to avoid upstream's
+# index_group_molecule_must_be_connected rejection of two unbonded chains sharing a
+# molecule id, but it does not achieve it -- see prep_input.py's note. V1 and V5 still
+# fail with that same error, and those two are the ones backed by committed artefacts
+# (cpu_result.json, variants_result_v5v7.json). The variant table at
+# RFD4-RUNG4-RESUME-2026-11-02.md:82-87 also gives V2 rc 1 and V3/V4 rc 0, but that
+# doc marks the V2/V3/V4 results UNVERIFIED from committed evidence, so they are not
+# cited here as evidence. Separate entities are not what the invariant keys on. An earlier version of this comment said "one shared
+# entity", contradicting prep_input.py in the same commit.
+fc_binder:
+  input: /tmp/rfd4_in/3ave_fc_AB.cif
+  contig: "60-120, /0, A10-220, /0, B13-220"
+  conditions:
+    C_CRDGRP:              # one rigid group over both protomers: the dimer geometry is the target
+      1:
+        - select: "sel('A/*/*/[N,CA,C,O]') and not has_nan_coord()"
+        - select: "sel('B/*/*/[N,CA,C,O]') and not has_nan_coord()"
+    C_SEQ:                 # the target sequence is known
+      true:
+        - select: "sel('A')"
+        - select: "sel('B')"
+    C_HOT:                 # EU 241,243,244,246,260,262,264,301 on each protomer
+      true:
+        - select: "sel('A/*/[17, 19, 20, 22, 36, 38, 40, 77]')"
+        - select: "sel('B/*/[17, 19, 20, 22, 36, 38, 40, 77]')"

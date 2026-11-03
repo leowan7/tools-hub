@@ -1,0 +1,966 @@
+✓ Initialized. View run at 
+https://modal.com/apps/leowan7/main/ap-2uZ3k5ao3MUNNBtbPZ441m
+Building image im-OUXvXtvOvO7FCiFczoQIpX
+
+=> Step 0: FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+Getting image source signatures
+Copying blob sha256:84a2afebaf4de2e8eb885634a69abd0087b79c947c53fa4f0481235d6dfadc6c
+Copying blob sha256:f9f25941dc135427be9d16894ce71a921adff16e2d43060139ed05c33fcd668e
+Copying blob sha256:dbeb2af0e7bd53c2dff6896f9bde583874dc48fbb85d8cda0e9040dec5424ca8
+Copying blob sha256:2e8ff2a71e9573673dd17ca594722bd27eed7eb917debc0fb74ff9eb5d522ad1
+Copying config sha256:9cb180cb36bd45dc786105b834d3cb5f3b1d69a6a63c79ca10fc64f108aa649a
+Writing manifest to image destination
+Unpacking OCI image
+   • unpacking rootfs ...     
+   • ... done                 
+   • unpacked image rootfs: /tmp/task-data/ta-01M6ER1CVKZAF59YQW7FFKXVEB/registry-unpackUjGLxb
+Copied image in 6.60s
+
+=> Step 1: ARG RFD4_SHA=aaccdd2ad0720c180468df5f9cf037a713d403e5
+
+=> Step 2: ARG RFD4_ACCELERATOR
+
+=> Step 3: ARG UV_MIN_VERSION=0.13.4
+
+=> Step 4: ENV DATA_PATH=/data \
+    HF_HOME=/opt/rfd4/cache/huggingface \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    TMOL_DISABLE_WHEEL_FETCH=1 \
+    TMOL_JIT_FALLBACK=0 \
+    TMOL_USE_JIT=0
+
+=> Step 5: RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates build-essential git libxrender1 libx11-6 libxext6 && \
+    rm -rf /var/lib/apt/lists/* && \
+    python -m pip install --no-cache-dir "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" && \
+    python -m pip install --no-cache-dir "uv>=${UV_MIN_VERSION}"
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [360 kB]
+Fetched 9398 kB in 1s (6292 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu bzip2 cpp cpp-12 dpkg
+  dpkg-dev g++ g++-12 gcc gcc-12 git-man libasan8 libatomic1 libbinutils
+  libbrotli1 libbsd0 libc-bin libc-dev-bin libc6 libc6-dev libcc1-0
+  libcrypt-dev libctf-nobfd0 libctf0 libcurl3-gnutls libdpkg-perl
+  liberror-perl libexpat1 libgcc-12-dev libgdbm-compat4 libgomp1 libgprofng0
+  libisl23 libitm1 libjansson4 libldap-2.5-0 liblsan0 liblzma5 libmpc3
+  libmpfr6 libnghttp2-14 libnsl-dev libperl5.36 libpsl5 libquadmath0 librtmp1
+  libsasl2-2 libsasl2-modules-db libssh2-1 libstdc++-12-dev libtirpc-dev
+  libtsan2 libubsan1 libx11-data libxau6 libxcb1 libxdmcp6 linux-libc-dev make
+  patch perl perl-base perl-modules-5.36 rpcsvc-proto xz-utils
+Suggested packages:
+  binutils-doc bzip2-doc cpp-doc gcc-12-locales cpp-12-doc debsig-verify
+  debian-keyring g++-multilib g++-12-multilib gcc-12-doc gcc-multilib
+  manpages-dev autoconf automake libtool flex bison gdb gcc-doc
+  gcc-12-multilib gettext-base git-daemon-run | git-daemon-sysvinit git-doc
+  git-email git-gui gitk gitweb git-cvs git-mediawiki git-svn glibc-doc
+  libc-l10n locales libnss-nis libnss-nisplus gnupg | sq | sqop
+  | pgpainless-cli sensible-utils bzr libstdc++-12-doc make-doc ed
+  diffutils-doc perl-doc libterm-readline-gnu-perl
+  | libterm-readline-perl-perl libtap-harness-archive-perl
+Recommended packages:
+  fakeroot gnupg | sq | sqop | pgpainless-cli libalgorithm-merge-perl less
+  ssh-client manpages manpages-dev libc-devtools libfile-fcntllock-perl
+  liblocale-gettext-perl libldap-common publicsuffix libsasl2-modules
+The following NEW packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu build-essential bzip2 cpp
+  cpp-12 dpkg-dev g++ g++-12 gcc gcc-12 git git-man libasan8 libatomic1
+  libbinutils libbrotli1 libbsd0 libc-dev-bin libc6-dev libcc1-0 libcrypt-dev
+  libctf-nobfd0 libctf0 libcurl3-gnutls libdpkg-perl liberror-perl libexpat1
+  libgcc-12-dev libgdbm-compat4 libgomp1 libgprofng0 libisl23 libitm1
+  libjansson4 libldap-2.5-0 liblsan0 libmpc3 libmpfr6 libnghttp2-14 libnsl-dev
+  libperl5.36 libpsl5 libquadmath0 librtmp1 libsasl2-2 libsasl2-modules-db
+  libssh2-1 libstdc++-12-dev libtirpc-dev libtsan2 libubsan1 libx11-6
+  libx11-data libxau6 libxcb1 libxdmcp6 libxext6 libxrender1 linux-libc-dev
+  make patch perl perl-modules-5.36 rpcsvc-proto xz-utils
+The following packages will be upgraded:
+  ca-certificates dpkg libc-bin libc6 liblzma5 perl-base
+6 upgraded, 67 newly installed, 0 to remove and 16 not upgraded.
+Need to get 92.9 MB of archives.
+After this operation, 370 MB of additional disk space will be used.
+Get:1 http://deb.debian.org/debian bookworm/main amd64 dpkg amd64 1.21.23 [1568 kB]
+Get:2 http://deb.debian.org/debian-security bookworm-security/main amd64 perl-base amd64 5.36.0-7+deb12u4 [1610 kB]
+Get:3 http://deb.debian.org/debian bookworm/main amd64 libc6 amd64 2.36-9+deb12u14 [2759 kB]
+Get:4 http://deb.debian.org/debian bookworm/main amd64 libc-bin amd64 2.36-9+deb12u14 [609 kB]
+Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 perl-modules-5.36 all 5.36.0-7+deb12u4 [2817 kB]
+Get:6 http://deb.debian.org/debian bookworm/main amd64 libgdbm-compat4 amd64 1.23-3 [48.2 kB]
+Get:7 http://deb.debian.org/debian-security bookworm-security/main amd64 libperl5.36 amd64 5.36.0-7+deb12u4 [4208 kB]
+Get:8 http://deb.debian.org/debian-security bookworm-security/main amd64 perl amd64 5.36.0-7+deb12u4 [239 kB]
+Get:9 http://deb.debian.org/debian-security bookworm-security/main amd64 liblzma5 amd64 5.4.1-1+deb12u2 [206 kB]
+Get:10 http://deb.debian.org/debian bookworm/main amd64 bzip2 amd64 1.0.8-5+b1 [49.8 kB]
+Get:11 http://deb.debian.org/debian-security bookworm-security/main amd64 ca-certificates all 20250419~deb12u2 [161 kB]
+Get:12 http://deb.debian.org/debian-security bookworm-security/main amd64 xz-utils amd64 5.4.1-1+deb12u2 [471 kB]
+Get:13 http://deb.debian.org/debian bookworm/main amd64 binutils-common amd64 2.40-2 [2487 kB]
+Get:14 http://deb.debian.org/debian bookworm/main amd64 libbinutils amd64 2.40-2 [572 kB]
+Get:15 http://deb.debian.org/debian bookworm/main amd64 libctf-nobfd0 amd64 2.40-2 [153 kB]
+Get:16 http://deb.debian.org/debian bookworm/main amd64 libctf0 amd64 2.40-2 [89.8 kB]
+Get:17 http://deb.debian.org/debian bookworm/main amd64 libgprofng0 amd64 2.40-2 [812 kB]
+Get:18 http://deb.debian.org/debian bookworm/main amd64 libjansson4 amd64 2.14-2 [40.8 kB]
+Get:19 http://deb.debian.org/debian bookworm/main amd64 binutils-x86-64-linux-gnu amd64 2.40-2 [2246 kB]
+Get:20 http://deb.debian.org/debian bookworm/main amd64 binutils amd64 2.40-2 [65.0 kB]
+Get:21 http://deb.debian.org/debian bookworm/main amd64 libc-dev-bin amd64 2.36-9+deb12u14 [48.1 kB]
+Get:22 http://deb.debian.org/debian-security bookworm-security/main amd64 linux-libc-dev amd64 6.1.190-1 [2409 kB]
+Get:23 http://deb.debian.org/debian bookworm/main amd64 libcrypt-dev amd64 1:4.4.33-2 [118 kB]
+Get:24 http://deb.debian.org/debian bookworm/main amd64 libtirpc-dev amd64 1.3.3+ds-1 [191 kB]
+Get:25 http://deb.debian.org/debian bookworm/main amd64 libnsl-dev amd64 1.3.0-2 [66.4 kB]
+Get:26 http://deb.debian.org/debian bookworm/main amd64 rpcsvc-proto amd64 1.4.3-1 [63.3 kB]
+Get:27 http://deb.debian.org/debian bookworm/main amd64 libc6-dev amd64 2.36-9+deb12u14 [1904 kB]
+Get:28 http://deb.debian.org/debian bookworm/main amd64 libisl23 amd64 0.25-1.1 [683 kB]
+Get:29 http://deb.debian.org/debian bookworm/main amd64 libmpfr6 amd64 4.2.0-1 [701 kB]
+Get:30 http://deb.debian.org/debian bookworm/main amd64 libmpc3 amd64 1.3.1-1 [51.5 kB]
+Get:31 http://deb.debian.org/debian bookworm/main amd64 cpp-12 amd64 12.2.0-14+deb12u1 [9768 kB]
+Get:32 http://deb.debian.org/debian bookworm/main amd64 cpp amd64 4:12.2.0-3 [6836 B]
+Get:33 http://deb.debian.org/debian bookworm/main amd64 libcc1-0 amd64 12.2.0-14+deb12u1 [41.7 kB]
+Get:34 http://deb.debian.org/debian bookworm/main amd64 libgomp1 amd64 12.2.0-14+deb12u1 [116 kB]
+Get:35 http://deb.debian.org/debian bookworm/main amd64 libitm1 amd64 12.2.0-14+deb12u1 [26.1 kB]
+Get:36 http://deb.debian.org/debian bookworm/main amd64 libatomic1 amd64 12.2.0-14+deb12u1 [9376 B]
+Get:37 http://deb.debian.org/debian bookworm/main amd64 libasan8 amd64 12.2.0-14+deb12u1 [2193 kB]
+Get:38 http://deb.debian.org/debian bookworm/main amd64 liblsan0 amd64 12.2.0-14+deb12u1 [969 kB]
+Get:39 http://deb.debian.org/debian bookworm/main amd64 libtsan2 amd64 12.2.0-14+deb12u1 [2197 kB]
+Get:40 http://deb.debian.org/debian bookworm/main amd64 libubsan1 amd64 12.2.0-14+deb12u1 [883 kB]
+Get:41 http://deb.debian.org/debian bookworm/main amd64 libquadmath0 amd64 12.2.0-14+deb12u1 [145 kB]
+Get:42 http://deb.debian.org/debian bookworm/main amd64 libgcc-12-dev amd64 12.2.0-14+deb12u1 [2437 kB]
+Get:43 http://deb.debian.org/debian bookworm/main amd64 gcc-12 amd64 12.2.0-14+deb12u1 [19.3 MB]
+Get:44 http://deb.debian.org/debian bookworm/main amd64 gcc amd64 4:12.2.0-3 [5216 B]
+Get:45 http://deb.debian.org/debian bookworm/main amd64 libstdc++-12-dev amd64 12.2.0-14+deb12u1 [2047 kB]
+Get:46 http://deb.debian.org/debian bookworm/main amd64 g++-12 amd64 12.2.0-14+deb12u1 [10.7 MB]
+Get:47 http://deb.debian.org/debian bookworm/main amd64 g++ amd64 4:12.2.0-3 [1356 B]
+Get:48 http://deb.debian.org/debian bookworm/main amd64 make amd64 4.3-4.1 [396 kB]
+Get:49 http://deb.debian.org/debian bookworm/main amd64 libdpkg-perl all 1.21.23 [604 kB]
+Get:50 http://deb.debian.org/debian bookworm/main amd64 patch amd64 2.7.6-7 [128 kB]
+Get:51 http://deb.debian.org/debian bookworm/main amd64 dpkg-dev all 1.21.23 [1354 kB]
+Get:52 http://deb.debian.org/debian bookworm/main amd64 build-essential amd64 12.9 [7704 B]
+Get:53 http://deb.debian.org/debian-security bookworm-security/main amd64 libbrotli1 amd64 1.0.9-2+deb12u1 [275 kB]
+Get:54 http://deb.debian.org/debian-security bookworm-security/main amd64 libsasl2-modules-db amd64 2.1.28+dfsg-10+deb12u1 [20.5 kB]
+Get:55 http://deb.debian.org/debian-security bookworm-security/main amd64 libsasl2-2 amd64 2.1.28+dfsg-10+deb12u1 [59.9 kB]
+Get:56 http://deb.debian.org/debian bookworm/main amd64 libldap-2.5-0 amd64 2.5.13+dfsg-5 [183 kB]
+Get:57 http://deb.debian.org/debian bookworm/main amd64 libnghttp2-14 amd64 1.52.0-1+deb12u3 [72.4 kB]
+Get:58 http://deb.debian.org/debian bookworm/main amd64 libpsl5 amd64 0.21.2-1 [58.7 kB]
+Get:59 http://deb.debian.org/debian bookworm/main amd64 librtmp1 amd64 2.4+20151223.gitfa8646d.1-2+b2 [60.8 kB]
+Get:60 http://deb.debian.org/debian-security bookworm-security/main amd64 libssh2-1 amd64 1.10.0-3+deb12u1 [176 kB]
+Get:61 http://deb.debian.org/debian bookworm/main amd64 libcurl3-gnutls amd64 7.88.1-10+deb12u15 [386 kB]
+Get:62 http://deb.debian.org/debian-security bookworm-security/main amd64 libexpat1 amd64 2.5.0-1+deb12u5 [108 kB]
+Get:63 http://deb.debian.org/debian bookworm/main amd64 liberror-perl all 0.17029-2 [29.0 kB]
+Get:64 http://deb.debian.org/debian bookworm/main amd64 git-man all 1:2.39.5-0+deb12u3 [2053 kB]
+Get:65 http://deb.debian.org/debian bookworm/main amd64 git amd64 1:2.39.5-0+deb12u3 [7264 kB]
+Get:66 http://deb.debian.org/debian bookworm/main amd64 libbsd0 amd64 0.11.7-2 [117 kB]
+Get:67 http://deb.debian.org/debian bookworm/main amd64 libxau6 amd64 1:1.0.9-1 [19.7 kB]
+Get:68 http://deb.debian.org/debian bookworm/main amd64 libxdmcp6 amd64 1:1.1.2-3 [26.3 kB]
+Get:69 http://deb.debian.org/debian bookworm/main amd64 libxcb1 amd64 1.15-1 [144 kB]
+Get:70 http://deb.debian.org/debian bookworm/main amd64 libx11-data all 2:1.8.4-2+deb12u2 [292 kB]
+Get:71 http://deb.debian.org/debian bookworm/main amd64 libx11-6 amd64 2:1.8.4-2+deb12u2 [760 kB]
+Get:72 http://deb.debian.org/debian bookworm/main amd64 libxext6 amd64 2:1.3.4-1+b1 [52.9 kB]
+Get:73 http://deb.debian.org/debian bookworm/main amd64 libxrender1 amd64 1:0.9.10-1.1 [33.2 kB]
+debconf: delaying package configuration, since apt-utils is not installed
+Fetched 92.9 MB in 0s (195 MB/s)
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%
+[1A(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%
+[1A(Reading database ... 95%(Reading database ... 100%
+[1A(Reading database ... 6695 files and directories currently installed.)
+Preparing to unpack .../dpkg_1.21.23_amd64.deb ...
+Unpacking dpkg (1.21.23) over (1.21.22) ...
+Setting up dpkg (1.21.23) ...
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6695 files and directories currently installed.)
+Preparing to unpack .../perl-base_5.36.0-7+deb12u4_amd64.deb ...
+Unpacking perl-base (5.36.0-7+deb12u4) over (5.36.0-7+deb12u3) ...
+Setting up perl-base (5.36.0-7+deb12u4) ...
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6696 files and directories currently installed.)
+Preparing to unpack .../libc6_2.36-9+deb12u14_amd64.deb ...
+debconf: unable to initialize frontend: Dialog
+debconf: (No usable dialog-like program is installed, so the dialog based frontend cannot be used. at /usr/share/perl5/Debconf/FrontEnd/Dialog.pm line 78.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC contains: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/x86_64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl-base /usr/lib/x86_64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 7.)
+debconf: falling back to frontend: Teletype
+Unpacking libc6:amd64 (2.36-9+deb12u14) over (2.36-9+deb12u13) ...
+Setting up libc6:amd64 (2.36-9+deb12u14) ...
+debconf: unable to initialize frontend: Dialog
+debconf: (No usable dialog-like program is installed, so the dialog based frontend cannot be used. at /usr/share/perl5/Debconf/FrontEnd/Dialog.pm line 78.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC contains: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/x86_64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl-base /usr/lib/x86_64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 7.)
+debconf: falling back to frontend: Teletype
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%
+[1A(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%
+[1A(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%
+[1A(Reading database ... 100%
+[1A(Reading database ... 6696 files and directories currently installed.)
+Preparing to unpack .../libc-bin_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc-bin (2.36-9+deb12u14) over (2.36-9+deb12u13) ...
+Setting up libc-bin (2.36-9+deb12u14) ...
+Selecting previously unselected package perl-modules-5.36.
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%
+[1A(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%
+[1A(Reading database ... 95%(Reading database ... 100%(Reading database ... 6696 files and directories currently installed.)
+Preparing to unpack .../perl-modules-5.36_5.36.0-7+deb12u4_all.deb ...
+Unpacking perl-modules-5.36 (5.36.0-7+deb12u4) ...
+Selecting previously unselected package libgdbm-compat4:amd64.
+Preparing to unpack .../libgdbm-compat4_1.23-3_amd64.deb ...
+Unpacking libgdbm-compat4:amd64 (1.23-3) ...
+Selecting previously unselected package libperl5.36:amd64.
+Preparing to unpack .../libperl5.36_5.36.0-7+deb12u4_amd64.deb ...
+Unpacking libperl5.36:amd64 (5.36.0-7+deb12u4) ...
+Selecting previously unselected package perl.
+Preparing to unpack .../perl_5.36.0-7+deb12u4_amd64.deb ...
+Unpacking perl (5.36.0-7+deb12u4) ...
+Preparing to unpack .../liblzma5_5.4.1-1+deb12u2_amd64.deb ...
+Unpacking liblzma5:amd64 (5.4.1-1+deb12u2) over (5.4.1-1) ...
+Setting up liblzma5:amd64 (5.4.1-1+deb12u2) ...
+Selecting previously unselected package bzip2.
+(Reading database ... 
+[1A(Reading database ... 5%
+[1A(Reading database ... 10%
+[1A(Reading database ... 15%
+[1A(Reading database ... 20%
+[1A(Reading database ... 25%
+[1A(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%
+[1A(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%
+[1A(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%
+[1A(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%
+[1A(Reading database ... 8694 files and directories currently installed.)
+Preparing to unpack .../00-bzip2_1.0.8-5+b1_amd64.deb ...
+Unpacking bzip2 (1.0.8-5+b1) ...
+Preparing to unpack .../01-ca-certificates_20250419~deb12u2_all.deb ...
+Unpacking ca-certificates (20250419~deb12u2) over (20230311+deb12u1) ...
+Selecting previously unselected package xz-utils.
+Preparing to unpack .../02-xz-utils_5.4.1-1+deb12u2_amd64.deb ...
+Unpacking xz-utils (5.4.1-1+deb12u2) ...
+Selecting previously unselected package binutils-common:amd64.
+Preparing to unpack .../03-binutils-common_2.40-2_amd64.deb ...
+Unpacking binutils-common:amd64 (2.40-2) ...
+Selecting previously unselected package libbinutils:amd64.
+Preparing to unpack .../04-libbinutils_2.40-2_amd64.deb ...
+Unpacking libbinutils:amd64 (2.40-2) ...
+Selecting previously unselected package libctf-nobfd0:amd64.
+Preparing to unpack .../05-libctf-nobfd0_2.40-2_amd64.deb ...
+Unpacking libctf-nobfd0:amd64 (2.40-2) ...
+Selecting previously unselected package libctf0:amd64.
+Preparing to unpack .../06-libctf0_2.40-2_amd64.deb ...
+Unpacking libctf0:amd64 (2.40-2) ...
+Selecting previously unselected package libgprofng0:amd64.
+Preparing to unpack .../07-libgprofng0_2.40-2_amd64.deb ...
+Unpacking libgprofng0:amd64 (2.40-2) ...
+Selecting previously unselected package libjansson4:amd64.
+Preparing to unpack .../08-libjansson4_2.14-2_amd64.deb ...
+Unpacking libjansson4:amd64 (2.14-2) ...
+Selecting previously unselected package binutils-x86-64-linux-gnu.
+Preparing to unpack .../09-binutils-x86-64-linux-gnu_2.40-2_amd64.deb ...
+Unpacking binutils-x86-64-linux-gnu (2.40-2) ...
+Selecting previously unselected package binutils.
+Preparing to unpack .../10-binutils_2.40-2_amd64.deb ...
+Unpacking binutils (2.40-2) ...
+Selecting previously unselected package libc-dev-bin.
+Preparing to unpack .../11-libc-dev-bin_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc-dev-bin (2.36-9+deb12u14) ...
+Selecting previously unselected package linux-libc-dev:amd64.
+Preparing to unpack .../12-linux-libc-dev_6.1.190-1_amd64.deb ...
+Unpacking linux-libc-dev:amd64 (6.1.190-1) ...
+Selecting previously unselected package libcrypt-dev:amd64.
+Preparing to unpack .../13-libcrypt-dev_1%3a4.4.33-2_amd64.deb ...
+Unpacking libcrypt-dev:amd64 (1:4.4.33-2) ...
+Selecting previously unselected package libtirpc-dev:amd64.
+Preparing to unpack .../14-libtirpc-dev_1.3.3+ds-1_amd64.deb ...
+Unpacking libtirpc-dev:amd64 (1.3.3+ds-1) ...
+Selecting previously unselected package libnsl-dev:amd64.
+Preparing to unpack .../15-libnsl-dev_1.3.0-2_amd64.deb ...
+Unpacking libnsl-dev:amd64 (1.3.0-2) ...
+Selecting previously unselected package rpcsvc-proto.
+Preparing to unpack .../16-rpcsvc-proto_1.4.3-1_amd64.deb ...
+Unpacking rpcsvc-proto (1.4.3-1) ...
+Selecting previously unselected package libc6-dev:amd64.
+Preparing to unpack .../17-libc6-dev_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc6-dev:amd64 (2.36-9+deb12u14) ...
+Selecting previously unselected package libisl23:amd64.
+Preparing to unpack .../18-libisl23_0.25-1.1_amd64.deb ...
+Unpacking libisl23:amd64 (0.25-1.1) ...
+Selecting previously unselected package libmpfr6:amd64.
+Preparing to unpack .../19-libmpfr6_4.2.0-1_amd64.deb ...
+Unpacking libmpfr6:amd64 (4.2.0-1) ...
+Selecting previously unselected package libmpc3:amd64.
+Preparing to unpack .../20-libmpc3_1.3.1-1_amd64.deb ...
+Unpacking libmpc3:amd64 (1.3.1-1) ...
+Selecting previously unselected package cpp-12.
+Preparing to unpack .../21-cpp-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking cpp-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package cpp.
+Preparing to unpack .../22-cpp_4%3a12.2.0-3_amd64.deb ...
+Unpacking cpp (4:12.2.0-3) ...
+Selecting previously unselected package libcc1-0:amd64.
+Preparing to unpack .../23-libcc1-0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libgomp1:amd64.
+Preparing to unpack .../24-libgomp1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libgomp1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libitm1:amd64.
+Preparing to unpack .../25-libitm1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libitm1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libatomic1:amd64.
+Preparing to unpack .../26-libatomic1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libatomic1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libasan8:amd64.
+Preparing to unpack .../27-libasan8_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libasan8:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package liblsan0:amd64.
+Preparing to unpack .../28-liblsan0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking liblsan0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libtsan2:amd64.
+Preparing to unpack .../29-libtsan2_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libtsan2:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libubsan1:amd64.
+Preparing to unpack .../30-libubsan1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libubsan1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libquadmath0:amd64.
+Preparing to unpack .../31-libquadmath0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libgcc-12-dev:amd64.
+Preparing to unpack .../32-libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package gcc-12.
+Preparing to unpack .../33-gcc-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking gcc-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package gcc.
+Preparing to unpack .../34-gcc_4%3a12.2.0-3_amd64.deb ...
+Unpacking gcc (4:12.2.0-3) ...
+Selecting previously unselected package libstdc++-12-dev:amd64.
+Preparing to unpack .../35-libstdc++-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package g++-12.
+Preparing to unpack .../36-g++-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking g++-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package g++.
+Preparing to unpack .../37-g++_4%3a12.2.0-3_amd64.deb ...
+Unpacking g++ (4:12.2.0-3) ...
+Selecting previously unselected package make.
+Preparing to unpack .../38-make_4.3-4.1_amd64.deb ...
+Unpacking make (4.3-4.1) ...
+Selecting previously unselected package libdpkg-perl.
+Preparing to unpack .../39-libdpkg-perl_1.21.23_all.deb ...
+Unpacking libdpkg-perl (1.21.23) ...
+Selecting previously unselected package patch.
+Preparing to unpack .../40-patch_2.7.6-7_amd64.deb ...
+Unpacking patch (2.7.6-7) ...
+Selecting previously unselected package dpkg-dev.
+Preparing to unpack .../41-dpkg-dev_1.21.23_all.deb ...
+Unpacking dpkg-dev (1.21.23) ...
+Selecting previously unselected package build-essential.
+Preparing to unpack .../42-build-essential_12.9_amd64.deb ...
+Unpacking build-essential (12.9) ...
+Selecting previously unselected package libbrotli1:amd64.
+Preparing to unpack .../43-libbrotli1_1.0.9-2+deb12u1_amd64.deb ...
+Unpacking libbrotli1:amd64 (1.0.9-2+deb12u1) ...
+Selecting previously unselected package libsasl2-modules-db:amd64.
+Preparing to unpack .../44-libsasl2-modules-db_2.1.28+dfsg-10+deb12u1_amd64.deb ...
+Unpacking libsasl2-modules-db:amd64 (2.1.28+dfsg-10+deb12u1) ...
+Selecting previously unselected package libsasl2-2:amd64.
+Preparing to unpack .../45-libsasl2-2_2.1.28+dfsg-10+deb12u1_amd64.deb ...
+Unpacking libsasl2-2:amd64 (2.1.28+dfsg-10+deb12u1) ...
+Selecting previously unselected package libldap-2.5-0:amd64.
+Preparing to unpack .../46-libldap-2.5-0_2.5.13+dfsg-5_amd64.deb ...
+Unpacking libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+Selecting previously unselected package libnghttp2-14:amd64.
+Preparing to unpack .../47-libnghttp2-14_1.52.0-1+deb12u3_amd64.deb ...
+Unpacking libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+Selecting previously unselected package libpsl5:amd64.
+Preparing to unpack .../48-libpsl5_0.21.2-1_amd64.deb ...
+Unpacking libpsl5:amd64 (0.21.2-1) ...
+Selecting previously unselected package librtmp1:amd64.
+Preparing to unpack .../49-librtmp1_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb ...
+Unpacking librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+Selecting previously unselected package libssh2-1:amd64.
+Preparing to unpack .../50-libssh2-1_1.10.0-3+deb12u1_amd64.deb ...
+Unpacking libssh2-1:amd64 (1.10.0-3+deb12u1) ...
+Selecting previously unselected package libcurl3-gnutls:amd64.
+Preparing to unpack .../51-libcurl3-gnutls_7.88.1-10+deb12u15_amd64.deb ...
+Unpacking libcurl3-gnutls:amd64 (7.88.1-10+deb12u15) ...
+Selecting previously unselected package libexpat1:amd64.
+Preparing to unpack .../52-libexpat1_2.5.0-1+deb12u5_amd64.deb ...
+Unpacking libexpat1:amd64 (2.5.0-1+deb12u5) ...
+Selecting previously unselected package liberror-perl.
+Preparing to unpack .../53-liberror-perl_0.17029-2_all.deb ...
+Unpacking liberror-perl (0.17029-2) ...
+Selecting previously unselected package git-man.
+Preparing to unpack .../54-git-man_1%3a2.39.5-0+deb12u3_all.deb ...
+Unpacking git-man (1:2.39.5-0+deb12u3) ...
+Selecting previously unselected package git.
+Preparing to unpack .../55-git_1%3a2.39.5-0+deb12u3_amd64.deb ...
+Unpacking git (1:2.39.5-0+deb12u3) ...
+Selecting previously unselected package libbsd0:amd64.
+Preparing to unpack .../56-libbsd0_0.11.7-2_amd64.deb ...
+Unpacking libbsd0:amd64 (0.11.7-2) ...
+Selecting previously unselected package libxau6:amd64.
+Preparing to unpack .../57-libxau6_1%3a1.0.9-1_amd64.deb ...
+Unpacking libxau6:amd64 (1:1.0.9-1) ...
+Selecting previously unselected package libxdmcp6:amd64.
+Preparing to unpack .../58-libxdmcp6_1%3a1.1.2-3_amd64.deb ...
+Unpacking libxdmcp6:amd64 (1:1.1.2-3) ...
+Selecting previously unselected package libxcb1:amd64.
+Preparing to unpack .../59-libxcb1_1.15-1_amd64.deb ...
+Unpacking libxcb1:amd64 (1.15-1) ...
+Selecting previously unselected package libx11-data.
+Preparing to unpack .../60-libx11-data_2%3a1.8.4-2+deb12u2_all.deb ...
+Unpacking libx11-data (2:1.8.4-2+deb12u2) ...
+Selecting previously unselected package libx11-6:amd64.
+Preparing to unpack .../61-libx11-6_2%3a1.8.4-2+deb12u2_amd64.deb ...
+Unpacking libx11-6:amd64 (2:1.8.4-2+deb12u2) ...
+Selecting previously unselected package libxext6:amd64.
+Preparing to unpack .../62-libxext6_2%3a1.3.4-1+b1_amd64.deb ...
+Unpacking libxext6:amd64 (2:1.3.4-1+b1) ...
+Selecting previously unselected package libxrender1:amd64.
+Preparing to unpack .../63-libxrender1_1%3a0.9.10-1.1_amd64.deb ...
+Unpacking libxrender1:amd64 (1:0.9.10-1.1) ...
+Setting up libexpat1:amd64 (2.5.0-1+deb12u5) ...
+Setting up libxau6:amd64 (1:1.0.9-1) ...
+Setting up libpsl5:amd64 (0.21.2-1) ...
+Setting up libbrotli1:amd64 (1.0.9-2+deb12u1) ...
+Setting up binutils-common:amd64 (2.40-2) ...
+Setting up libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+Setting up linux-libc-dev:amd64 (6.1.190-1) ...
+Setting up libctf-nobfd0:amd64 (2.40-2) ...
+Setting up libgomp1:amd64 (12.2.0-14+deb12u1) ...
+Setting up bzip2 (1.0.8-5+b1) ...
+Setting up libjansson4:amd64 (2.14-2) ...
+Setting up libsasl2-modules-db:amd64 (2.1.28+dfsg-10+deb12u1) ...
+Setting up ca-certificates (20250419~deb12u2) ...
+debconf: unable to initialize frontend: Dialog
+debconf: (No usable dialog-like program is installed, so the dialog based frontend cannot be used. at /usr/share/perl5/Debconf/FrontEnd/Dialog.pm line 78.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+Updating certificates in /etc/ssl/certs...
+rehash: warning: skipping ca-certificates.crt,it does not contain exactly one certificate or CRL
+21 added, 15 removed; done.
+Setting up perl-modules-5.36 (5.36.0-7+deb12u4) ...
+Setting up libtirpc-dev:amd64 (1.3.3+ds-1) ...
+Setting up rpcsvc-proto (1.4.3-1) ...
+Setting up libx11-data (2:1.8.4-2+deb12u2) ...
+Setting up make (4.3-4.1) ...
+Setting up libmpfr6:amd64 (4.2.0-1) ...
+Setting up librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+Setting up xz-utils (5.4.1-1+deb12u2) ...
+update-alternatives: using /usr/bin/xz to provide /usr/bin/lzma (lzma) in auto mode
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzma.1.gz because associated file /usr/share/man/man1/xz.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/unlzma.1.gz because associated file /usr/share/man/man1/unxz.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzcat.1.gz because associated file /usr/share/man/man1/xzcat.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzmore.1.gz because associated file /usr/share/man/man1/xzmore.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzless.1.gz because associated file /usr/share/man/man1/xzless.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzdiff.1.gz because associated file /usr/share/man/man1/xzdiff.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzcmp.1.gz because associated file /usr/share/man/man1/xzcmp.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzgrep.1.gz because associated file /usr/share/man/man1/xzgrep.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzegrep.1.gz because associated file /usr/share/man/man1/xzegrep.1.gz (of link group lzma) doesn't exist
+update-alternatives: warning: skip creation of /usr/share/man/man1/lzfgrep.1.gz because associated file /usr/share/man/man1/xzfgrep.1.gz (of link group lzma) doesn't exist
+Setting up libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libmpc3:amd64 (1.3.1-1) ...
+Setting up libatomic1:amd64 (12.2.0-14+deb12u1) ...
+Setting up patch (2.7.6-7) ...
+Setting up libgdbm-compat4:amd64 (1.23-3) ...
+Setting up libsasl2-2:amd64 (2.1.28+dfsg-10+deb12u1) ...
+Setting up libubsan1:amd64 (12.2.0-14+deb12u1) ...
+Setting up libnsl-dev:amd64 (1.3.0-2) ...
+Setting up libcrypt-dev:amd64 (1:4.4.33-2) ...
+Setting up libasan8:amd64 (12.2.0-14+deb12u1) ...
+Setting up git-man (1:2.39.5-0+deb12u3) ...
+Setting up libssh2-1:amd64 (1.10.0-3+deb12u1) ...
+Setting up libtsan2:amd64 (12.2.0-14+deb12u1) ...
+Setting up libbinutils:amd64 (2.40-2) ...
+Setting up libisl23:amd64 (0.25-1.1) ...
+Setting up libc-dev-bin (2.36-9+deb12u14) ...
+Setting up libbsd0:amd64 (0.11.7-2) ...
+Setting up libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libperl5.36:amd64 (5.36.0-7+deb12u4) ...
+Setting up liblsan0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libitm1:amd64 (12.2.0-14+deb12u1) ...
+Setting up libctf0:amd64 (2.40-2) ...
+Setting up libxdmcp6:amd64 (1:1.1.2-3) ...
+Setting up cpp-12 (12.2.0-14+deb12u1) ...
+Setting up libxcb1:amd64 (1.15-1) ...
+Setting up libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+Setting up perl (5.36.0-7+deb12u4) ...
+Setting up libgprofng0:amd64 (2.40-2) ...
+Setting up libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Setting up libdpkg-perl (1.21.23) ...
+Setting up cpp (4:12.2.0-3) ...
+Setting up libc6-dev:amd64 (2.36-9+deb12u14) ...
+Setting up libx11-6:amd64 (2:1.8.4-2+deb12u2) ...
+Setting up binutils-x86-64-linux-gnu (2.40-2) ...
+Setting up libxrender1:amd64 (1:0.9.10-1.1) ...
+Setting up libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Setting up libxext6:amd64 (2:1.3.4-1+b1) ...
+Setting up libcurl3-gnutls:amd64 (7.88.1-10+deb12u15) ...
+Setting up binutils (2.40-2) ...
+Setting up dpkg-dev (1.21.23) ...
+Setting up liberror-perl (0.17029-2) ...
+Setting up gcc-12 (12.2.0-14+deb12u1) ...
+Setting up git (1:2.39.5-0+deb12u3) ...
+Setting up g++-12 (12.2.0-14+deb12u1) ...
+Setting up gcc (4:12.2.0-3) ...
+Setting up g++ (4:12.2.0-3) ...
+update-alternatives: using /usr/bin/g++ to provide /usr/bin/c++ (c++) in auto mode
+Setting up build-essential (12.9) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+Processing triggers for ca-certificates (20250419~deb12u2) ...
+Updating certificates in /etc/ssl/certs...
+0 added, 0 removed; done.
+Running hooks in /etc/ca-certificates/update.d...
+done.
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Collecting pip@ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
+  Downloading pip-26.2.2-py3-none-any.whl (1.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 8.0 MB/s eta 0:00:00
+Installing collected packages: pip
+  Attempting uninstall: pip
+    Found existing installation: pip 25.0.1
+    Uninstalling pip-25.0.1:
+      Successfully uninstalled pip-25.0.1
+Successfully installed pip-26.2.2
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Collecting uv>=0.13.4
+  Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (11 kB)
+Downloading uv-0.13.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (17.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 17.3/17.3 MB 209.1 MB/s  0:00:00
+Installing collected packages: uv
+Successfully installed uv-0.13.6
+
+=> Step 6: RUN git init /opt/rfd4 && \
+    cd /opt/rfd4 && \
+    git remote add origin https://github.com/RosettaCommons/RFD4-Proteina.git && \
+    git fetch --depth 1 origin "${RFD4_SHA}" && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = "${RFD4_SHA}"
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: is subject to change. To configure the initial branch name to use in all
+hint: of your new repositories, which will suppress this warning, call:
+hint: 
+hint:   git config --global init.defaultBranch <name>
+hint: 
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint: 
+hint:   git branch -m <name>
+Initialized empty Git repository in /opt/rfd4/.git/
+From https://github.com/RosettaCommons/RFD4-Proteina
+ * branch            aaccdd2ad0720c180468df5f9cf037a713d403e5 -> FETCH_HEAD
+HEAD is now at aaccdd2 Fix Apptainer build after uv minimum-version rename (#58)
+
+=> Step 7: WORKDIR /opt/rfd4
+
+=> Step 8: RUN printf 'certifi>=2026.10.23\n' > /tmp/rfd4-constraints.txt && \
+    case "${RFD4_ACCELERATOR}" in \
+        cu13) set -- --extra all-cuda13 --torch-backend cu130 ;; \
+        cu12) set -- --extra all-cuda12 --torch-backend cu126 ;; \
+        *) echo "RFD4_ACCELERATOR must be cu13 (proven) or cu12 (different product: no BioIR); got '${RFD4_ACCELERATOR}'" >&2; exit 2 ;; \
+    esac && \
+    uv pip install --system --no-cache --no-sources -c /tmp/rfd4-constraints.txt \
+        --only-binary tmol,tmol-ops-cu12,tmol-ops-cu13 "$@" -r pyproject.toml && \
+    uv pip install --system --no-cache --no-sources --no-deps . && \
+    rm -f /tmp/rfd4-constraints.txt && \
+    python -m pip check
+Using Python 3.12.12 environment at: /usr/local
+Resolved 215 packages in 1.84s
+Downloading nvidia-nccl-cu13 (206.0MiB)
+Downloading nvidia-cudnn-cu13 (527.5MiB)
+Downloading nvidia-cublas (403.5MiB)
+Downloading nvidia-cusolver (191.6MiB)
+Downloading nvidia-cuda-nvrtc (86.0MiB)
+Downloading nvidia-cusparselt-cu13 (162.3MiB)
+Downloading nvidia-cusparse (139.2MiB)
+Downloading nvidia-cufft (204.2MiB)
+Downloading nvidia-nvshmem-cu13 (57.6MiB)
+Downloading llvmlite (56.9MiB)
+Downloading nvidia-nvjitlink (40.5MiB)
+Downloading nvidia-curand (56.8MiB)
+Downloading pyarrow (51.4MiB)
+Downloading rdkit (35.0MiB)
+Downloading biotite (54.5MiB)
+Downloading bionemo-ir (35.9MiB)
+Downloading nvidia-cutlass-dsl-libs-base (71.1MiB)
+Downloading cuequivariance-ops-cu13 (42.9MiB)
+Downloading tmol-ops-cu13 (51.6MiB)
+Downloading triton (235.4MiB)
+Downloading torch (528.9MiB)
+Downloading cryptography (4.5MiB)
+Downloading tokenizers (3.2MiB)
+Downloading apache-tvm-ffi (3.2MiB)
+Downloading scikit-learn (8.7MiB)
+Downloading hf-xet (4.1MiB)
+Downloading grpcio (7.0MiB)
+Downloading zstandard (5.3MiB)
+Downloading fonttools (5.2MiB)
+Downloading virtualenv (5.3MiB)
+Downloading pandas (11.8MiB)
+Downloading matplotlib (9.4MiB)
+Downloading nvidia-cuda-cupti (10.2MiB)
+Downloading sympy (6.0MiB)
+Downloading pillow (6.8MiB)
+Downloading cuda-bindings (6.8MiB)
+Downloading ray (70.8MiB)
+Downloading wandb (19.4MiB)
+Downloading scipy (33.7MiB)
+Downloading transformers (12.4MiB)
+Downloading botocore (15.4MiB)
+Downloading anarcii (16.7MiB)
+Downloading numpy (16.0MiB)
+Downloading tmol (16.3MiB)
+Downloading numba (3.7MiB)
+Downloading uvloop (4.5MiB)
+Downloading cuda-core (6.3MiB)
+Downloading cython (3.3MiB)
+Downloading cuequivariance-ops-torch-cu13 (27.2MiB)
+Downloading openbabel-wheel (15.3MiB)
+ Downloaded tokenizers
+ Downloaded hf-xet
+ Downloaded zstandard
+ Downloaded uvloop
+Downloading biopython (3.1MiB)
+Downloading cytoolz (3.0MiB)
+ Downloaded virtualenv
+Downloading nvidia-cudnn-frontend (2.9MiB)
+Downloading gemmi (2.8MiB)
+Downloading py-spy (2.8MiB)
+ Downloaded grpcio
+ Downloaded nvidia-cuda-cupti
+ Downloaded cryptography
+Downloading nvidia-cuda-runtime (2.1MiB)
+Downloading pydantic-core (2.1MiB)
+ Downloaded cuda-bindings
+ Downloaded apache-tvm-ffi
+Downloading biotraj (2.1MiB)
+ Downloaded cytoolz
+ Downloaded pillow
+Downloading networkx (2.0MiB)
+ Downloaded cython
+Downloading aiohttp (1.8MiB)
+Downloading beartype (1.5MiB)
+ Downloaded pydantic-core
+ Downloaded py-spy
+ Downloaded gemmi
+Downloading kiwisolver (1.4MiB)
+Downloading pygments (1.2MiB)
+ Downloaded nvidia-cuda-runtime
+ Downloaded biotraj
+ Downloaded anarcii
+Downloading nvidia-cufile (1.2MiB)
+ Downloaded kiwisolver
+ Downloaded fonttools
+ Downloaded nvidia-cufile
+ Downloaded aiohttp
+ Downloaded cuda-core
+ Downloaded nvidia-cudnn-frontend
+ Downloaded matplotlib
+ Downloaded pygments
+ Downloaded openbabel-wheel
+ Downloaded numba
+ Downloaded biopython
+ Downloaded beartype
+ Downloaded networkx
+ Downloaded wandb
+ Downloaded scikit-learn
+ Downloaded tmol
+ Downloaded sympy
+ Downloaded pandas
+ Downloaded cuequivariance-ops-torch-cu13
+ Downloaded nvidia-nvjitlink
+ Downloaded numpy
+ Downloaded cuequivariance-ops-cu13
+   Building ihm==2.12
+ Downloaded nvidia-curand
+ Downloaded nvidia-nvshmem-cu13
+ Downloaded bionemo-ir
+ Downloaded tmol-ops-cu13
+ Downloaded llvmlite
+   Building antlr4-python3-runtime==4.9.3
+ Downloaded botocore
+ Downloaded rdkit
+ Downloaded biotite
+ Downloaded pyarrow
+ Downloaded scipy
+ Downloaded transformers
+ Downloaded nvidia-cutlass-dsl-libs-base
+ Downloaded nvidia-cuda-nvrtc
+ Downloaded nvidia-cusparse
+ Downloaded ray
+ Downloaded nvidia-cusparselt-cu13
+ Downloaded nvidia-cusolver
+ Downloaded nvidia-cufft
+ Downloaded nvidia-nccl-cu13
+      Built antlr4-python3-runtime==4.9.3
+ Downloaded triton
+ Downloaded nvidia-cublas
+      Built ihm==2.12
+ Downloaded nvidia-cudnn-cu13
+ Downloaded torch
+Prepared 214 packages in 11.16s
+Installed 215 packages in 5.08s
+Bytecode compiled 24604 files in 9.67s
+ + accelerate==1.15.0
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.5
+ + aiohttp-cors==0.8.1
+ + aiosignal==1.4.0
+ + anarcii==2.0.8
+ + annotated-doc==0.0.5
+ + annotated-types==0.8.0
+ + antlr4-python3-runtime==4.9.3
+ + anyio==4.16.0
+ + apache-tvm-ffi==0.1.15.post2
+ + assertpy==2.35.0
+ + astor==0.8.1
+ + atomworks==3.0.4
+ + attrs==26.1.0
+ + attrs-strict==1.0.1
+ + beartype==0.23.1
+ + bionemo-ir==0.2.1
+ + biopython==1.88
+ + biotite==1.6.0
+ + biotraj==1.2.2
+ + boto3==1.43.123
+ + botocore==1.43.123
+ + cattrs==26.2.1
+ + certifi==2026.10.23
+ + cffi==2.1.1
+ + charset-normalizer==3.5.2
+ + click==8.5.0
+ + cloudpickle==3.1.2
+ + colorful==0.5.8
+ + contourpy==1.4.0
+ + cryptography==50.0.2
+ + cuda-bindings==13.4.4
+ + cuda-core==1.2.2
+ + cuda-pathfinder==1.8.5
+ + cuda-python==13.4.4
+ + cuda-toolkit==13.0.3.0
+ + cuequivariance==0.13.0
+ + cuequivariance-ops-cu13==0.13.0
+ + cuequivariance-ops-torch-cu13==0.13.0
+ + cuequivariance-torch==0.13.0
+ + cwevals==0.0.1b1
+ + cycler==0.12.1
+ + cython==3.3.1
+ + cytoolz==1.2.0
+ + datasets==5.0.1
+ + decorator==5.3.1
+ + dill==0.4.1
+ + distlib==0.4.4
+ + distro==1.9.0
+ + einops==0.8.2
+ + environs==11.2.1
+ + fastapi==0.162.0
+ + filelock==3.32.7
+ + fire==0.7.1
+ + flexcache==0.3
+ + flexparser==0.4
+ + fonttools==4.68.0
+ + frozendict==2.5.1
+ + frozenlist==1.8.0
+ + fsspec==2026.6.0
+ + gemmi==0.75
+ + google-api-core==2.43.2
+ + google-auth==2.62.0
+ +googleapis-common-protos==.0
+ grpcio==85.1
++ h11==016.0
+ hf-xet==80 +==10
++ ==90
++ ==28.1
+ + huggingface-hub==.0
++ hydra-core13
+ idna==.20+ ihm2.12+ ==0.11
++jinja2==3.6
+ + ==10
++ ==1.
+ + jsonschema==4..+jsonschema-specifications==9.1
+ + ==.6.
+ +==.5
++ lightning==66
++ lightning-utilities==..3+ ==050.
++ loguru07
+ + lru-dict==1.4+markdown-it-py==20  markupsafe.4
+  ==4.
++ 3.2
+  ==012+ ==5..
++ modelcif1.6  mpmath==1.. +==..4+ 72
+  ==..
+ mypy-extensions==10+ narwhals.28+ networkx3
++ numba0.681
++.4+nvidia-cublas113
++ nvidia-cuda-cupti==085
+ nvidia-cuda-nvrtc13.088
+  nvidia-cuda-runtime130
+ +nvidia-cudnn-cu13924.0
+ +nvidia-cudnn-frontend==.0
+ +nvidia-cufft==0061
+ ==1..
++nvidia-curand==4.035
+ +nvidia-cusolver==04.66
+ +nvidia-cusparse==.3.
++.8.1
++ ==4.3
++nvidia-cutlass-dsl-libs-base==53
+ + .615.71
+ +==.7
++nvidia-nvjitlink==492 nvidia-nvshmem-cu13==45+nvidia-nvtx==.0
++ 2.3.
+ +openbabel-wheel3.11+ ==0
++ opencensus-context1.3
+ +==.2+ ==.b
++ ==02
++ opentelemetry-exporter-otlp-proto-common.45
++ opentelemetry-exporter-otlp-proto-http1.45 + ==0b
++ ==1.
++ 1.45.2
+ + .b
++ ==.0
++ packaging.3+ pandas2.3
++ 0..
++ ==13.
+ pint0262
+  platformdirs414posebusters==.
++ ==0.
+  ==0.
++proto-plus1290+ protobuf==362  psutil==2.2+ py-spy==42  py3dmol25.pyarrow==. +pyasn1==65 +==..
++ ==3.
+ pydantic==..
++ 2..
++pygments==..
++ ==11
++ 3.3. python-dateutil29.0
++python-discovery==.1+ python-dotenv==2
+ +..6
++pytz2026. +pyyaml6.3  ==.561+ ==9
+ ==.37. +regex==929  requests234
++ ==00  ==.7
++rpds-py==9. +s3transfer==.3  safetensors0 +==.1 +==..
+  ==.1
++ ==.. +==1.0+ ==91
++ ==.1
+ sortedcontainers==. sparse193  ==.100  sympy1.0+ ==30 +threadpoolctl==.0  tmol==.
+  tmol-ops-cu13==0..+ 0
+ ==..0+ ==..cu130
+ torchmetrics==9
+ tqdm4.
++ ==.1 triton==.. +==03
++4.
++typing-inspect09
++ ==0.4
+ +==2026.  ==2.
++ ==.0
+ uvloop.21
+ virtualenv==212
+ .1+ 031. +watchfiles==30  websockets17
+ +wrapt==5.
++xxhash==0.
++yarl==..
+ zstandard0.
+Using Python 3.12.12 environment at: /usr/local
+Resolved 1 package in 3ms
+   Building rfd4-proteina @ file:///opt/rfd4
+      Built rfd4-proteina @ file:///opt/rfd4
+Prepared 1 package in 1.00s
+Installed 1 package in 27ms
+Bytecode compiled 195 files in 157ms
+ + rfd4-proteina==0.0.3 (from file:///opt/rfd4)
+No broken requirements found.
+
+=> Step 9: RUN python -m pip install --no-cache-dir "certifi==2026.10.23"
+Looking in indexes: http://pypi-mirror.modal.local:5555/simple
+Requirement already satisfied: certifi==2026.10.23 in /usr/local/lib/python3.12/site-packages (2026.10.23)
+
+=> Step 10: RUN mkdir -p /data /opt/rfd4/cache/huggingface /workspace
+
+=> Step 11: WORKDIR /workspace
+
+=> Step 12: RUN TORCHINDUCTOR_CACHE_DIR=/tmp/rfd4-build-compile RFD4_ACCELERATOR="${RFD4_ACCELERATOR}" python -c \
+        'import os; from importlib.metadata import distributions; import torch, atomworks, rfproteina; from openbabel import pybel; from tmol.score.ljlk.potentials._compiled import ljlk_pose_scores; accelerator = os.environ["RFD4_ACCELERATOR"]; assert torch.__version__.endswith("+" + {"cu13": "cu130", "cu12": "cu126"}[accelerator]); assert pybel.readstring("smi", "CCO").OBMol.NumAtoms() == 3; assert callable(ljlk_pose_scores); ops = {d.metadata["Name"].lower().replace("_", "-") for d in distributions() if d.metadata["Name"].lower().replace("_", "-").startswith("tmol-ops-")}; assert ops == {"tmol-ops-" + accelerator}, ops; x = torch.ones(8); torch.testing.assert_close(torch.compile(lambda t: t.sin() + 1, backend="inductor", fullgraph=True)(x), x.sin() + 1)' && \
+    rm -rf /tmp/rfd4-build-compile && \
+    if [ "${RFD4_ACCELERATOR}" = "cu13" ]; then \
+        python -c "from bionemo_ir._torch.layers.transformers.blocks import ConditionedTransformerBlock, PairUpdateBlock, with_cuda_graph"; \
+    fi && \
+    rfd4-generate --help > /dev/null
+Environment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
+  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
+  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
+  (3) write it to a .env file in the root of the atomworks.io repository
+Environment variable PDB_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
+  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
+  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
+  (3) write it to a .env file in the root of the atomworks.io repository
+/usr/local/lib/python3.12/site-packages/astor/op_util.py:92: DeprecationWarning: ast.Num is deprecated and will be removed in Python 3.14; use ast.Constant instead
+  precedence_data = dict((getattr(ast, x, None), z) for x, y, z in op_data)
+Environment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
+  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
+  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
+  (3) write it to a .env file in the root of the atomworks.io repository
+Environment variable PDB_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:
+  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file
+  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'
+  (3) write it to a .env file in the root of the atomworks.io repository
+Error while loading libcue_ops.so: libcuda.so.1: cannot open shared object file: No such file or directory
+Saving image...
+Image saved, took 17.06s
+
+Built image im-OUXvXtvOvO7FCiFczoQIpX in 173.91s
+
+
+Building image im-1MuhKESwZBtTkPJVZL8EOI
+
+=> Step 0: FROM base
+Saving image...
+Image saved, took 1.71s
+
+Built image im-1MuhKESwZBtTkPJVZL8EOI in 3.19s
+
+
+✓ Created objects.
+├── 🔨 Created mount 
+│   C:\Users\lab\AppData\Local\Temp\claude\C--Users-lab-Documents-Claude-projec
+│   ts-tools-hub--claude-worktrees-rfd4-rung4-8d448c\6278f94f-e49a-40f2-80bd-a3
+│   4c28c86ea5\scratchpad\rung4\rung4_app.py
+├── 🔨 Created function cpu_probe.
+├── 🔨 Created function variant_probe.
+└── 🔨 Created function gpu_run.
+wrote C:\Users\lab\AppData\Local\Temp\claude\C--Users-lab-Documents-Claude-projects-tools-hub--claude-worktrees-rfd4-rung4-8d448c\6278f94f-e49a-40f2-80bd-a34c28c86ea5\scratchpad\rung4\variants_result.json
+Stopping app - local entrypoint completed.
+✓ App completed. View run at 
+https://modal.com/apps/leowan7/main/ap-2uZ3k5ao3MUNNBtbPZ441m

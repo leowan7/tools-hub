@@ -1,0 +1,13 @@
+fc_binder:
+  input: /tmp/rfd4_in/3ave_fc_A.cif
+  contig: "60-120, /0, A10-220"
+  conditions:
+    C_CRDGRP:
+      1:
+        - select: "sel('A/*/*/[N,CA,C,O]') and not has_nan_coord()"
+    C_SEQ:
+      true:
+        - select: "sel('A')"
+    C_HOT:
+      true:
+        - select: "sel('A/*/[17, 19, 20, 22, 36, 38, 40, 77]')"
