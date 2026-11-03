@@ -841,6 +841,162 @@ So the honest headline is **about 25 cents per design, roughly $2 on an eight-de
 - **Licence question for Leo, $0:** is upstream's `af2` oracle route open to us given AF2 params are CC BY 4.0, or does the brief's exclusion of the `alphafold2/runtime` image close it regardless.
 - **Rung 3, GPU — NOT DONE, carried to rung 4.** Rung 3 priced RFD4 generation only (§5.7); it folded nothing. Measuring the Boltz-2 fold cost per design, and the ipTM spread over *n* folds of one RFD4 design on RFD4 output rather than the 2026-09-23 inputs, is still unspent work and still the thing that decides whether the triple fold is affordable.
 
+---
+
+## 7C. Scoring decision record
+
+**Purpose: turn §7B from a direction into a decision Leo can answer in one sitting, and price the one GPU measurement that is still missing.** Nothing here was run. No code was written, no Modal app deployed, no GPU second spent. Every figure is either cited to a `file:line` in this repository, to a named rung result in this document, or labelled **UNVERIFIED**.
+
+### 7C.1 The chain, end to end
+
+Generation and scoring are **two Modal calls on two apps**, not one container.
+
+1. **`rfd4` generates.** The `rfd4` container streams each design as it lands — a presigned PUT then a `new_candidate` heartbeat — exactly as `proteina` does (§7.2). Each candidate carries `pdb_key`, the designed `sequence`, and RFD4's own inline metrics. **No score** (§5.8 Question 4: 89 columns, not one refold, confidence or ipTM column).
+2. **`boltz2` scores.** When the `rfd4` job completes, the delivered designs are folded on the existing `ranomics-boltz2-prod` app (`tools/boltz2/modal_app.py:193`, GPU `A100-40GB` at `:54`). The `boltz2` pipeline takes an antigen PDB plus a list of binder sequences (`tools/boltz2/__init__.py:5-9`) — which is exactly the shape `rfd4` delivers, since RFD4 emits sequence and structure together (§7.3). Per design it returns the predicted complex PDB plus `iptm`, `ptm`, `complex_plddt`, `complex_iplddt` and a hotspot contact count (`tools/boltz2/run_pipeline.py:862-865, 883-889`).
+3. **The hub ingests the fold candidates** through the paths already in place: upload URLs, per-design heartbeat (`run_pipeline.py:896-901`), `_sanitize_candidate` (`webhooks/modal.py:419-542`), and `shared/job_recovery.py` for a stopped run.
+
+**Preset: `standalone`, not `msa_server`.** `standalone` is single-sequence cofold and is the documented right choice for designed binder sequences with no informative MSA (`tools/boltz2/__init__.py:16-23`); `msa_server` costs ~3x and, on the one comparison that exists, bought *worse* discrimination (`tools/boltz2/__init__.py:149-163`, Rung B). `msa_server` is also exempt from batching (`run_pipeline.py:749`), which would multiply the fixed cost per fold.
+
+**It is a batch call, which the pipeline already does.** `main` folds `FOLD_CHUNK = 10` designs per `boltz predict` process (`tools/boltz2/run_pipeline.py:119`, chunk loop `:749-756`), paying the ~60-70 s process fixed cost once per chunk rather than once per design. Eight designs at n=1 is therefore **one process**.
+
+**Which hub paths this reuses, and the two that need an edit.**
+
+| Path | `file:line` | Reused as-is? |
+|---|---|---|
+| Live charging membership | `shared/wallet_guard.py:89-104` (`_LIVE_ALL_PRESETS`) | `boltz2` is already in it. `rfd4` must be added (step 4). |
+| Start minimum | `shared/wallet_guard.py:122-213` | **No.** See §7C.4 — `boltz2` falls through to `Decimal("0")` at `:218`. |
+| Streaming / per-design upload | `tools/boltz2/run_pipeline.py:800-901` | Yes. |
+| Heartbeat candidate allowlist | `webhooks/modal.py:419-542` | **No** for any new key. It is a literal dict of explicit `cand.get("<name>")` reads; an unnamed key is discarded at heartbeat time. |
+| Stop/cancel rebuild | `shared/job_recovery.py:78-96` | Yes for `iptm`, `plddt`, `i_pae` — those three are carried unconditionally. A spread key is not. |
+| Legends | `shared/score_legends.py:733-767` | Yes. `("boltz2", "ipTM")`, `"pTM"`, `"pLDDT"`, `"n_hotspot_contacts")` all exist. |
+| Uniform bar | `shared/score_legends.py:1539` | `boltz2` maps to `("ipTM", "pLDDT", "n_hotspot_contacts")`. An `rfd4` row is a new entry. |
+| Campaign columns + sort key | `shared/result_columns.py:25-72` | **No entry for `boltz2` or `rfd4` today.** `_TOOL_RESULT_COLUMNS` and the primary-metric map (`:71-72`) both need an `rfd4` row. |
+| Exports | `shared/exports.py:441` | Yes for sequence (RFD4 supplies one directly, §7.3). CIF-as-structure is still the step-5 change. |
+
+**Columns on the results page, and which one sorts (§10 item 14).**
+
+| Column | Source | Role |
+|---|---|---|
+| **ipTM (median of n)** | Boltz-2 `iptm`, `run_pipeline.py:862` | **DISPLAYED and SORT key.** |
+| **ipTM range (min-max of n)** | our arithmetic over the n folds | DISPLAYED only. Never sorts. |
+| pLDDT | `complex_plddt`, `:864` | Displayed. |
+| hotspot contacts | `n_hotspot_contacts`, `:887` | Displayed. |
+| hotspot_obedience | RFD4's own metrics CSV (§5.8 Q4) | Displayed. **Do not rank on it** — its denominator of 6 against 3 conditioned residues is unexplained (§5.8 reading 1). |
+| binder RMSD | derived, §7C.3 | Displayed if we build it. |
+
+**The recommendation on the sort key is that the sort key and the displayed number be the same quantity — the median — and that the spread travel beside it in its own column.** The alternative considered and rejected: sort on the *worst* of the n folds (a conservative "does it hold up under resampling" reading). It is defensible but it ranks a design by its unluckiest draw, and with n=3 that is one sample. Median plus a visible range says the same thing without pretending the single number is stable.
+
+**How n folds' spread reaches the page.** n folds of one design produce n candidate records from the `boltz2` job. The aggregation to one row per design is **hub-side after the fold job completes**, not in the container: the container knows nothing about which records are replicates of the same design. That is a step-5 piece of work and it has no code today. Two consequences worth stating before anyone plans it: (i) the per-design heartbeat during the fold reports a *position*, not a rank (`run_pipeline.py:767-783`), so the live page during an n=3 fold shows 24 rows, not 8; (ii) `_sanitize_candidate` has **no key for a spread**, so carrying one means adding it to `webhooks/modal.py:508-542` *and* to the rebuild in `shared/job_recovery.py` — the "two allowlists, not one" trap already recorded at §7.2. The cheapest shape that avoids both: store the median under the existing `iptm` key (existing legend, existing recovery path, no allowlist edit) and add exactly one new key for the range.
+
+### 7C.2 Seeding: how, with what seeds, and what it does not buy
+
+**The flag exists and we do not pass it.** `boltz predict` takes `--seed` (an `int`, default `None`, "no seeding") at our pinned `boltz==2.2.1` (`tools/boltz2/Dockerfile.modal:64`); the option is declared at `main.py:919-922` of upstream `v2.2.1` and applied as `seed_everything(seed)` at `main.py:1101-1103` (read first-hand at upstream tag `v2.2.1`, commit `cb04aeccdd480fd4db707f0bbafde538397fa2ac`; not a file in this repository). Our argv (`tools/boltz2/run_pipeline.py:460-468`) carries `--out_dir`, `--no_kernels`, `--output_format pdb`, `--override` and nothing else, so the sampler runs unseeded today.
+
+**Exactly how it would be passed:** one more `cmd.append`/pair in `run_boltz` (`tools/boltz2/run_pipeline.py:444-470`), which is the only place the argv is built.
+
+**The constraint that decides what "n-fold seeds" can mean.** `seed_everything` is a **process-global** call made once per `boltz predict` invocation, and our pipeline folds a whole chunk of up to 10 records in one process. So **one seed per process, shared by every record in it** — there is no per-record seed. n replicates therefore means **n processes, each folding the same design list under its own seed**, paying the ~60-70 s fixed cost n times. A seed per design is not available without one process per design, which is the arrangement batching exists to avoid.
+
+Proposed seeds: **fixed and derived, not random** — replicate *k* of a job uses a constant offset (e.g. `1 + k`), identical across jobs, so two runs of the same design list are byte-comparable. Nothing in the hub currently stores a seed for a `boltz2` job, so the seed must also be recorded on the candidate or the job row, or the reproducibility is unverifiable from the result alone. **UNVERIFIED: no such field exists in `_sanitize_candidate` today** (read `webhooks/modal.py:508-542` — there is no seed key).
+
+**Stated plainly: seeding gives reproducibility, not discrimination.** A fixed seed makes the same design score the same number twice. It does **not** narrow the 0.263-0.830 band in §7B.3 — that band is sampling uncertainty across the diffusion sampler's own distribution, and fixing a seed selects one draw from it rather than shrinking it. A seeded single fold is a *stable* number, not a *trustworthy* one. This is why §7B.3's recommendation is seeding **and** n>1, not seeding instead of it.
+
+**One hazard for the existing tool.** `run_boltz` is shared with the production `boltz2` tool that customers already buy. Adding `--seed` unconditionally changes that tool's output for every future run (and would make its scores no longer comparable with scores already in the database). It should arrive as a parameter with the existing unseeded behaviour as the default, or be gated on the caller being the `rfd4` chain.
+
+### 7C.3 The three upstream `ppi` terms, one at a time
+
+Upstream's protein-binder pass criterion has three terms (§7A.2). Status of each against the Boltz-2 chain:
+
+| Upstream term | Status | What it costs |
+|---|---|---|
+| `oracle_ppi.ptm_coi` min 80.0 | **Covered** by Boltz-2 `iptm` (`run_pipeline.py:862`), after a 0-1 vs 0-100 scale conversion | $0, already in the result |
+| `refolded_target_backbone_aligned_binder_rmsd.rmsd` max 2.5 | **Derivable at $0** | CPU arithmetic |
+| `oracle_ppi.min_ipae_coi` max 1.5 | **Probably derivable at $0, from output we already park** | see below |
+
+**Binder RMSD — arithmetic, not inference.** RFD4's generated complex (`*_generated.cif`) and Boltz-2's predicted complex (`<id>_model_<n>.pdb`, `run_pipeline.py:498`) are both returned, so the quantity is: superpose on the **target** backbone, then compute binder CA RMSD. Pure CPU, no new GPU second. Two cautions. (i) It needs a chain correspondence between a CIF and a PDB across two different writers; the §5.8 lesson applies directly — pick the designed chain by **sequence identity, not by length**, because `pdl1_binder_4`'s designed chain is 116 aa against a 115 aa target and any length rule mis-identifies it. (ii) It is **not** upstream's number: upstream aligns an *oracle refold* against the generated structure, we would align a *Boltz-2 cofold*. Same shape, different predictor. Do not print it next to upstream's 2.5 bound.
+
+**i_pAE — what the pinned package actually writes.** Read first-hand at upstream `boltz` tag `v2.2.1` (`cb04aecc`), which is the version pinned at `tools/boltz2/Dockerfile.modal:64`:
+
+- The writer saves a **full token-pair PAE matrix** as `pae_<id>_model_<n>.npz`, and at `v2.2.1` that write is gated on **`"pae" in prediction`** (`src/boltz/data/write/writer.py:231-238`) — *not* on the `--write_full_pae` CLI flag. `write_full_pae` is declared (`src/boltz/main.py:890-894`) and threaded into `predict_args` (`:1305`), but the writer body contains no reference to it.
+- `prediction["pae"]` is populated when the model's **`alpha_pae > 0`** (`src/boltz/model/models/boltz2.py:1100-1101`). `alpha_pae` is a model hyperparameter (`:73`, default `0.0`) read from the checkpoint, **not** a CLI flag — `main.py` never sets it.
+- **So whether the npz exists for *our* run turns on what the released `boltz2_conf.ckpt` sets `alpha_pae` to, which this session did not read. UNVERIFIED.** The honest claim is: at `v2.2.1` nothing in the *CLI* suppresses the PAE write, and our pipeline passes no flag that would.
+- **And if it is written, we already have it.** `archive_raw_outputs` tars the **entire** work tree before teardown (`tools/boltz2/run_pipeline.py:550-575`) onto the raw Volume `ranomics-boltz2-raw` (`tools/boltz2/modal_app.py:97`), precisely because the pipeline keeps only four confidence scalars and the function's own docstring names "the PA(E)/PDE npz" among what it would otherwise lose. **So the $0 check is: pull one parked tar from a past `boltz2` run and look for `pae_*.npz`.** That is a Modal volume read, free, no approval needed, and it answers the question without folding anything. It was not done in this session.
+- **A second free quantity we currently throw away.** The confidence JSON at `v2.2.1` also carries `chains_ptm` and the full **`pair_chains_iptm`** matrix (`writer.py:202-213`). Our pipeline reads four scalars from that file (`run_pipeline.py:862-865`) and discards the rest. Per-chain-pair ipTM is the *binder-to-target* confidence specifically, which is closer to upstream's `_coi` ("chain of interest") framing than the global `iptm` we use. Also $0, also already on disk.
+
+**The `_num` hazard, restated because it is the one that would ship a wrong number silently.** `_sanitize_candidate` stores `"i_pae": _num(cand.get("i_pae"))` where `_num` is `round(float(value), 4)` with **no range gate and no unit check** (`webhooks/modal.py:437-441, 517`). PAE is an Angstrom-like quantity and ipTM-like scores are 0-1; the hub has already been bitten by a 0-1 vs 0-100 split on pLDDT, and `shared/score_legends.py:1534-1537` records a deliberate decision to leave `pAE` out of the `pxdesign` bar for exactly this reason — "a leg that can silently pass everything is worse than no leg". **If we compute an interface PAE from a Boltz-2 matrix, the unit must be fixed at the point of computation and asserted there**, because nothing downstream will catch it.
+
+### 7C.4 Cost, and what it does to the $1.00 and the cap
+
+Boltz-2 runs on **A100-40GB** (`tools/boltz2/modal_app.py:54`) at **$0.000714 raw GPU-second** (`shared/wallet_estimates.py:73`), billed through **`WALLET_MARKUP = 1.70`** (`shared/wallet.py:71`) = **$0.0012138 per customer GPU-second**.
+
+Two measured anchors exist, and they disagree by ~2.5x because one predates batching. Both are in `tools/boltz2/__init__.py`:
+
+- **Per-design (pre-batching), `:30-35`:** 81.9 s first fold then ~69 s marginal, measured 2026-09-19 on A100-40GB.
+- **Batched, `:76-88`:** fixed process cost **60.3-69.8 s** paid once per chunk, each record's own fold **14.1-23.5 s**, measured 2026-09-23 on two throwaway probes.
+
+Since the chain is a batch call, the batched anchor is the right one and the per-design anchor is the ceiling. **Both are given, because the batched figure has never run through prod, the wrapper or the wallet (`:90-99`), and the largest batch ever folded is 5 records, not 10.**
+
+| | Processes | Records | GPU-s (batched anchor) | Customer | GPU-s (per-design ceiling) | Customer |
+|---|---|---|---|---|---|---|
+| **n=1, one design** | 1 | 1 | 74-93 | **$0.09-0.11** | 82 | **$0.10** |
+| **n=1, 8 designs** | 1 | 8 | 172-258 | **$0.21-0.31** | 565 | **$0.69** |
+| **n=3, one design** | 3 | 3 | 223-281 | **$0.27-0.34** | 246 | **$0.30** |
+| **n=3, 8 designs** | 3 | 24 | 516-774 | **$0.63-0.94** | 1,695 | **$2.06** |
+
+Arithmetic: batched = `processes x (60.3-69.8) + records x (14.1-23.5)`; per-design = `processes x 81.9 + (records - processes) x 69`. n=3 is three processes because a seed is process-global (§7C.2), and 8 records fit one chunk at `FOLD_CHUNK = 10`.
+
+**So scoring an 8-design run costs between about 20 cents and about $2, and the n=1 vs n=3 decision is worth roughly $0.40 to $1.40 per run.** That is a rounding error against the $1.00 start minimum, and it is the reason this decision should be made on what is *honest*, not on what is cheap.
+
+**Three things that could move those numbers, each UNVERIFIED for RFD4 output.** (i) Both anchors were measured on **242-246 aa binders against a 107 aa antigen** (`tools/boltz2/__init__.py:37-40`). Rung 4's actual designs are **58-116 aa binders against a 115 aa target** (§5.8 Question 1) — a materially smaller complex, so the anchors are more likely high than low, but the direction is an extrapolation and not a measurement. (ii) The batched anchor's fixed term moved 60.3 -> 69.8 s between two probes, so read it as a band. (iii) Nothing has measured a 10-record chunk, let alone three of them.
+
+**Effect on the $1.00 start minimum — this is the part that needs a decision, not a number.** §7.1 already records the hole: `shared/refold.py` spawns a **separate** Boltz-2 job per candidate (`:41`), and a separate job passes its own wallet gate. `boltz2` has **no start-minimum branch** in `live_start_usd`, so it falls through to `return Decimal("0")` (`shared/wallet_guard.py:218`). Consequences of each route:
+
+- **Separate `boltz2` job (recommended).** `rfd4`'s $1.00 prices generation only, which is what §5.8 measured it against ($0.2240 to the first design, 4.46x headroom). But the fold job starting at $0 means a customer whose balance is exhausted by generation gets **eight structures and no scores** — the exact "unjudged" outcome §7B exists to prevent. The fix is not a bigger `rfd4` minimum; it is to **refuse to spawn the fold unless the balance covers it**, or give the chained fold its own non-zero minimum. $1.00 then stands unchanged.
+- **Fold inside the `rfd4` job.** A run admitted on $1.00 owes $1.21-$3.06 all-in and the live meter stops it mid-fold. Do not do this.
+
+**Effect on the per-job cap: none binding, but the *hold* is a display problem at n=3.** `PER_JOB_HARD_CAP_USD["boltz2"]` is $50.00 (`shared/wallet.py:147`) and `base_hard_cap_usd` is $0.40 scaling on `n_designs_total` (`shared/wallet_estimates.py:424-425`), so a 24-record fold caps at $9.60 against an actual $0.63-$2.06 — comfortable. The problem is the quote: `expected_gpu_seconds = 180.0` (`:423`) is a deliberate over-guess covering both presets, so 24 records quote 4,320 GPU-s ≈ $5.24, cushioned 1.5x to roughly **$7.87 of hold for about $2 of folding**. Safe on money (a settle reconciles against measured seconds, `:409-411`) but it is the number the customer reads, and at n=3 it is nearly 4x the charge. **`rfd4`'s own cap is a step-4 number and must come from rung 4's measurement, not from `proteina`'s.**
+
+### 7C.5 Rung 5: the smallest GPU run that prices this
+
+**This is a proposal. It is not approved and must not run until Leo approves this specific job.**
+
+**What it measures, and why it cannot be derived.** Two quantities, both load-bearing and neither available on CPU or on paper: (i) **Boltz-2 fold wall-clock on RFD4-sized complexes** — every anchor we have is a ~244 aa binder against a 107 aa antigen, and the whole §7C.4 table rests on extrapolating to 58-116 aa; (ii) **the ipTM spread across seeds on real RFD4 output** — §7B.3's 0.263-0.830 was measured on 2026-09-23 inputs (trastuzumab-framework scFvs), and whether RFD4 designs behave the same way is the question that decides n=1 vs n=3.
+
+**Inputs are already in the repository, at $0.** All eight rung-4 designs are embedded as full CIF text in the committed result artefact `docs/scoping/rung4-probe/gpu_result_20261103T114437.json` under its `files` map (keys `/tmp/rfd4_run/inference_samples/pdl1_binder_<k>/pdl1_binder_<k>_generated.cif`, 517-691 KB each). The target chain is byte-identical across all eight (§5.8 Question 1), so one target and eight binder sequences are extractable locally with no GPU and no download.
+
+**The smallest run that answers both.** Three designs spanning the length range — `pdl1_binder_5` (58 aa), `pdl1_binder_2` (75 aa), `pdl1_binder_4` (116 aa) — folded under three seeds, plus **one repeat of the first seed on one design** to confirm that seeding actually fixes the number:
+
+| | Processes | Records |
+|---|---|---|
+| seeds 101 / 202 / 303 x 3 designs | 3 | 9 |
+| seed 101 repeat, `pdl1_binder_5` | 1 | 1 |
+| **total** | **4** | **10** |
+
+**Expected cost:** `4 x (60.3-69.8) + 10 x (14.1-23.5)` = **382-514 GPU-s** on A100-40GB = **$0.27-$0.37 raw**, **$0.46-$0.62 customer**. Ask for a **$0.75 raw ceiling** — the headroom covers the batched anchor being optimistic, since the per-design ceiling arithmetic for the same shape (`4 x 81.9 + 6 x 69` = 742 s) is $0.53 raw.
+
+**What it would return:** per-design fold seconds at RFD4 sizes; ipTM at three seeds on three designs (the spread); and one seeded duplicate pair (reproducibility, pass/fail). That is enough to settle n=1 vs n=3 and to replace the §7C.4 table's extrapolation with a measurement.
+
+**The $0 / CPU path that must run first.** Folding on CPU is not the dry run — `boltz predict --accelerator cpu` on a ~230-token complex is not a sane use of anyone's afternoon, and it would measure nothing we want. The free rehearsal is everything *around* the fold, and it de-risks the paid run: extract the eight designed chains and the target from the committed artefact **by sequence identity, not by length** (§5.8's own trap); build the per-design input YAMLs through the real code path (`tools/boltz2/run_pipeline.py::make_yaml_sseq:396`); check the record ids are the fixed-width `d_000` form that keeps one record's glob off its neighbour's files (`_record_id:427`, `collect_outputs:478-498`); and implement and self-check the target-aligned binder RMSD of §7C.3 on the eight CIFs against each other, where no fold is needed. **Every one of those is a place a paid run could return unusable output, and all four are free.**
+
+### 7C.6 Questions for Leo
+
+Each has a recommendation. Items 1 and 2 are needed before step 5 is written; 3 and 4 can follow.
+
+1. **Fold each design once, or three times?** -> **Recommendation: three, and show the range.** Cost is $0.63-$0.94 against $0.21-$0.31 on an 8-design run (§7C.4) — under a dollar either way. Our own Boltz-2 spans ipTM 0.263-0.830 on byte-identical input (§7B.3), so a single number, seeded or not, is one draw from a wide distribution presented as a measurement. Three folds with a visible range is the honest version of the same column. **If you want n=1 for release 1 to keep the page simple, the condition is that the column is labelled as a single fold** — not as a confidence score.
+2. **Sort key.** -> **Recommendation: median ipTM over the n folds, and display that same median with the min-max range beside it.** Sorting on something other than the number shown invites "why is #1 below #2". Rejected alternative: sort on the worst fold, which is defensible but ranks a design by its unluckiest draw. **Do not** sort on `hotspot_obedience` — its denominator is unexplained (§5.8 reading 1).
+3. **The `af2`-oracle licence question (§9 item 9).** -> **Recommendation: ask, but do not wait for it.** AF2 parameters have been CC BY 4.0 since the 2022-12-06 release (§7B.1), so the restrictive oracle is AF3, not AF2; whether the brief's exclusion of the optional `alphafold2/runtime` **image** also closes the route to our own ColabFold weights is a licence reading, not a technical one. It would recover `min_ipae_coi` directly. But §7C.3 says that term is **probably already in a tar we have parked**, at $0 — so this question is now worth less than it was when §9 raised it. Spend the free volume read first.
+4. **Drop the developability columns for release 1?** -> **Recommendation: yes, drop them.** The Rosetta pair needs a PyRosetta apptainer with its own licence question (§7A.6), our `binder-developability` skill covers only the two *sequence* terms and lives outside this repository so using it means porting it (§7B.5), and whether `sequence_developability` also needs the apptainer is still unread (§10 item 13). Nothing in the chain above depends on them.
+
+**One thing to note rather than decide: the start-minimum hole in §7C.4.** The recommended route (a separate `boltz2` fold job) keeps `rfd4`'s $1.00 correct but lets the fold start at $0, so a drained balance delivers structures with no scores. That is an engineering fix in step 4 — refuse the spawn, or give the chained fold its own minimum — and it does not need Leo's input unless he wants the other route.
+
+### 7C.7 What this section did not verify
+
+- **Whether `alpha_pae > 0` in the released `boltz2_conf.ckpt`**, i.e. whether a `pae_*.npz` is actually written for our runs. The CLI does not suppress it at `v2.2.1` and we pass no flag that would; the checkpoint hyperparameter was not read. The $0 resolution is a read of one parked tar on `ranomics-boltz2-raw`, not a fold.
+- **Whether any parked `boltz2` tar in fact contains `pae_*.npz` or the `pair_chains_iptm` block.** Nothing was pulled from the raw Volume in this session.
+- **Every cost figure for RFD4-sized complexes.** All of §7C.4 extrapolates from 242-246 aa binders against a 107 aa antigen to 58-116 aa binders against a 115 aa target. The direction (smaller is faster) is reasoning, not measurement. That is what rung 5 is for.
+- **The batched anchor through production.** It comes from two throwaway probes on a non-identical image, and the largest batch ever folded is 5 records (`tools/boltz2/__init__.py:90-99`).
+- **That `_sanitize_candidate` has no seed field** was read (`webhooks/modal.py:508-542`); what it would take to add one was not designed.
+- **No GPU ran, no app was deployed, no money was spent for this section.**
+
 ## 8. Work plan, in PR-sized steps
 
 Each step is one PR with a gate. Sizes are rough.
