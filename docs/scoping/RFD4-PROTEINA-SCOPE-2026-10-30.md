@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping. **No product code was changed and no Modal app was deployed.** GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** through rung 3, plus rung 2's uncaptured seeding bounded under $0.62 and rung 4's one GPU run whose billing read has **not yet landed** (estimated ~$0.22 raw, UNVERIFIED) (§§5.4–5.8, §11).
+Scope of this document: research and scoping, plus the sections later passes have appended. **The 2026-10-30 research pass changed no product code and deployed no Modal app**; later passes recorded in §10A do add code (`tools/rfd4/numbering.py`) and have themselves deployed nothing. "Deploys nothing" is a statement about these passes, NOT about the merge: merging the PR redeploys all nine GPU Modal apps, so the merge is Leo's to make after an idle check, not a worker session's. GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** through rung 3, plus rung 2's uncaptured seeding bounded under $0.62 and rung 4's one GPU run whose billing read has **not yet landed** (estimated ~$0.22 raw, UNVERIFIED) (§§5.4–5.8, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
@@ -1120,7 +1120,7 @@ Each step is one PR with a gate. Sizes are rough.
 3. ~~**Do structure files land per design or only at run end?**~~ **ANSWERED 2026-10-30: per design**, one every ~12 s from 68.1 s onward (§5.7). Save-as-you-go is feasible. The watcher must skip the hidden `.generated-cif-*` temp directory each design is written through.
 4. ~~**The real `per_example_metrics.csv` header.**~~ **ANSWERED 2026-11-03 (§5.8).** 44 columns with no metrics group composed (rung 3), **89 columns with `metrics_tags=[design,interchain_interactions,hotspot_conditioning]`** (rung 4). The **46** added columns are the composition, bond-length, clash, hotspot-obedience, interchain-interaction, sequence-adherence, sequence-probability-adherence and SSE groups plus `pre_oracle_pass` (net +45: rung 4 carries 32 `generation.*` columns against rung 3's 33, and which one dropped is unrecoverable) — and **still no refold, confidence or ipTM column**, which is hard confirmation of §7B.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
-6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made.
+6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made. **STILL OPEN.** The options, their consequences, a recommendation and the single place in code that decides it are in §10A; no run has compared them.
 7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure was a single-file number; the volume must hold the matched flow/autoencoder pair.
 8. **VRAM at the top of the size envelope.** Only "≥40 GB recommended" upstream, with no curve. Rung 5.
 9. **Does `delete_failing_pre_oracle` race our uploader?** **NOT APPLICABLE to our configuration.** Rung 3 composed no metrics group, no oracle ran, and all eight designs persisted (§5.7). It would only matter if we later enabled an oracle, which the licence exclusion rules out.
@@ -1134,9 +1134,82 @@ Each step is one PR with a gate. Sizes are rough.
 
 ---
 
-## 11. What this pass did not do
+## 10A. Note on §10 item 6: which atoms a hotspot should name
 
-No product code was changed. No Modal app was deployed. No customer-visible string was edited. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured), rung 3's run (§5.7, a measured **$0.2908**) and rung 4's single run (§5.8, one A100 container, 217.4 s, **billing read still pending** — estimated ~$0.22 raw, UNVERIFIED). Rung 4 also ran two CPU-only probe functions that carry no `gpu=` and no `volumes=`. A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
+Added 2026-11-02 by the numbering/conversion pass (`tools/rfd4/numbering.py`). This
+section **does not close item 6.** It lays out the options so the decision can be
+made on evidence later, and records where the code would change.
+
+### What the gap actually is
+
+Our picker emits residues. A customer clicks a residue on the viewer and we carry
+`"B52"` — a chain plus an author residue number, and nothing finer
+(`shared/pdb_inspect.py:315` parses exactly that shape). Upstream's condition spec
+addresses atoms: `sel('A/*/56/[CG,OH]')` (§4.1). So something between the picker and
+the container has to invent an atom set per picked residue. Whatever it invents is a
+scientific choice about how much of the target surface the model is told to bury.
+
+Nothing below has been compared on a GPU. There is no run, ours or upstream's, that
+measures one option against another on the same target.
+
+### Where it is decided in code
+
+One constant and one function, both in `tools/rfd4/numbering.py`:
+
+* `RFD4_HOTSPOT_ATOM_SET` — the name of the policy. Currently `"sidechain_heavy"`.
+* `hotspot_atoms_for_residue(resname, observed_atom_names)` — the policy itself.
+
+Changing the policy means editing both: the function refuses any value of the constant it does not implement, so the constant on its own is a label, not a switch. No caller spells out atom names, so
+no caller needs to change. Step 2 will call it once per picked residue and pass the
+result to `format_hotspot_selection`.
+
+### The options
+
+| Option | What it emits for one picked residue | Consequence |
+|---|---|---|
+| **A. `CA` only** | One atom | Weakest steering, and it cannot over-constrain. (The only upstream example this document records is `sel('A/*/56/[CG,OH]')`, §4.1 — two atoms, not one, so upstream's own usage is no argument for A.) But a 4-residue epitope becomes 4 points, which is a very thin description of a surface patch, and the customer's mental model ("bind *here*") is a patch |
+| **B. Sidechain heavy atoms, `CA` for glycine** | 1–10 atoms, by residue type | What the code does today. Names the part of the residue that actually makes the contact and skips the backbone, which in a well-packed target is not solvent-facing. Costs: a buried or poorly-resolved sidechain contributes atoms that cannot be contacted, and the atom count varies 10-fold across residue types (TRP yields 10, ALA and GLY 1 — measured by calling `hotspot_atoms_for_residue` on a full residue, 2026-11-02), so a TRP-heavy epitope is weighted far more heavily than a GLY/SER one |
+| **C. All heavy atoms** | 4–14 atoms | Most literal reading of "this residue". Strongest constraint, and the one most likely to over-specify: it asks the binder to approach backbone atoms that may be inaccessible, and §10 item 11 already records an open upstream quality bug in binder mode. Highest risk of a design that satisfies the spec and is nonsense |
+| **D. Curated functional group per residue type** | 1–3 atoms, from a hand-written table (TYR `OH`; ARG `NE,NH1,NH2`; ASP `OD1,OD2`; …) | Closest to how a structural biologist would describe an epitope, and the most defensible per-residue weighting. Costs a table that is a scientific artefact needing its own review, and it has a judgment baked in for all 20 residue types rather than one |
+| **E. Expose it to the customer** | Their choice | Pushes an undecided scientific question onto someone with less context than us, and adds a form field, a preflight rule and copy. Not for release 1 |
+
+A cross-cutting consideration for every option except A: the atom set must be
+intersected with the atoms the structure **actually contains**, or a selection names
+an atom upstream cannot resolve. `hotspot_atoms_for_residue` takes the observed atom
+names for exactly that reason. Whether upstream errors on an unresolvable atom name
+or silently drops it is **UNVERIFIED** — and it matters, because the silent-drop case
+would be the same failure shape as §10 item 5. The precedent is proteina's upstream,
+which drops an unmatched residue token without complaint
+(`tools/proteina/run_pipeline.py:706-715`); nothing read so far says whether RFD4
+behaves the same way.
+
+### Recommendation
+
+**B, intersected with observed atoms, with D as the upgrade if rung 5 shows B
+over-constrains.** The reasoning: B is what a contact actually involves, it needs no
+new scientific artefact to review, and it degrades safely — a buried sidechain adds
+atoms the model cannot reach, which weakens the constraint rather than corrupting it.
+A is the safe fallback if any evidence appears that multi-atom selections
+over-constrain. C should not ship.
+
+This is a recommendation, not a decision. **§10 item 6 stays open.** The measurement
+that would close it: one target, one epitope, the same seed, three runs under A, B and
+C, scored through our Boltz-2 chain (§7B) and compared on whether the designed binder
+contacts the picked residues. That is GPU spend nobody has approved.
+
+### What else stays open
+
+§10 item 5 (PDB→CIF and `label_seq_id`) is **not closed** by the numbering pass
+either. That pass tests our mapping on a corpus -- three deposited structures plus
+crafted cases -- and the suite fails under an identity mapping; the polymer-eligibility
+conformance test says of itself that it is a corpus, not a proof. It does not prove upstream's reader agrees with the mmCIF
+we write — nothing produced by `tools/rfd4/numbering.py` has been through
+`rfd4-generate`. Accepting the generated CIF in the container is a step-2 gate.
+
+---
+## 11. What the 2026-10-30 research pass did not do
+
+This section is about that pass only; §10A records a later one that does add code. The research pass changed no product code, deployed no Modal app and edited no customer-visible string. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured), rung 3's run (§5.7, a measured **$0.2908**) and rung 4's single run (§5.8, one A100 container, 217.4 s, **billing read still pending** — estimated ~$0.22 raw, UNVERIFIED). Rung 4 also ran two CPU-only probe functions that carry no `gpu=` and no `volumes=`. A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
 
