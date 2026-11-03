@@ -13,7 +13,9 @@ them.
 
 The fixtures are real deposited structures, trimmed:
 
-* ``static/example/1HEW.pdb`` -- hen lysozyme, one chain, author 1..129, gapless.
+* ``static/example/1HEW.pdb`` -- hen lysozyme, one POLYMER chain, author
+  1..129, gapless; a second author chain B carries 3 NAG, and chain A carries
+  103 waters.
   The EASY case, where author numbering and ``label_seq_id`` coincide. Present so
   that the identity-mapping check below has something to be indistinguishable on.
 * ``static/example/3ave_igg1_fc_dimer.pdb`` -- IgG1 Fc homodimer, chains A and B,
@@ -841,11 +843,12 @@ def _atom_site_rows(cif: str) -> tuple[list[str], list[list[str]]]:
 def _duplicate_non_water_label_keys(path: Path) -> dict:
     """Label identities that more than one atom row shares, waters excluded.
 
-    Water is excluded because RCSB genuinely does put a chain's waters in one
-    asym told apart only by ``auth_seq_id``
-    (``test_waters_get_their_own_asym_and_entity``). For every other
-    non-polymer it gives each copy its own ``label_asym_id``, so a shared
-    identity there is a defect.
+    Water is excluded because a chain's waters deliberately share one asym and
+    are told apart only by ``auth_seq_id``
+    (``test_waters_get_their_own_asym_and_entity``); every other non-polymer
+    gets one ``label_asym_id`` per copy, so a shared identity there is a defect.
+    The attribution of that split to RCSB is labelled UNVERIFIED in
+    ``pdb_to_cif``'s docstring; this helper does not depend on it.
     """
     cif, _mapping = _convert(path)
     cols, rows = _atom_site_rows(cif)

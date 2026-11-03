@@ -1,12 +1,22 @@
-"""Print every numeric figure the #477 PR body and `tools/rfd4/numbering.py`
-quote, so a reader re-derives them with one command instead of trusting prose.
+"""Re-derive the per-fixture, suite and mutation figures the #477 PR body and
+`tools/rfd4/numbering.py` quote, with one command instead of trusting prose.
 
     python scripts/measure_rfd4_numbering_figures.py
 
+Every figure it prints is measured at run time; none is typed in. It does NOT
+print every figure those two quote, and the three it misses each carry their own
+command instead:
+
+* the 14 and 50 duplicate label keys, which only exist against the pre-rebuild
+  blob `a4108d6d` (command in `test_each_ligand_copy_gets_its_own_asym`);
+* 1HEW's 103 waters / 3 NAG split between its two author chains, which is read
+  off the fixture (said so at the figure, in `pdb_to_cif`'s docstring);
+* the scope doc section 10A atom counts for option B (TRP 10, ALA and GLY 1),
+  which name `hotspot_atoms_for_residue` at the figure.
+
 Exists because round 5 found the PR body's test count stale and its
-`label_asym_id` prose describing a design two rounds old. A figure that lives
-only in prose is unguarded (every figure below is measured here at run time;
-none is typed in).
+`label_asym_id` prose describing a design two rounds old: a figure that lives
+only in prose is unguarded.
 """
 from __future__ import annotations
 

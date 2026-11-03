@@ -369,10 +369,14 @@ class _Atom:
     element: str
 
 
-# The two-letter elements that occur in deposited biomolecular structures:
-# every metal, halogen and metalloid PDB chemical components use, plus `SE`
-# for selenomethionine. Needed because a two-letter element cannot be
-# recovered from an atom name's first character
+# Two-letter elements that occur in deposited biomolecular structures. The
+# list was collected by hand and is UNVERIFIED against the PDB chemical
+# component dictionary -- it is not known to be complete, and nothing here
+# checks it. An element missing from it falls back to its first letter, which
+# is the behaviour this list exists to avoid, so a wrong `type_symbol` on an
+# exotic element is still reachable; columns 77-78 settle it whenever the file
+# supplies them, which deposited files do. Needed because a two-letter element
+# cannot be recovered from an atom name's first character
 # (`test_a_two_letter_element_survives_a_blank_element_column`).
 _TWO_LETTER_ELEMENTS = frozenset({
     "AG", "AL", "AS", "AU", "BA", "BE", "BI", "BR", "CA", "CD", "CE", "CL",
@@ -563,12 +567,21 @@ def pdb_to_cif(
     ``scripts/measure_rfd4_numbering_figures.py``; the 103/3 split between
     the chains is not, and was read off the fixture).
     Non-polymers therefore get their own ``non-polymer`` entity and their own
-    asym id, following RCSB: each LIGAND COPY gets its own, written
+    asym id: each LIGAND COPY gets its own, written
     ``<chain>_<resname>_<author seq><icode>``
     (``test_each_ligand_copy_gets_its_own_asym``), while a chain's WATERS stay
     grouped in one asym written ``<chain>_<resname>`` and are told apart only by
-    ``auth_seq_id``, which is what RCSB does
-    (``test_waters_get_their_own_asym_and_entity``). An author chain id is one
+    ``auth_seq_id`` (``test_waters_get_their_own_asym_and_entity``).
+
+    That split follows the RCSB deposition convention as this module understands
+    it, and THAT ATTRIBUTION IS UNVERIFIED HERE: no file or test in this
+    repository cites the mmCIF specification or a deposited entry for it, and
+    nothing in this module reads a real RCSB-written CIF. What the tests do pin
+    is narrower and does not depend on the attribution being right -- that this
+    writer is self-consistent, and that no two non-water atom rows share a
+    ``label_asym_id`` + ``label_seq_id`` + ``label_comp_id`` + ``label_atom_id``
+    identity. Every later mention of RCSB in this module refers back to this
+    paragraph rather than re-asserting the convention. An author chain id is one
     column wide, so a generated id can never collide with one.
 
     ``label_seq_id`` is the 1-based index of a polymer residue within its chain,
@@ -613,10 +626,10 @@ def pdb_to_cif(
     # run would complete -- this module's own failure mode
     # (`test_a_repeated_author_residue_is_refused_not_merged`). That also writes
     # two rows sharing one label_asym_id + label_seq_id + label_atom_id. Such
-    # rows are normal for WATER, which RCSB does put in one asym distinguished
-    # only by auth_seq_id, and are NOT normal for any other non-polymer: RCSB
-    # gives each ligand copy its own label_asym_id, which is what the asym
-    # assignment below does
+    # rows are normal for WATER, which is grouped in one asym distinguished
+    # only by auth_seq_id, and are NOT normal for any other non-polymer, which
+    # gets one label_asym_id per copy -- the convention labelled UNVERIFIED in
+    # `pdb_to_cif`'s docstring, and what the asym assignment below does
     # (`test_each_ligand_copy_gets_its_own_asym`).
     residue_keys: list[tuple[str, int, str]] = []
     residue_resname: dict[tuple[str, int, str], str] = {}
@@ -685,7 +698,7 @@ def pdb_to_cif(
     # holds water, and a reader re-deriving numbering over that asym would count
     # the waters (`test_waters_get_their_own_asym_and_entity`).
     #
-    # For everything else, one asym per ligand COPY, as RCSB does. Grouping
+    # For everything else, one asym per ligand COPY. Grouping
     # non-polymers by `(chain, resname)` instead is the defect this replaces:
     # non-polymer `label_seq_id` is `.`, so N copies of one ligand in a chain
     # became N residues identical in label_asym_id + label_seq_id +
@@ -700,8 +713,9 @@ def pdb_to_cif(
     # 1HEW and 50 in 3ave, whose chain C is an N-glycan with four NAGs
     # (`test_each_ligand_copy_gets_its_own_asym`).
     #
-    # Water keeps the per-chain grouping, because RCSB genuinely does put a
-    # chain's waters in one asym told apart only by `auth_seq_id`
+    # Water keeps the per-chain grouping, the one case where a shared label
+    # identity is the convention rather than a defect (see `pdb_to_cif`'s
+    # docstring, where that attribution is labelled UNVERIFIED)
     # (`test_waters_get_their_own_asym_and_entity`).
     #
     # A non-polymer asym id is written `<chain>_<resname>` for water and

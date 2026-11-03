@@ -841,8 +841,9 @@ contacts the picked residues. That is GPU spend nobody has approved.
 ### What else stays open
 
 §10 item 5 (PDB→CIF and `label_seq_id`) is **not closed** by the numbering pass
-either. That pass proves our mapping is correct and inspectable, with tests that fail
-under an identity mapping. It does not prove upstream's reader agrees with the mmCIF
+either. That pass tests our mapping on a corpus -- three deposited structures plus
+crafted cases -- and the suite fails under an identity mapping; the polymer-eligibility
+conformance test says of itself that it is a corpus, not a proof. It does not prove upstream's reader agrees with the mmCIF
 we write — nothing produced by `tools/rfd4/numbering.py` has been through
 `rfd4-generate`. Accepting the generated CIF in the container is a step-2 gate.
 
