@@ -308,11 +308,8 @@ Two consequences:
 1. **The Fc target is no longer required, only incidental.** The target was never
    recorded as a decision anywhere in the scope doc; what forced it was question
    2's need to match the one recorded `proteina` comparator run. With question 2
-   gone, nothing forces this target. It is kept for the paid run anyway, because
-   switching would throw away the free pre-flight that verified the hotspot
-   readback on these exact inputs and would need a fresh spend approval. §5.8
-   must present the target as incidental, and must not imply it was chosen on
-   its merits.
+   gone, nothing forced this target, and **Leo then dropped it** — see the next
+   section. §5.8 must not imply the Fc target was chosen on its merits.
 2. **The comparator analysis is history, not a deliverable.** The binder-length
    and shared-block figures below, and the junk AF2 scores, were gathered to let
    §5.8 qualify a head-to-head. There is no head-to-head now, so §5.8 carries
@@ -320,8 +317,8 @@ Two consequences:
    have been weak, and the chain-A-vs-dimer mismatch above stops being a cost at
    all.
 
-The paid run itself is unchanged: same command, same spec, same four designs. It
-answers questions 1, 3 and 4.
+The paid run answers questions 1, 3 and 4. Its target and design count changed
+with the switch recorded in the next section.
 
 - Questions 1-4 are the four the rung-4 brief set, not a numbering from the scope
   doc: (1) sequence credibility under a production configuration, against rung 3's
@@ -334,3 +331,90 @@ answers questions 1, 3 and 4.
   set, is reachable oracle-free (the tag check above proves the selection, not the
   header) — it closes only if step 2 runs.
 - Per-chain `molecule_iid` derivation: UNVERIFIED, see above. Not a blocker.
+
+## Target switched to rung 3's input (Leo, 2026-11-03), pre-flight PASSED
+
+Leo's instruction: *"switch to the same as rung 3, so we see if the settings give
+us a protein without poly Glu."*
+
+**Why this is the stronger experiment.** Rung 3's 70%-glutamate binder
+(scope doc §5.7) was produced from
+`/opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml` under
+`inference_experiment=quickstart`. Running rung 4 on the Fc spec would have
+changed the target *and* the configuration at once, so a credible result could
+not have been attributed to either. Reusing rung 3's exact input leaves the
+configuration as the only variable, against a recorded baseline.
+
+**What the switch costs.** The target is 115 aa (scope doc §5.7) against the Fc
+chain A's 211, so the question-3 wall-clock is again measured on a
+smaller-than-production target — the same limitation §5.7 carries. Accepted
+deliberately: question 3 only informs the $1.00 start-minimum figure, which
+§7.1 already records as a Leo decision with roughly 8x headroom, whereas
+question 1 decides whether RFD4 ships at all.
+
+**What the switch does not cost.** The Fc work was not wasted and is not
+re-bought: the 2026-11-03 pre-flight above already closed the hotspot-numbering
+mechanism (§10 item 5's failure class) on our own PDB-to-CIF converted file, on
+free CPU. No GPU spend was ever needed for it.
+
+**Pre-flight on the new input, app `ap-nBkWyfPz7zJbLE0xAmIUsN`, exit 0,
+self-stopped.** Result committed as
+`docs/scoping/rung4-probe/cpu_result_20261103T112936.json`; every figure below is
+a key in that file. Command:
+
+```
+python -X utf8 -m modal run docs/scoping/rung4-probe/rung4_app.py --mode cpu   --spec-name //opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml
+```
+
+The leading `//` is a Git-Bash path-conversion escape, not part of the path: a
+single leading `/` was rewritten to `C:/Program Files/Git/opt/...` and the run
+exited before any container started.
+
+1. **The spec builds its conditioning CIF.** `write_cifs_rc: 0`, `built_cifs:
+   ["/tmp/cifs/pdl1_binder.cif"]`.
+2. **It sets hotspots, and they are a three-residue set** — `TYR40`, `MET99`,
+   `TYR107` carry `_atom_site.condition_hotspot_1_atom: True`; 116 residues carry
+   `False`. So hotspot conditioning is exercised on GPU after all, which the Fc
+   spec was partly there to do.
+3. **`C_SEQ` reveals the target and masks the binder** at `B/1/1/50-120` — the
+   50-120 binder-length draw, matching §5.7's contig `50-120, /0, A17-131`.
+   Target chain A is revealed residue-by-residue, 115 residues.
+4. **`C_CRDGRP` group 1 covers 115 residues**, equal to the revealed target
+   count. The `-1` bucket's 116 is **UNVERIFIED** for the same reason as the Fc
+   readback: the probe truncates lists over 40 entries, so the one-residue excess
+   cannot be identified from the committed file.
+5. **The production configuration composes against this spec** — `cfg_rc: 0` for
+   `inference_experiment=inference_on_user_inputs` with `metrics_tags` set,
+   `delete_failing_pre_oracle=False` and `ckpt_name=rfd4_proteina_flow-ema.ckpt`.
+6. **The tag gate selects an amino-acid-composition metric and no oracle.**
+   `tagcheck_rc: 0`; selected includes `inline_metrics.amino_acid_composition`
+   and `inline_metrics.hotspot_obedience`; every `refolding_oracles.*` is
+   skipped. **Question 1 therefore gets a measured column from the model itself,
+   not only a composition count of my own** — and the run needs no AF3,
+   OpenFold3 or PyRosetta.
+7. **`pre_oracle_filters.sequence_adherence_filter` is armed** in the selected
+   set, which is why `delete_failing_pre_oracle=False` is required: without it a
+   design we paid for could be deleted before we read it.
+
+**Spend.** The pre-flight is CPU-only — `cpu_probe` declares `cpu=4`,
+`memory=16384`, no `gpu=` and no `volumes=` (`rung4_app.py:68`). `modal billing
+report --for today` does not yet itemise `ap-nBkWyfPz7zJbLE0xAmIUsN`; the
+identical earlier probe `ap-URDXzh8fvVRksAPNWLjbcC` cost **$0.00466825**, so this
+one is expected to be the same order. That figure is **unverified for this app**
+until billing catches up. GPU spend to date remains **$0.00** of the approved
+~$1.85.
+
+**The paid command this changes to**, 8 replicates to match §5.7 design-for-design:
+
+```
+python -X utf8 -m modal run docs/scoping/rung4-probe/rung4_app.py --mode gpu   --num-replicates 8   --spec-name //opt/rfd4/docs/how-to/input_prep/examples/condition_spec_ppi.yaml
+```
+
+A100-80GB, `timeout=1020` on the Modal function with an inner subprocess
+self-kill at 870 s (`rung4_app.py:249`). Projecting §5.7's measured
+`65 + 12.3 x N` to N=8 gives 163 s eager; the production preset adds a
+`torch.compile` warm-up upstream describes as costing minutes, which is the thing
+question 3 exists to measure. The 1020 s ceiling bounds raw spend near **$1.05**,
+inside the approved ~$1.85 — and **below** what the 211 aa Fc target would have
+cost. No new spend approval is needed for a cheaper run; the change of shape is
+reported to the lead regardless.

@@ -53,7 +53,9 @@ def _stage(files: dict, spec: str = _PAID_SPEC) -> str:
     for name, blob in files.items():
         with open(os.path.join(_IN_DIR, name), "wb") as fh:
             fh.write(blob)
-    return os.path.join(_IN_DIR, spec)
+    # An absolute spec is one that already ships inside the image (upstream's own
+    # examples under /opt/rfd4), so there is nothing of ours to stage for it.
+    return spec if spec.startswith("/") else os.path.join(_IN_DIR, spec)
 
 
 def _run(cmd: list[str], cwd: str = "/workspace") -> tuple[int, str]:
@@ -334,6 +336,8 @@ def main(mode: str = "cpu", num_replicates: int = 4, spec_name: str = _PAID_SPEC
     # or the container allocates (on `gpu`, an A100) and then fails on a missing
     # input. Checked here, before any remote call.
     for s in specs:
+        if s.startswith("/"):
+            continue  # ships in the image; nothing local to check
         if s not in payload:
             raise SystemExit(f"spec {s} is not in {_HERE}")
         for ref in re.findall(rf"{re.escape(_IN_DIR)}/(\S+)", (_HERE / s).read_text(encoding="utf-8")):
