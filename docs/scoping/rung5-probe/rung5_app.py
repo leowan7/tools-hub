@@ -45,13 +45,16 @@ import modal
 _HERE = Path(__file__).resolve().parent
 
 # Upward search for the repo's boltz2 tool dir, so this runs from any cwd.
+# This module is re-imported INSIDE the container, where the script is mounted at
+# /root with no repo above it, so the search must fall back to a path that is
+# never dereferenced there rather than raise - a raise here crash-looped every
+# container on 2026-11-03 with SystemExit before any function ran. The image
+# builders below are only dereferenced locally, at build time.
 _REPO_BOLTZ2 = next(
     (p / "tools" / "boltz2" for p in _HERE.parents
      if (p / "tools" / "boltz2" / "Dockerfile.modal").is_file()),
-    None,
+    _HERE / "tools" / "boltz2",
 )
-if _REPO_BOLTZ2 is None:
-    raise SystemExit("could not locate tools/boltz2/Dockerfile.modal above this file")
 
 _SEEDS = (1, 2, 3)  # replicate k uses seed 1+k: fixed and derived, never random
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
