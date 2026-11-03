@@ -279,9 +279,9 @@ def _priced_params(tool_slug: str) -> dict:
     ``tools/boltzgen/__init__.py::validate`` drops that key and
     ``build_payload`` sends a fixed 200. The validated inputs are what
     ``tool_submit`` stores on the job and what ``build_payload`` receives, and
-    the settle and the live meter price from them
-    (``shared/jobs.py::_tool_params``), so the gate now prices the same dict,
-    minus the same underscore keys. A key ``validate`` does not emit is
+    the settle (``shared/jobs.py::_settle_wallet_hold_for_completed_job``) and
+    the live meter (``shared/jobs.py::_tool_params``) price from them, so the
+    gate now prices the same dict, minus the same underscore keys. A key ``validate`` does not emit is
     dropped from the price and never reaches the run.
 
     Runs ``blueprints/tools.py::_run_validate``, the call ``tool_submit``
