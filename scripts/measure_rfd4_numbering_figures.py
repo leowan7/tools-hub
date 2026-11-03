@@ -106,12 +106,18 @@ def identity_mutation() -> None:
     plugin = REPO / "_identity_mutation_plugin.py"
     plugin.write_text(patch)
     try:
-        out = subprocess.run(
-            [sys.executable, "-m", "pytest", str(TESTS), "-q", "-p", "_identity_mutation_plugin"],
-            cwd=REPO, capture_output=True, text=True,
-        ).stdout
+        def run(*extra: str) -> str:
+            out = subprocess.run(
+                [sys.executable, "-m", "pytest", str(TESTS), "-q",
+                 "-p", "_identity_mutation_plugin", *extra],
+                cwd=REPO, capture_output=True, text=True,
+            ).stdout
+            return out.strip().splitlines()[-1]
+
         print("\nidentity-mapping mutation (label_seq_id := author resSeq)")
-        print(f"  {out.strip().splitlines()[-1]}")
+        print(f"  whole suite                         {run()}")
+        easy = "the_easy_case_coincides or the_easy_fixture_cannot_witness"
+        print(f"  the two easy-fixture tests          {run('-k', easy)}")
     finally:
         plugin.unlink(missing_ok=True)
 
