@@ -14,10 +14,11 @@ hold a lookup table is to generate it from the dictionary that defines it.
 
 Three constants are emitted, between the markers in `tools/rfd4/numbering.py`:
 
-* ``_CCD_COVERED_RESIDUES`` -- every residue this module can treat as polymer:
-  the 20 standard amino acids, ``UNK``, water, and every name in
-  ``_MODRES_EQUIV``. Inside one of these the element is NEVER guessed from the
-  name's shape.
+* ``_CCD_COVERED_RESIDUES`` -- the 20 standard amino acids, ``UNK``, water and
+  every name in ``_MODRES_EQUIV``. Inside one of these the element is NEVER
+  guessed from the name's shape. This is the element tables' domain and NOT the
+  set of residues the module treats as polymer: `_is_polymer` applies no
+  residue-name test, so it admits names that are not here.
 * ``_CCD_ELEMENT_EXCEPTIONS`` -- for those residues, only the atoms whose
   element is not the first alphabetic character of the atom name. There is no
   assertion to make here: this script reads every atom of those residues and
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -55,7 +57,10 @@ STANDARD_AA = [
 # that are not stay out of the generated table and fall through to the first
 # alphabetic character, which is right for `O`, `H1` and `H2`.
 WATER = ["HOH", "DOD"]
-# Mirrors `_MODRES_EQUIV` in numbering.py; a test fails if the two drift.
+# Mirrors `_MODRES_EQUIV` in numbering.py. Only ONE direction of that is
+# checked: `test_every_polymer_residue_name_has_a_ccd_element_table` fails if
+# `_MODRES_EQUIV` grows a name this list does not cover. A name added HERE and
+# not there fails nothing; the two sets are equal as committed.
 MODRES = [
     "MSE", "CME", "CSO", "SEP", "TPO", "PTR", "KCX", "HYP", "LLP",
     "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
@@ -82,12 +87,22 @@ def fetch_atoms(comp_id: str) -> list[tuple[str, str]] | None:
     draft matched any line beginning with the component id instead, which also
     caught the single-row ``_chem_comp`` descriptor block and reported ``ZN`` as
     a four-atom component.
+
+    ``None`` means the dictionary has no such component, and ONLY that: a 404.
+    Every other failure raises. An earlier revision returned ``None`` for any
+    exception, which made a timeout or a 5xx indistinguishable from absence --
+    and the ion loop skips a ``None``, so one transient fault would have
+    written a smaller ion table and pushed those residues back onto the shape
+    fallback this script exists to retire, with the run still reporting
+    success.
     """
     try:
         with urllib.request.urlopen(URL.format(comp_id), timeout=60) as fh:
             text = fh.read().decode("utf-8", "replace")
-    except Exception as exc:  # noqa: BLE001 - the id simply may not exist
-        print(f"  {comp_id}: fetch failed ({exc})", file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        print(f"  {comp_id}: not in the dictionary (404)", file=sys.stderr)
         return None
     return _parse_loop(text) or _parse_single(text) or None
 

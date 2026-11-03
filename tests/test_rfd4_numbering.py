@@ -456,6 +456,40 @@ def test_a_four_digit_resseq_with_a_digit_insertion_code_is_accepted():
     assert keys == [(1234, "", 1), (1234, "5", 2)]
 
 
+def test_a_low_numbered_resseq_with_a_digit_insertion_code_is_accepted():
+    """Continuity without a width condition refuses legal low-numbered files.
+
+    The overflow rule asks whether the resSeq and insertion code READ TOGETHER
+    are the previous residue's number plus one. That is only evidence of an
+    overflow when the joined reading is five digits wide, because a residue
+    numbered under 10000 does not overflow anything. The first revision of the
+    rule omitted the width condition, so it fired wherever the arithmetic
+    happened to line up at any width: residue 522 followed by a legal resSeq
+    ``52`` with insertion code ``3`` joins to 523, one past 522, and was
+    refused outright.
+
+    Two digits and three are both exercised, because the defect was in the
+    arithmetic rather than at a particular width.
+    """
+    pdb = (
+        _pdb_line(1, "CA", "ALA", "A", "522", " ") + "\n"
+        + _pdb_line(2, "CA", "GLY", "A", "52", "3", z=4.0) + "\n"
+        + "END\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    keys = [(e.author.seq, e.author.icode) for e in mapping.entries]
+    assert keys == [(522, ""), (52, "3")]
+
+    pdb = (
+        _pdb_line(1, "CA", "ALA", "A", "12", " ") + "\n"
+        + _pdb_line(2, "CA", "GLY", "A", "1", "3", z=4.0) + "\n"
+        + "END\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    keys = [(e.author.seq, e.author.icode) for e in mapping.entries]
+    assert keys == [(12, ""), (1, "3")]
+
+
 def test_an_overflowed_resseq_after_9999_is_refused():
     """Residue 10000 written after 9999 is caught by continuity, not by shape.
 
@@ -949,6 +983,51 @@ def _duplicate_non_water_label_keys(path: Path) -> dict:
     return {k: v for k, v in counts.items() if v > 1}
 
 
+def test_two_ligand_copies_an_insertion_code_apart_get_distinct_asyms():
+    """A ligand asym id must be injective on the author residue key.
+
+    The non-polymer asym id is built from the author chain, the residue name
+    and the author position. With the sequence number and the insertion code
+    CONCATENATED, author ``1`` with insertion code ``1`` and author ``11`` with
+    none both render ``A_NAG_11``, so two distinct ligand copies land in one
+    asym. A ligand's ``label_seq_id`` is ``.``, so the two then share
+    ``label_asym_id`` + ``label_seq_id`` + ``label_atom_id`` +
+    ``label_alt_id`` -- the duplicate label identity
+    ``test_each_ligand_copy_gets_its_own_asym`` exists to exclude, reached by a
+    route the three deposited fixtures do not carry because none of them gives
+    a ligand an insertion code.
+
+    Nothing failed on it either. ``ResidueMapping.__init__`` checks ``by_label``
+    for duplicates only where ``label_seq_id`` is not None, which no
+    non-polymer has, so the collision was silent in both the file and the
+    mapping.
+    """
+    pdb = (
+        _pdb_line(1, "CA", "ALA", "A", "5", " ") + "\n"
+        + _pdb_line(2, "C1", "NAG", "A", "1", "1", z=4.0, record="HETATM") + "\n"
+        + _pdb_line(3, "C1", "NAG", "A", "11", " ", z=5.0, record="HETATM") + "\n"
+        + "END\n"
+    )
+    cif, mapping = _convert_text(pdb)
+
+    asyms = [
+        e.label_asym_id for e in mapping.entries
+        if e.author.seq in (1, 11) and e.resname == "NAG"
+    ]
+    assert len(asyms) == 2
+    assert asyms[0] != asyms[1]
+
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    keys = [
+        (row[ix["label_asym_id"]], row[ix["label_seq_id"]],
+         row[ix["label_atom_id"]], row[ix["label_alt_id"]])
+        for row in rows if row[ix["label_comp_id"]] == "NAG"
+    ]
+    assert len(keys) == 2
+    assert len(set(keys)) == 2
+
+
 @pytest.mark.parametrize("fixture", [LYSOZYME, FC_DIMER, IGG_FV])
 def test_each_ligand_copy_gets_its_own_asym(fixture):
     """No two atom rows may share a label identity, water aside.
@@ -1039,7 +1118,7 @@ def test_a_space_insertion_code_is_the_same_residue_as_no_insertion_code():
     ``" "`` is truthy, so the old ``icode or ""`` left it as ``" "`` and the
     lookup refused a residue that is present. ``_parse_atoms`` strips the
     column, so this only bit a caller handing column 27 over raw -- which is
-    what staging code reading the PDB itself does.
+    what staging code reading the PDB itself would do.
     """
     pdb = (
         "ATOM      1  CA  ALA A   7       1.000   2.000   3.000  1.00  0.00           C\n"
@@ -1168,7 +1247,7 @@ def test_element_fallback_ceilings():
     got = {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows}
     assert got == {
         "CA": "C",
-        "MG10": "Mg",   # rule 2 carries the copy number
+        "MG10": "Mg",   # rule 3 carries the copy number
         "FE12": "F",    # CEILING: four characters, resname is not the element
         "CD1": "Cd",    # CEILING: non-standard residue, left-justified name
     }
@@ -1346,12 +1425,18 @@ def test_a_value_that_cannot_be_quoted_is_refused():
     so most apostrophes need no escape and no second delimiter: ``O'Brien x``
     is written between apostrophes unchanged. One followed by whitespace does
     end the string, and there is the double quote to fall back on. A value
-    carrying BOTH quote characters followed by whitespace closes whichever
-    delimiter is chosen, and the remaining CIF form is a semicolon-delimited
-    text field, which cannot sit inside a loop row. That case is refused. It is
-    reachable only from a value this module does not write -- every cell comes
-    from a fixed PDB column -- and the refusal is the alternative to emitting a
+    carrying BOTH quote characters, each followed by whitespace or by the end
+    of the value, closes whichever delimiter is chosen, and the remaining CIF
+    form is a semicolon-delimited text field, which cannot sit inside a loop
+    row. That case is refused, and refusing is the alternative to emitting a
     cell that reads back as several.
+
+    An earlier version of this docstring called that refusal unreachable from a
+    real file, on the grounds that every cell comes from a fixed-width PDB
+    column. That is wrong, and the last three lines of this test are why: the
+    residue-name column is three characters wide and ``" '`` fits in it, so
+    `pdb_to_cif` refuses a whole file over one malformed column. It is a
+    reachable path on a malformed file, not a dead branch.
     """
     assert _cif_value("plain") == "plain"
     assert _cif_value("a b") == "'a b'"
@@ -1359,3 +1444,8 @@ def test_a_value_that_cannot_be_quoted_is_refused():
     assert _cif_value("a' b") == '"' + "a' b" + '"'
     with pytest.raises(NumberingError, match="mmCIF string"):
         _cif_value("a' b" + '" c')
+
+    pdb = _pdb_line(1, "CA", '" \'', "A", "1", " ") + "\nEND\n"
+    assert pdb[17:20] == '" \''
+    with pytest.raises(NumberingError, match="mmCIF string"):
+        pdb_to_cif(pdb)
