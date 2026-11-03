@@ -105,8 +105,12 @@ def identity_mutation() -> None:
     """How many tests fail with the production mapping replaced by identity.
 
     The figure the PR body quotes. Measured by monkeypatching the two lookup
-    methods for one pytest process, which is why it is a subprocess: the
-    patch must be in place before the tests import the module.
+    methods for one pytest process. The subprocess keeps the patch out of the
+    CALLING process; it is NOT an ordering requirement. These are class
+    attributes, so code that imported the module earlier sees the replacement
+    anyway -- measured by importing both the module and the test module first
+    and patching afterwards in one process, which gave the same 18 failed, 34
+    passed.
     """
     patch = (
         "import tools.rfd4.numbering as n\n"

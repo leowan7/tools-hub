@@ -80,6 +80,18 @@ _MODRES_EQUIV = frozenset({
     "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
 })
 
+# The 20 standard amino acids plus `UNK`. Used ONLY by `_element_of` rule 3, to
+# decide whether an atom name may be read as a two-letter element symbol: in
+# these residues it never may, because every atom name is a side-chain name.
+# This set deliberately takes no part in polymer eligibility -- `_is_polymer`
+# has no residue-name test, matching `pdb_ca_residues`, and
+# `test_polymer_eligibility_matches_pdb_ca_residues` fails if one is added.
+_STANDARD_AA = frozenset({
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    "UNK",
+})
+
 # Water spellings. `HOH` is the PDB's own; which writers emit the others is
 # uncited here (`test_an_atom_record_water_is_not_a_chain_residue` covers
 # only `HOH`).
@@ -126,8 +138,13 @@ class NumberingError(ValueError):
 class AuthorResidue:
     """One residue as our stack addresses it: author chain, author resSeq, icode.
 
-    ``icode`` is ``""`` when absent, never ``None`` or ``" "``, so that it is a
-    usable dict key. ``shared/pdb_inspect.split_hotspot`` cannot express an
+    ``icode`` is ``""`` when absent, so that it is a usable dict key. Every
+    producer in this module strips it to that -- ``_parse_atoms``,
+    ``from_json_obj`` and ``ResidueMapping.label_for`` -- but the dataclass
+    itself does not enforce it, so a caller constructing ``AuthorResidue``
+    directly can still pass ``None`` or ``" "``. The invariant is the
+    producers', not the type's. ``shared/pdb_inspect.split_hotspot`` cannot
+    express an
     insertion code at all: it parses the residue part with ``int()``
     (``shared/pdb_inspect.py:367`` and ``:375``), so the token ``B52A`` is
     unparseable and comes back as ``(None, None)``. Every hotspot reaching this
@@ -375,7 +392,10 @@ class _Atom:
 # checks it. An element missing from it falls back to its first letter, which
 # is the behaviour this list exists to avoid, so a wrong `type_symbol` on an
 # exotic element is still reachable; columns 77-78 settle it whenever the file
-# supplies them, which deposited files do. Needed because a two-letter element
+# supplies them, which all four PDB files in this repository do (measured: 0
+# atom rows with a blank element column in each) -- a property of those files,
+# NOT a cited general rule about deposited PDBs. Needed because a two-letter
+# element
 # cannot be recovered from an atom name's first character
 # (`test_a_two_letter_element_survives_a_blank_element_column`).
 _TWO_LETTER_ELEMENTS = frozenset({
@@ -388,7 +408,7 @@ _TWO_LETTER_ELEMENTS = frozenset({
 })
 
 
-def _element_of(raw_name: str, raw_element: str) -> str:
+def _element_of(raw_name: str, raw_element: str, resname: str) -> str:
     """``type_symbol`` for one atom, from columns 77-78 or the name convention.
 
     Columns 77-78 are optional, and tool-generated PDBs do omit them. Taking
@@ -398,39 +418,58 @@ def _element_of(raw_name: str, raw_element: str) -> str:
     numbering this module exists to get right was unaffected, which is the
     shape of defect the module's opening docstring is about.
 
-    The fallback therefore uses the PDB convention instead: the element is
-    right-justified in columns 13-14, so a TWO-letter element starts in column
-    13 while a one-letter element's name is indented into column 14. Three
-    conditions, because column 13 alone is not enough -- a four-character
-    hydrogen name starts there too, and the element list does not separate them
-    since ``HG`` is mercury while ``HG12`` is a valine hydrogen: the name must
-    start in column 13, be at most two characters long (only hydrogen names
-    overflow past column 14, which is what tells ``HG`` from ``HG12``), and be
-    listed in ``_TWO_LETTER_ELEMENTS``
-    (`test_a_hydrogen_name_in_column_13_is_not_mercury`).
+    The RESNAME is what makes the fallback decidable, and two earlier attempts
+    that read the atom name alone were each wrong in the opposite direction.
+    The PDB convention is that the element is right-justified in columns 13-14,
+    so a two-letter element starts in column 13 while a one-letter element's
+    name is indented into column 14 -- but a writer that left-justifies every
+    name into column 13 makes ``CD1`` (a leucine delta carbon) and ``CD1``
+    (cadmium) identical in every column this function can see. Reading the name
+    alone, such a file's whole side chain became metal: measured on the
+    previous revision, ``CD1``/``CD2`` gave ``Cd``, ``CE1``/``CE2``/``CE3``
+    gave ``Ce``, ``ND1``/``ND2`` gave ``Nd`` and ``HG2``/``HG3`` gave ``Hg``,
+    on atoms present in nearly every protein
+    (`test_common_side_chain_names_are_not_metals`).
 
-    A NUMBERED two-letter element is admitted too: ``FE1`` in an Fe-S cluster,
-    ``CL1`` on a halogenated ligand, ``MG1``. Those are three characters in
-    columns 13-15, and a three-character HYDROGEN name is right-justified into
-    column 14 (``" HB2"``), so a single trailing digit does not re-admit the
-    ``HG12`` case, which is four characters and stays excluded. Without this arm
-    ``MG1`` fell to the one-letter fallback and was written ``M``, which is not
-    an element -- the same defect class this docstring describes above
-    (`test_a_numbered_two_letter_element_is_not_truncated_to_one`).
+    So, in order:
 
-    One ambiguity is NOT resolved and cannot be: a writer that left-justifies
-    every atom name into column 13 makes an alpha carbon ``CA`` and a calcium
-    ion ``CA`` identical in every column this function can see. Such a file
-    gets ``Ca`` for its backbone. No input in the test corpus is of that kind,
-    and columns 77-78 settle it whenever they are present. Whether the RFD4
+    1. Columns 77-78 when the file supplies them, which every PDB file in this
+       repository does -- the rest of this function runs only on files that
+       leave them blank.
+    2. The resname IS the element, for a monatomic ion: ``MG`` in residue
+       ``MG``, at any copy number, so ``MG1`` and ``MG10`` both resolve
+       (`test_a_numbered_two_letter_element_is_not_truncated_to_one`). Nothing
+       is ambiguous here -- no amino acid is named after an element.
+    3. Otherwise a column-13 two-letter name, but ONLY outside
+       ``_STANDARD_AA``. That is what keeps ``CD1`` in a leucine a carbon while
+       letting ``SE`` in a selenomethionine be selenium and ``FE1`` in an Fe-S
+       cluster be iron. One trailing digit is allowed (``FE1``), a second is
+       not, because ``HG12`` is a valine hydrogen while ``HG`` is mercury
+       (`test_a_hydrogen_name_in_column_13_is_not_mercury`).
+    4. The first alphabetic character.
+
+    Two ceilings remain, both needing a blank element column AND a
+    left-justifying writer. A non-standard residue -- a ligand, or a modified
+    residue -- whose atom name begins with two letters that spell an element
+    still resolves to that element, so a ligand carbon named ``CD1`` is written
+    ``Cd``; rule 3 narrows this to non-polymer and modified residues but cannot
+    remove it. And a four-character name is never read as an element, so a
+    conforming ``MG10`` resolves only through rule 2; in a residue not named
+    after its element (``FE12`` inside an ``FES`` cluster) it falls to ``F``.
+    Both are measured in `test_element_fallback_ceilings`. Whether the RFD4
     container's reader rejects a wrong ``type_symbol`` at all is UNVERIFIED
-    here; this writes the right value rather than relying on the answer.
+    here; this writes the right value rather than relying on the answer, and
+    ``type_symbol`` does not enter the author-to-label mapping either way.
     """
     if raw_element:
         return raw_element.capitalize()
     name = raw_name.strip().upper()
+    res = resname.strip().upper()
+    if res in _TWO_LETTER_ELEMENTS and name.startswith(res):
+        return res.capitalize()
     if (
-        raw_name[:1] not in ("", " ")
+        res not in _STANDARD_AA
+        and raw_name[:1] not in ("", " ")
         and name[:2] in _TWO_LETTER_ELEMENTS
         and (len(name) == 2 or (len(name) == 3 and name[2].isdigit()))
     ):
@@ -514,7 +553,9 @@ def _parse_atoms(pdb_text: str) -> list[_Atom]:
             # The RAW columns 13-16, not the stripped name: whether a name
             # starts in column 13 or 14 is what tells a two-letter element
             # from a one-letter one (`_element_of`).
-            element=_element_of(line[12:16], line[76:78].strip()),
+            element=_element_of(
+                line[12:16], line[76:78].strip(), line[17:20],
+            ),
         ))
     if not atoms:
         raise NumberingError("no ATOM or HETATM records in the first model")
@@ -588,8 +629,13 @@ def pdb_to_cif(
     nothing in this module reads a real RCSB-written CIF. What the tests do pin
     is narrower and does not depend on the attribution being right -- that this
     writer is self-consistent, and that no two non-water atom rows share a
-    ``label_asym_id`` + ``label_seq_id`` + ``label_comp_id`` + ``label_atom_id``
-    identity. Every later mention of RCSB in this module refers back to this
+    ``label_asym_id`` + ``label_seq_id`` + ``label_atom_id`` + ``label_alt_id``
+    identity, which is the key ``_duplicate_non_water_label_keys`` actually
+    builds. ``label_alt_id`` is in it because two alternate locations of one
+    atom legitimately share the other three, so including it makes the guard
+    WEAKER than dropping it would; on this corpus the two coincide, every
+    ``label_alt_id`` being ``.`` (measured on all three fixtures). Every later
+    mention of RCSB in this module refers back to this
     paragraph rather than re-asserting the convention. An author chain id is one
     column wide, so a generated id can never collide with one.
 
@@ -880,11 +926,25 @@ def label_range_for_chain(mapping: ResidueMapping, chain: str) -> tuple[int, int
 # `docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md` §10A.
 RFD4_HOTSPOT_ATOM_SET = "sidechain_heavy"
 
-# Backbone atom names, excluded from the "sidechain_heavy" set. `OT1`/`OT2` are
-# terminal-oxygen names used in place of `OXT`; which writers still emit them is
-# uncited here. Without them a C-terminal glycine returns ('OT1', 'OT2') instead
-# of taking the CA fallback (`test_old_style_terminal_oxygens_are_backbone`).
-_BACKBONE = frozenset({"N", "CA", "C", "O", "OXT", "OT1", "OT2"})
+# Backbone atom names, excluded from the "sidechain_heavy" set. Everything
+# after `O` is a terminal-oxygen spelling used in place of `OXT`; WHICH writers
+# emit WHICH of them is uncited here, and the list is hand-collected, not a
+# cited convention. Without a spelling in this set a C-terminal glycine returns
+# its two carboxyl oxygens as the "side chain" instead of taking the CA
+# fallback -- measured before `OC1`/`OC2`/`O1`/`O2` were added,
+# `hotspot_atoms_for_residue('GLY', ['N','CA','C','OC1','OC2'])` returned
+# `('OC1', 'OC2')` (`test_old_style_terminal_oxygens_are_backbone`,
+# `test_other_terminal_oxygen_spellings_are_backbone`).
+#
+# Safe because this function takes POLYMER residues only (its docstring): no
+# standard amino acid has a side-chain atom spelled `O1`, `O2`, `OC1` or `OC2`
+# -- the carboxyl side chains are `OD1`/`OD2` (ASP) and `OE1`/`OE2` (GLU), and
+# the phosphorylated residues in `_MODRES_EQUIV` spell theirs `O1P`/`O2P`. That
+# is a by-hand check of those residues, NOT a cited rule, so a modified residue
+# naming a real side-chain oxygen `O1` would lose it from the selection.
+_BACKBONE = frozenset({
+    "N", "CA", "C", "O", "OXT", "OT1", "OT2", "OC1", "OC2", "O1", "O2",
+})
 
 
 def hotspot_atoms_for_residue(

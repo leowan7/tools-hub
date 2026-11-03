@@ -849,6 +849,11 @@ def _duplicate_non_water_label_keys(path: Path) -> dict:
     gets one ``label_asym_id`` per copy, so a shared identity there is a defect.
     The attribution of that split to RCSB is labelled UNVERIFIED in
     ``pdb_to_cif``'s docstring; this helper does not depend on it.
+
+    The identity keyed on is ``label_asym_id`` + ``label_seq_id`` +
+    ``label_atom_id`` + ``label_alt_id``. ``label_comp_id`` is read only to
+    skip waters and is not part of the key. ``label_alt_id`` IS part of it, so
+    two alternate locations of one atom are not reported as a duplicate.
     """
     cif, _mapping = _convert(path)
     cols, rows = _atom_site_rows(cif)
@@ -1005,3 +1010,81 @@ def test_a_structure_with_no_polymer_residue_is_refused():
     )
     with pytest.raises(NumberingError, match="no polymer residue"):
         _convert_text(pdb)
+def test_common_side_chain_names_are_not_metals():
+    """``CD1`` became cadmium, ``HG2`` mercury: the whole side chain went metal.
+
+    The previous revision read the atom name alone, admitting any column-13
+    two-letter element prefix with one trailing digit. For a writer that
+    left-justifies every name into column 13 and omits columns 77-78 that
+    covers the most common side-chain atoms in any protein -- ``CD1``/``CD2``
+    (leucine), ``CE1``-``CE3`` (phenylalanine, tryptophan), ``ND1``/``ND2``
+    (histidine, asparagine) and ``HG2``/``HG3`` (methionine) -- because ``CD``,
+    ``CE``, ``ND`` and ``HG`` are all real elements. Nothing failed: every
+    ``type_symbol`` was a well-formed element symbol, just the wrong one.
+
+    The residue name is the discriminator: cadmium is only ever found in a
+    residue named after it, never inside a leucine.
+    """
+    pdb = (
+        "ATOM      1  CA  LEU A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "ATOM      2 CD1  LEU A   1       1.000   2.000   4.000  1.00  0.00\n"
+        "ATOM      3 CD2  LEU A   1       1.000   2.000   5.000  1.00  0.00\n"
+        "ATOM      4  CA  PHE A   2       2.000   2.000   3.000  1.00  0.00\n"
+        "ATOM      5 CE1  PHE A   2       2.000   2.000   4.000  1.00  0.00\n"
+        "ATOM      6  CA  HIS A   3       3.000   2.000   3.000  1.00  0.00\n"
+        "ATOM      7 ND1  HIS A   3       3.000   2.000   4.000  1.00  0.00\n"
+        "ATOM      8  CA  MET A   4       4.000   2.000   3.000  1.00  0.00\n"
+        "ATOM      9 HG2  MET A   4       4.000   2.000   4.000  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    got = {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows}
+    assert got == {
+        "CA": "C", "CD1": "C", "CD2": "C", "CE1": "C", "ND1": "N", "HG2": "H",
+    }
+
+
+def test_element_fallback_ceilings():
+    """The two cases the resname rule does NOT settle, pinned as they behave.
+
+    Rule 2 -- the resname IS the element -- carries any copy number, so a
+    conforming four-character ``MG10`` resolves. The two ceilings are a
+    four-character name in a residue NOT named after its element (``FE12``
+    inside an Fe-S cluster falls to ``F``, the pre-fix defect class), and a
+    non-standard residue whose atom name happens to begin with an element
+    symbol (a ligand carbon named ``CD1`` is written ``Cd``). Both need a blank
+    element column AND a left-justifying writer; this test asserts the WRONG
+    values deliberately, so that a later fix fails here and has to say so.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "HETATM    2 MG10  MG B   1       4.000   5.000   6.000  1.00  0.00\n"
+        "HETATM    3 FE12 FES B   2       7.000   8.000   9.000  1.00  0.00\n"
+        "HETATM    4 CD1  LIG B   3      10.000  11.000  12.000  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    got = {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows}
+    assert got == {
+        "CA": "C",
+        "MG10": "Mg",   # rule 2 carries the copy number
+        "FE12": "F",    # CEILING: four characters, resname is not the element
+        "CD1": "Cd",    # CEILING: non-standard residue, left-justified name
+    }
+
+
+def test_other_terminal_oxygen_spellings_are_backbone():
+    """``OC1``/``OC2`` and ``O1``/``O2`` were returned as a glycine side chain.
+
+    ``_BACKBONE`` listed `OXT` and `OT1`/`OT2` but not these, so a C-terminal
+    glycine written by a tool that uses them had its two carboxyl oxygens
+    selected as "sidechain_heavy" instead of taking the CA fallback. Nothing
+    failed: a hotspot was still produced, naming backbone oxygens as the
+    contact atoms a binder should be steered at.
+    """
+    for spellings in (("OC1", "OC2"), ("O1", "O2")):
+        assert hotspot_atoms_for_residue(
+            "GLY", ["N", "CA", "C", *spellings]
+        ) == ("CA",), spellings
