@@ -266,7 +266,13 @@ class ResidueMapping:
         )
 
     def diverges(self) -> bool:
-        """True when any polymer residue's ``label_seq_id`` != its author resSeq.
+        """True when any polymer residue's label numbering differs from author.
+
+        That is either a ``label_seq_id`` unequal to the residue's author
+        resSeq, or an insertion code -- an insertion-coded residue has no author
+        number of its own to compare, and a caller that treated author resSeq as
+        a label id would address its neighbour
+        (``test_diverges_is_true_for_an_insertion_coded_chain_at_the_same_seq``).
 
         The reason to compute this rather than assume it: on a 1-based gapless
         single chain the two numberings coincide, so a test written only against
@@ -363,12 +369,60 @@ class _Atom:
     element: str
 
 
-def _element_of(name: str, raw_element: str) -> str:
+# The two-letter elements that occur in deposited biomolecular structures:
+# every metal, halogen and metalloid PDB chemical components use, plus `SE`
+# for selenomethionine. Needed because a two-letter element cannot be
+# recovered from an atom name's first character
+# (`test_a_two_letter_element_survives_a_blank_element_column`).
+_TWO_LETTER_ELEMENTS = frozenset({
+    "AG", "AL", "AS", "AU", "BA", "BE", "BI", "BR", "CA", "CD", "CE", "CL",
+    "CO", "CR", "CS", "CU", "DY", "ER", "EU", "FE", "GA", "GD", "GE", "HF",
+    "HG", "HO", "IN", "IR", "LA", "LI", "LU", "MG", "MN", "MO", "NA", "NB",
+    "ND", "NI", "OS", "PB", "PD", "PR", "PT", "RB", "RE", "RH", "RU", "SB",
+    "SC", "SE", "SI", "SM", "SN", "SR", "TA", "TB", "TC", "TE", "TH", "TI",
+    "TL", "TM", "YB", "ZN", "ZR",
+})
+
+
+def _element_of(raw_name: str, raw_element: str) -> str:
+    """``type_symbol`` for one atom, from columns 77-78 or the name convention.
+
+    Columns 77-78 are optional, and tool-generated PDBs do omit them. Taking
+    the name's first alphabetic character as the fallback -- which this did --
+    wrote ``S`` for a selenomethionine ``SE`` and ``Z`` for a ``ZN``, and ``Z``
+    is not an element. Nothing failed: the CIF was still well formed, and the
+    numbering this module exists to get right was unaffected, which is the
+    shape of defect the module's opening docstring is about.
+
+    The fallback therefore uses the PDB convention instead: the element is
+    right-justified in columns 13-14, so a TWO-letter element starts in column
+    13 while a one-letter element's name is indented into column 14. Three
+    conditions, because column 13 alone is not enough -- a four-character
+    hydrogen name starts there too, and the element list does not separate them
+    since ``HG`` is mercury while ``HG12`` is a valine hydrogen: the name must
+    start in column 13, be at most two characters long (only hydrogen names
+    overflow past column 14, which is what tells ``HG`` from ``HG12``), and be
+    listed in ``_TWO_LETTER_ELEMENTS``
+    (`test_a_hydrogen_name_in_column_13_is_not_mercury`).
+
+    One ambiguity is NOT resolved and cannot be: a writer that left-justifies
+    every atom name into column 13 makes an alpha carbon ``CA`` and a calcium
+    ion ``CA`` identical in every column this function can see. Such a file
+    gets ``Ca`` for its backbone. No input in the test corpus is of that kind,
+    and columns 77-78 settle it whenever they are present. Whether the RFD4
+    container's reader rejects a wrong ``type_symbol`` at all is UNVERIFIED
+    here; this writes the right value rather than relying on the answer.
+    """
     if raw_element:
         return raw_element.capitalize()
-    # Columns 77-78 are optional in older files. The atom name's first
-    # non-digit character is the conventional fallback.
-    for ch in name:
+    head = raw_name[:2].upper()
+    if (
+        head == raw_name.strip().upper()
+        and head.isalpha()
+        and head in _TWO_LETTER_ELEMENTS
+    ):
+        return head.capitalize()
+    for ch in raw_name:
         if ch.isalpha():
             return ch.upper()
     return "X"
@@ -398,8 +452,9 @@ def _parse_atoms(pdb_text: str) -> list[_Atom]:
         # A residue numbered >= 10000 overflows into the insertion-code column,
         # where `line[22:26]` reads only its first four digits and the fifth
         # becomes an "insertion code" -- a SILENT misparse onto a wrong residue
-        # number, which `tools/proteina/run_pipeline.py:747-765` records as a
-        # known, unfixed hazard in that parser. Refused here instead: PDB has no
+        # number, which `pdb_ca_residues`'s docstring in
+        # `tools/proteina/run_pipeline.py` records as a known, unfixed hazard
+        # in that parser. Refused here instead: PDB has no
         # legal 5-column resSeq, and a refusal cannot address a wrong residue.
         # Enforced by `test_five_digit_resseq_is_refused_not_misparsed`.
         if line[22:27].strip().lstrip("-").isdigit() and len(line[22:27].strip()) == 5:
@@ -443,7 +498,10 @@ def _parse_atoms(pdb_text: str) -> list[_Atom]:
             x=x, y=y, z=z,
             occupancy=_float_or(line[54:60], 1.0),
             bfactor=_float_or(line[60:66], 0.0),
-            element=_element_of(name, line[76:78].strip()),
+            # The RAW columns 13-16, not the stripped name: whether a name
+            # starts in column 13 or 14 is what tells a two-letter element
+            # from a one-letter one (`_element_of`).
+            element=_element_of(line[12:16], line[76:78].strip()),
         ))
     if not atoms:
         raise NumberingError("no ATOM or HETATM records in the first model")
@@ -501,7 +559,9 @@ def pdb_to_cif(
     there would declare a ``polymer`` entity holding both a protein and its
     non-polymer residues: ``static/example/1HEW.pdb`` carries 106 of them, 103
     waters on chain A and 3 NAG on chain B, so chain A's own entity would absorb
-    the 103 (re-derive with ``scripts/measure_rfd4_numbering_figures.py``).
+    the 103 (the 106 and the 103 are printed by
+    ``scripts/measure_rfd4_numbering_figures.py``; the 103/3 split between
+    the chains is not, and was read off the fixture).
     Non-polymers therefore get their own ``non-polymer`` entity and their own
     asym id, following RCSB: each LIGAND COPY gets its own, written
     ``<chain>_<resname>_<author seq><icode>``
@@ -629,11 +689,15 @@ def pdb_to_cif(
     # non-polymers by `(chain, resname)` instead is the defect this replaces:
     # non-polymer `label_seq_id` is `.`, so N copies of one ligand in a chain
     # became N residues identical in label_asym_id + label_seq_id +
-    # label_comp_id + label_atom_id, and a reader grouping by label identity --
-    # which is what upstream RFD4 does, per this module's opening docstring --
-    # saw ONE ligand carrying N copies of each atom. Measured on the shipped
-    # examples before the fix: 14 such duplicate keys in 1HEW and 50 in 3ave,
-    # whose chain C is an N-glycan with four NAGs
+    # label_comp_id + label_atom_id, so any reader that groups atom rows by
+    # that identity -- which is what the label_* columns are FOR in mmCIF --
+    # saw ONE ligand carrying N copies of each atom. Whether upstream RFD4's
+    # reader groups that way is UNVERIFIED here; the opening docstring
+    # establishes only that it resolves residue IDS against `label_seq_id`
+    # (scope doc section 10 item 5). Measured against the pre-fix blob
+    # a4108d6d, by `git cat-file -p a4108d6d:tools/rfd4/numbering.py >
+    # tools/rfd4/numbering.py` and re-running the test: 14 duplicate keys in
+    # 1HEW and 50 in 3ave, whose chain C is an N-glycan with four NAGs
     # (`test_each_ligand_copy_gets_its_own_asym`).
     #
     # Water keeps the per-chain grouping, because RCSB genuinely does put a
@@ -815,7 +879,13 @@ def hotspot_atoms_for_residue(
             names.append(raw)
     sidechain = tuple(
         n for n in names
-        if n not in _BACKBONE and not n.startswith("H") and not n[0].isdigit()
+        # `D` as well as `H`: a deuterated structure spells the same
+        # hydrogens `DB`, `DG11`, and they were being selected as
+        # side-chain heavy atoms
+        # (`test_deuterium_is_not_a_side_chain_heavy_atom`). No standard
+        # amino-acid heavy atom name begins with `D`, and this function
+        # takes polymer residues only, so the prefix cannot swallow one.
+        if n not in _BACKBONE and not n.startswith(("H", "D")) and not n[0].isdigit()
     )
     if sidechain:
         return sidechain

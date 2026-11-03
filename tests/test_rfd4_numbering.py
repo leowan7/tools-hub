@@ -414,8 +414,8 @@ def test_entity_poly_seq_rows_match_the_polymer_residue_count():
 def test_five_digit_resseq_is_refused_not_misparsed():
     """A resSeq overflowing into the insertion-code column is a refusal.
 
-    `tools/proteina/run_pipeline.py:747-765` records that the same input is a
-    silent misparse in that parser. The hazard is a residue addressed under a
+    ``pdb_ca_residues``'s docstring in `tools/proteina/run_pipeline.py`
+    records that the same input is a silent misparse in that parser. The hazard is a residue addressed under a
     number four of its five digits long.
     """
     line = (
@@ -523,7 +523,11 @@ def test_a_repeated_author_residue_is_refused_not_merged():
 
 def test_a_blank_chain_id_is_refused():
     """mmCIF has no empty asym id, and a selection with a blank chain field
-    addresses nothing. Tool-generated PDBs leave column 22 blank."""
+    addresses nothing, so a blank chain id is refused rather than renamed.
+
+    That tool-generated PDBs leave column 22 blank is UNCITED, here and at the
+    refusal itself. The refusal is the tested behaviour either way.
+    """
     pdb = (
         "ATOM      1  CA  ALA     1       1.000   2.000   3.000  1.00  0.00           C\n"
         "ATOM      2  CB  ALA     1       1.500   2.500   3.500  1.00  0.00           C\n"
@@ -684,7 +688,10 @@ def test_an_atom_record_water_is_not_a_chain_residue():
 
     An ``ATOM``-record water would otherwise be handed a sequence position
     inside the polymer entity -- the merge the non-polymer asym split exists to
-    remove -- so ``_is_polymer`` refuses it on the name whatever the record says.
+    remove. ``_is_polymer`` has no residue-name test at all; what excludes this
+    water is that it carries no ``CA``, which is one of the three conditions
+    copied from ``pdb_ca_residues``. The record column does not override that,
+    which is what this test pins.
     """
     pdb = (
         "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\n"
@@ -782,16 +789,18 @@ _CONFORMANCE_CRAFTED = {
 
 
 def test_polymer_eligibility_matches_pdb_ca_residues(tmp_path):
-    """Both implementations of "is this a chain residue" must agree, always.
+    """The two implementations of "is this a chain residue" must agree here.
 
     ``numbering.py`` cannot import ``pdb_ca_residues``: the rfd4 container
     mounts one tools-side file, which is why ``_MODRES_EQUIV`` is copied there
     rather than imported. A copy drifts, and the drift is silent -- a residue
     one parser counts and the other skips shifts every later ``label_seq_id`` in
     that chain, so a hotspot addresses its neighbour and the run completes. This
-    test is therefore the shared definition: it runs both implementations over a
-    corpus and fails on any disagreement, which is the only thing that makes the
-    copy safe.
+    test is therefore where the two are held together: it runs both
+    implementations over the corpus below and fails on any disagreement. That is
+    a corpus, not a proof -- three deposited structures and the crafted cases,
+    chosen because each earlier round's defect was a case no test covered. A
+    disagreement on an input unlike all of them would still pass.
     """
     from tools.proteina.run_pipeline import pdb_ca_residues
 
@@ -814,6 +823,21 @@ def test_polymer_eligibility_matches_pdb_ca_residues(tmp_path):
     assert not disagreements, f"polymer eligibility diverged: {disagreements}"
 
 
+def _atom_site_rows(cif: str) -> tuple[list[str], list[list[str]]]:
+    """The ``_atom_site`` column names and data rows of a generated CIF."""
+    cols: list[str] = []
+    rows: list[list[str]] = []
+    for line in cif.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("_atom_site."):
+            cols.append(stripped.split(".", 1)[1])
+        elif cols and stripped.startswith(("ATOM", "HETATM")):
+            rows.append(stripped.split())
+        elif cols and rows:
+            break
+    return cols, rows
+
+
 def _duplicate_non_water_label_keys(path: Path) -> dict:
     """Label identities that more than one atom row shares, waters excluded.
 
@@ -824,16 +848,7 @@ def _duplicate_non_water_label_keys(path: Path) -> dict:
     identity there is a defect.
     """
     cif, _mapping = _convert(path)
-    cols: list[str] = []
-    rows: list[list[str]] = []
-    for line in cif.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("_atom_site."):
-            cols.append(stripped.split(".", 1)[1])
-        elif cols and stripped.startswith(("ATOM", "HETATM")):
-            rows.append(stripped.split())
-        elif cols and rows and not stripped.startswith(("ATOM", "HETATM")):
-            break
+    cols, rows = _atom_site_rows(cif)
     ix = {c: i for i, c in enumerate(cols)}
     counts: dict[tuple[str, str, str, str], int] = {}
     for row in rows:
@@ -854,14 +869,80 @@ def test_each_ligand_copy_gets_its_own_asym(fixture):
     Non-polymer ``label_seq_id`` is ``.``, so grouping non-polymers by
     ``(chain, resname)`` made N copies of one ligand indistinguishable in label
     numbering: same asym, same ``.``, same ``label_comp_id``, same
-    ``label_atom_id``. A reader grouping by label identity -- what upstream RFD4
-    does, per the module docstring -- then sees one ligand carrying N copies of
-    each atom. Measured on the pre-fix code these fixtures produced 14 such keys
-    (1HEW) and 50 (3ave, whose chain C is an N-glycan with four NAGs); 1igt_fv
+    ``label_atom_id``. Any reader that groups atom rows by that identity --
+    which is what the ``label_*`` columns are for in mmCIF -- then sees one
+    ligand carrying N copies of each atom; whether upstream RFD4's reader groups
+    that way is UNVERIFIED. Measured against the pre-fix blob ``a4108d6d`` by
+    substituting it and re-running this test, these fixtures produced 14 such
+    keys (1HEW) and 50 (3ave, whose chain C is an N-glycan with four NAGs); 1igt_fv
     carries no non-polymer records and produced 0, which is why it cannot
     witness the defect on its own.
     """
     assert _duplicate_non_water_label_keys(fixture) == {}
+
+
+def test_a_two_letter_element_survives_a_blank_element_column():
+    """Columns 77-78 are optional; a one-letter guess invented a non-element.
+
+    ``ZN`` was written ``type_symbol Z``, which is not an element, and
+    selenomethionine's ``SE`` was written ``S``. Nothing failed -- the CIF
+    stayed well formed and the numbering was untouched -- which is why only an
+    assertion on the value catches it.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "HETATM    2 SE   MSE A   2       4.000   5.000   6.000  1.00  0.00\n"
+        "HETATM    3 ZN    ZN B   1       7.000   8.000   9.000  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    by_name = {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows}
+    assert by_name == {"CA": "C", "SE": "Se", "ZN": "Zn"}
+
+
+def test_a_hydrogen_name_in_column_13_is_not_mercury():
+    """``HG12`` starts in column 13 like a two-letter element does.
+
+    The two-letter fallback is therefore gated on an element list, not on the
+    column alone -- ``HG`` is mercury and ``HG12`` is a valine hydrogen, and
+    they are indistinguishable by position.
+    """
+    pdb = (
+        "ATOM      1  CA  VAL A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "ATOM      2 HG12 VAL A   1       1.500   2.500   3.500  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    assert {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows} == {
+        "CA": "C", "HG12": "H",
+    }
+
+
+def test_deuterium_is_not_a_side_chain_heavy_atom():
+    """A deuterated structure spells its hydrogens ``D``, not ``H``."""
+    names = ["N", "CA", "C", "O", "CB", "CG1", "CG2", "DB", "DG11", "HG12"]
+    assert hotspot_atoms_for_residue("VAL", names) == ("CB", "CG1", "CG2")
+
+
+def test_diverges_is_true_for_an_insertion_coded_chain_at_the_same_seq():
+    """An insertion-coded residue diverges even where the seq ids coincide.
+
+    ``7`` and ``7A`` are two residues at one author number, so the second gets
+    ``label_seq_id`` 2 while its author resSeq is still 7. The FIRST residue's
+    ids coincide (``label_seq_id`` 1 vs author 7 -- they do not), so this names
+    the residue that makes the predicate true rather than asserting the
+    predicate alone.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   7       1.000   2.000   3.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY A   7A      4.000   5.000   6.000  1.00  0.00           C\n"
+    )
+    _cif, mapping = _convert_text(pdb)
+    assert mapping.label_for("A", 7, "") == ("A", 1)
+    assert mapping.label_for("A", 7, "A") == ("A", 2)
+    assert mapping.diverges() is True
 
 
 def test_a_space_insertion_code_is_the_same_residue_as_no_insertion_code():

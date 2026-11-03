@@ -1,7 +1,7 @@
 # RFD4-Proteina — research and scoping pass
 
 Date: 2026-10-30. Author: hub worker session (research only).
-Scope of this document: research and scoping, plus the sections later passes have appended. **The 2026-10-30 research pass changed no product code and deployed no Modal app**; later passes recorded in §10A do add code (`tools/rfd4/numbering.py`), and still deploy nothing. GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
+Scope of this document: research and scoping, plus the sections later passes have appended. **The 2026-10-30 research pass changed no product code and deployed no Modal app**; later passes recorded in §10A do add code (`tools/rfd4/numbering.py`) and have themselves deployed nothing. "Deploys nothing" is a statement about these passes, NOT about the merge: merging the PR redeploys all nine GPU Modal apps, so the merge is Leo's to make after an idle check, not a worker session's. GPU work was limited to the validation ladder Leo approved one rung at a time, which has now spent a measured **$0.2908** plus rung 2's uncaptured seeding, bounded under $0.62 (§§5.4–5.7, §11).
 
 Every runtime, cost, VRAM and size figure below names the file, command or URL that produced it. Anything else is labelled **UNVERIFIED**, **NOT FOUND** or **DERIVED**.
 
