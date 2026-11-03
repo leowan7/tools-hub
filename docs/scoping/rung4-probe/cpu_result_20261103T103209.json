@@ -1,0 +1,362 @@
+{
+ "write_cifs_rc": 0,
+ "write_cifs_log": "$ /usr/local/bin/python /opt/rfd4/scripts/write_condition_spec_cifs.py /tmp/rfd4_in/spec_v4_chainA.yaml --out-dir /tmp/cifs --verbose\n[exit 0, 27.2s]\nwrote /tmp/cifs/fc_binder.cif\n\nEnvironment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:\n  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file\n  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'\n  (3) write it to a .env file in the root of the atomworks.io repository\nEnvironment variable PDB_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:\n  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file\n  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'\n  (3) write it to a .env file in the root of the atomworks.io repository\nExpandable segment sentinel insertion copied annotation values without explicit re-derivation for source atom_idx=3377: ['is_aromatic', 'is_backbone_atom', 'label_alt_id', 'stereo', 'transformation_id']\n",
+ "built_cifs": [
+  "/tmp/cifs/fc_binder.cif"
+ ],
+ "atom_site_tags": {
+  "fc_binder.cif": [
+   "_atom_site.group_PDB",
+   "_atom_site.type_symbol",
+   "_atom_site.label_atom_id",
+   "_atom_site.label_alt_id",
+   "_atom_site.label_comp_id",
+   "_atom_site.label_asym_id",
+   "_atom_site.label_entity_id",
+   "_atom_site.label_seq_id",
+   "_atom_site.pdbx_PDB_ins_code",
+   "_atom_site.auth_seq_id",
+   "_atom_site.auth_comp_id",
+   "_atom_site.auth_asym_id",
+   "_atom_site.auth_atom_id",
+   "_atom_site.B_iso_or_equiv",
+   "_atom_site.occupancy",
+   "_atom_site.pdbx_formal_charge",
+   "_atom_site.annotation_expsegmin_1_residue",
+   "_atom_site.annotation_expsegmax_1_residue",
+   "_atom_site.condition_sequence_1_residue",
+   "_atom_site.condition_hotspot_1_atom",
+   "_atom_site.condition_CoordinateGroup_1_atom",
+   "_atom_site.atom_array_index",
+   "_atom_site.Cartn_x",
+   "_atom_site.Cartn_y",
+   "_atom_site.Cartn_z",
+   "_atom_site.pdbx_PDB_model_num",
+   "_atom_site.id"
+  ]
+ },
+ "condition_columns": {
+  "fc_binder.cif": {
+   "_atom_site.condition_sequence_1_residue": {
+    "<M>": [
+     "B/1/1/60-120"
+    ],
+    "ALA": [
+     "A/106/106/ALA",
+     "A/145/145/ALA",
+     "A/198/198/ALA",
+     "A/54/54/ALA",
+     "A/94/94/ALA",
+     "A/97/97/ALA"
+    ],
+    "ARG": [
+     "A/111/111/ARG",
+     "A/122/122/ARG",
+     "A/183/183/ARG",
+     "A/22/22/ARG",
+     "A/59/59/ARG",
+     "A/68/68/ARG"
+    ],
+    "ASN": [
+     "A/128/128/ASN",
+     "A/151/151/ASN",
+     "A/156/156/ASN",
+     "A/157/157/ASN",
+     "A/188/188/ASN",
+     "A/201/201/ASN",
+     "A/43/43/ASN",
+     "A/53/53/ASN",
+     "A/64/64/ASN",
+     "A/82/82/ASN",
+     "A/92/92/ASN"
+    ],
+    "ASP": [
+     "A/123/123/ASP",
+     "A/143/143/ASP",
+     "A/16/16/ASP",
+     "A/166/166/ASP",
+     "A/168/168/ASP",
+     "A/180/180/ASP",
+     "A/32/32/ASP",
+     "A/37/37/ASP",
+     "A/47/47/ASP",
+     "A/79/79/ASP"
+    ],
+    "CYS": [
+     "A/134/134/CYS",
+     "A/192/192/CYS",
+     "A/28/28/CYS",
+     "A/88/88/CYS"
+    ],
+    "GLN": [
+     "A/109/109/GLN",
+     "A/114/114/GLN",
+     "A/129/129/GLN",
+     "A/153/153/GLN",
+     "A/185/185/GLN",
+     "A/186/186/GLN",
+     "A/205/205/GLN",
+     "A/62/62/GLN",
+     "A/78/78/GLN"
+    ],
+    "GLU": [
+     "A/100/100/GLU",
+     "A/112/112/GLU",
+     "A/124/124/GLU",
+     "A/147/147/GLU",
+     "A/149/149/GLU",
+     "A/155/155/GLU",
+     "A/197/197/GLU",
+     "A/25/25/GLU",
+     "A/36/36/GLU",
+     "A/39/39/GLU",
+     "A/50/50/GLU",
+     "A/60/60/GLU",
+     "A/61/61/GLU",
+     "A/85/85/GLU"
+    ],
+    "GLY": [
+     "A/108/108/GLY",
+     "A/138/138/GLY",
+     "A/152/152/GLY",
+     "A/169/169/GLY",
+     "A/187/187/GLY",
+     "A/3/3/GLY",
+     "A/4/4/GLY",
+     "A/48/48/GLY",
+     "A/83/83/GLY"
+    ],
+    "HIS": [
+     "A/196/196/HIS",
+     "A/200/200/HIS",
+     "A/202/202/HIS",
+     "A/35/35/HIS",
+     "A/52/52/HIS",
+     "A/77/77/HIS"
+    ],
+    "ILE": [
+     "A/103/103/ILE",
+     "A/144/144/ILE",
+     "A/20/20/ILE",
+     "A/99/99/ILE"
+    ],
+    "LEU": [
+     "A/1/1/LEU",
+     "A/118/118/LEU",
+     "A/125/125/LEU",
+     "A/132/132/LEU",
+     "A/135/135/LEU",
+     "A/165/165/LEU",
+     "A/173/173/LEU",
+     "A/177/177/LEU",
+     "A/18/18/LEU",
+     "A/199/199/LEU",
+     "A/2/2/LEU",
+     "A/208/208/LEU",
+     "A/210/210/LEU",
+     "A/73/73/LEU",
+     "A/76/76/LEU",
+     "A/81/81/LEU",
+     "A/9/9/LEU",
+     "A/95/95/LEU"
+    ],
+    "LYS": [
+     "A/101/101/LYS",
+     "A/105/105/LYS",
+     "A/107/107/LYS",
+     "A/127/127/LYS",
+     "A/13/13/LYS",
+     "A/137/137/LYS",
+     "A/15/15/LYS",
+     "A/159/159/LYS",
+     "A/176/176/LYS",
+     "A/181/181/LYS",
+     "A/206/206/LYS",
+     "A/41/41/LYS",
+     "A/55/55/LYS",
+     "A/57/57/LYS",
+     "A/84/84/LYS",
+     "A/87/87/LYS",
+     "A/89/89/LYS",
+     "A/93/93/LYS"
+    ],
+    "MET": [
+     "A/19/19/MET",
+     "A/195/195/MET"
+    ],
+    "PHE": [
+     "A/10/10/PHE",
+     "A/139/139/PHE",
+     "A/171/171/PHE",
+     "A/172/172/PHE",
+     "A/190/190/PHE",
+     "A/42/42/PHE",
+     "A/8/8/PHE"
+    ],
+    "PRO": [
+     "A/11/11/PRO",
+     "A/110/110/PRO",
+     "A/113/113/PRO",
+     "A/119/119/PRO",
+     "A/12/12/PRO",
+     "A/120/120/PRO",
+     "A/14/14/PRO",
+     "A/141/141/PRO",
+     "A/154/154/PRO",
+     "A/162/162/PRO",
+     "A/163/163/PRO",
+     "A/24/24/PRO",
+     "A/38/38/PRO",
+     "A/5/5/PRO",
+     "A/58/58/PRO",
+     "A/96/96/PRO",
+     "A/98/98/PRO"
+    ],
+    "SER": [
+     "A/104/104/SER",
+     "A/121/121/SER",
+     "A/131/131/SER",
+     "A/142/142/SER",
+     "A/150/150/SER",
+     "A/167/167/SER",
+     "A/170/170/SER",
+     "A/175/175/SER",
+     "A/182/182/SER",
+     "A/191/191/SER",
+     "A/193/193/SER",
+     "A/207/207/SER",
+     "A/209/209/SER",
+     "A/21/21/SER",
+     "A/211/211/SER",
+     "A/34/34/SER",
+     "A/6/6/SER",
+     "A/65/65/SER",
+     "A/71/71/SER",
+     "A/91/91/SER"
+    ],
+    "THR": [
+     "A/102/102/THR",
+     "A/117/117/THR",
+     "A/126/126/THR",
+     "A/133/133/THR",
+     "A/160/160/THR",
+     "A/161/161/THR",
+     "A/17/17/THR",
+     "A/178/178/THR",
+     "A/204/204/THR",
+     "A/23/23/THR",
+     "A/27/27/THR",
+     "A/56/56/THR",
+     "A/66/66/THR",
+     "A/74/74/THR"
+    ],
+    "TRP": [
+     "A/148/148/TRP",
+     "A/184/184/TRP",
+     "A/44/44/TRP",
+     "A/80/80/TRP"
+    ],
+    "TYR": [
+     "A/116/116/TYR",
+     "A/140/140/TYR",
+     "A/158/158/TYR",
+     "A/174/174/TYR",
+     "A/203/203/TYR",
+     "A/45/45/TYR",
+     "A/63/63/TYR",
+     "A/67/67/TYR",
+     "A/86/86/TYR"
+    ],
+    "VAL": [
+     "A/115/115/VAL",
+     "A/130/130/VAL",
+     "A/136/136/VAL",
+     "A/146/146/VAL",
+     "A/164/164/VAL",
+     "A/179/179/VAL",
+     "A/189/189/VAL",
+     "A/194/194/VAL",
+     "A/26/26/VAL",
+     "A/29/29/VAL",
+     "A/30/30/VAL",
+     "A/31/31/VAL",
+     "A/33/33/VAL",
+     "A/40/40/VAL",
+     "A/46/46/VAL",
+     "A/49/49/VAL",
+     "A/51/51/VAL",
+     "A/69/69/VAL",
+     "A/7/7/VAL",
+     "A/70/70/VAL",
+     "A/72/72/VAL",
+     "A/75/75/VAL",
+     "A/90/90/VAL"
+    ]
+   },
+   "_atom_site.condition_hotspot_1_atom": {
+    "False": [
+     "<204 residues>",
+     "A/1/1/LEU",
+     "A/100/100/GLU",
+     "A/101/101/LYS",
+     "A/102/102/THR",
+     "A/103/103/ILE",
+     "A/104/104/SER",
+     "A/105/105/LYS",
+     "A/106/106/ALA"
+    ],
+    "True": [
+     "A/10/10/PHE",
+     "A/11/11/PRO",
+     "A/13/13/LYS",
+     "A/27/27/THR",
+     "A/29/29/VAL",
+     "A/31/31/VAL",
+     "A/68/68/ARG",
+     "A/8/8/PHE"
+    ]
+   },
+   "_atom_site.condition_CoordinateGroup_1_atom": {
+    "-1": [
+     "<212 residues>",
+     "A/1/1/LEU",
+     "A/10/10/PHE",
+     "A/100/100/GLU",
+     "A/101/101/LYS",
+     "A/102/102/THR",
+     "A/103/103/ILE",
+     "A/104/104/SER",
+     "A/105/105/LYS"
+    ],
+    "1": [
+     "<211 residues>",
+     "A/1/1/LEU",
+     "A/10/10/PHE",
+     "A/100/100/GLU",
+     "A/101/101/LYS",
+     "A/102/102/THR",
+     "A/103/103/ILE",
+     "A/104/104/SER",
+     "A/105/105/LYS"
+    ]
+   }
+  }
+ },
+ "mmcif_categories": {
+  "fc_binder.cif": [
+   "_entry.",
+   "_entity.",
+   "_entity_poly.",
+   "_entity_poly_seq.",
+   "_chem_comp.",
+   "_chem_comp_bond.",
+   "_atom_site.",
+   "_cell.",
+   "_chem_comp_atom."
+  ]
+ },
+ "cfg_rc": 0,
+ "cfg_dump": "$ rfd4-generate inference_experiment=inference_on_user_inputs hf_ckpt_path=null ckpt_name=rfd4_proteina_flow-ema.ckpt inputs=/tmp/rfd4_in/spec_v4_chainA.yaml num_replicates=4 metrics_tags=[design,interchain_interactions,hotspot_conditioning] delete_failing_pre_oracle=False out_dir=/tmp/rfd4_run --cfg job --resolve\n[exit 0, 22.1s]\ninference_backend: native\nbioir:\n  dtype: bfloat16\n  attention_backend: null\n  cuda_graph: true\n  cuda_graph_max_tokens: 511\n  max_graphs: null\n  match_reference_rng: false\nrun_name_: inference\nverbose: false\nhf_ckpt_path: null\nhf_ckpt_revision: a06e2509c7033b010fc43614e9fd840303588502\nout_dir: /tmp/rfd4_run\nckpt_name: rfd4_proteina_flow-ema.ckpt\nckpt_path: /data/flow_checkpoints\nadapter_path: null\ndelete_failing_pre_oracle: false\nautoencoder_ckpt_path: /data/ae_checkpoints/rfd4-proteina-ae-release-2026-10-19.ckpt\nnum_replicates: 4\ncompile_lengths:\n- 128\n- 160\n- 192\n- 224\n- 256\n- 288\n- 320\n- 352\n- 384\n- 448\n- 512\n- 640\n- 768\n- 896\n- 1024\nnn:\n  torch_compile_mode: null\n  torch_compile_fullgraph: null\n  tri_mult_backend: null\n  attention_type: null\nprecision: bf16-mixed\nbatch_size: 1\nsubset_to_examples: null\nprevalidate_inputs: false\nseed: null\ntorch_deterministic: false\nskip_existing: true\nsave_chain_of_interest: false\ncompress_outputs: false\nmetrics_tags:\n- design\n- interchain_interactions\n- hotspot_conditioning\nsearch:\n  checkpoints: null\n  save_states: false\n  resume_from: null\n  resume_seed: null\nnum_workers: 4\nhardware:\n  accelerator: gpu\n  ngpus_per_node_: 1\n  nnodes_: 1\nncpus_: 24\ngen_njobs: 1\neval_njobs: 1\njob_id: null\ngeneration:\n  n_recycle: 0\n  n_recycle_schedule:\n  - - 5\n    - 6\n  - - 10\n    - 5\n  - - 5\n    - 4\n  - - 10\n    - 3\n  - - 20\n    - 2\n  - - 10\n    - 1\n  condition_on_recycle_remaining: true\n  val_set_name_override: /tmp/rfd4_in/spec_v4_chainA.yaml\n  args:\n    nsteps: 60\n    condition_decoder_on_sequence_prediction: true\n    guidance_w: 1.0\n    partial_trajectory_fraction_steps: null\n    partial_t_backbone: null\n    partial_t_latent: null\n    couple_partial_t: false\n    inverse_folding: false\n    inverse_folding_method: resampled_forward_marginal\n    save_trajectory_every: 0\n    bb_ca_only_trajectories: true\n    dump_noisy_trajectories: false\n  model:\n    bb_ca:\n      schedule:\n        mode: log\n        p: 2.0\n        tail_steps: 10\n        tail_step_multiplier: 2\n      gt:\n        mode: 1/t\n        p: 1.0\n        clamp_val: null\n      simulation_step_params:\n        sampling_mode: vf_tsr\n        sc_scale_noise: 1.0\n        t_lim_ode: 0.95\n        t_lim_ode_below: 0.02\n        center_every_step: false\n        tsr_k: 16.0\n        tsr_sigma: 3.0\n    local_latents:\n      schedule:\n        mode: power\n        p: 2.0\n        tail_steps: 10\n        tail_step_multiplier: 2\n      gt:\n        mode: tan\n        p: 1.0\n        clamp_val: null\n      simulation_step_params:\n        sampling_mode: vf_tsr\n        sc_scale_noise: 1.0\n        t_lim_ode: 0.95\n        t_lim_ode_below: 0.02\n        center_every_step: false\n        tsr_k: 4.0\n        tsr_sigma: 12.0\n  dataset:\n    num_replicates: 4\n    transform:\n      metrics_tags:\n      - design\n      - interchain_interactions\n      - hotspot_conditioning\nmetrics:\n  inline_metrics:\n    amino_acid_composition:\n      _target_: rfproteina.metrics.amino_acid_composition.AminoAcidCompositionMetric\n      aggregation:\n      - mean\n    bond_length_metrics:\n      _target_: rfproteina.metrics.design_metrics.BondLengthMetric\n      verbose: true\n      required_tags_any:\n      - design\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n    clash_metrics:\n      _target_: rfproteina.metrics.design_metrics.ClashMetric\n      threshold: 1.5\n      required_tags_any:\n      - design\n      - structure_prediction\n      prohibited_tags:\n      - small_molecule_only\n    hotspot_obedience:\n      _target_: rfproteina.metrics.hotspots.HotspotObedience\n      max_hotspot_distance: 4.5\n      required_tags_any:\n      - hotspot_conditioning\n    rasa_adherence:\n      _target_: rfproteina.metrics.rasa_metrics.RasaAdherenceMetric\n      required_tags_any:\n      - rasa_conditioning\n    centroid_conditioning_adherence:\n      _target_: rfproteina.metrics.centroid_metrics.CentroidConditioningAdherenceMetric\n      required_tags_any:\n      - centroid_conditioning\n    interchain_interactions:\n      _target_: rfproteina.metrics.interaction_metrics.InterchainInteractionMetric\n      required_tags_any:\n      - interchain_interactions\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n    sequence_adherence:\n      _target_: rfproteina.metrics.sequence_adherence_metric.SequenceAdherenceMetric\n      required_tags_any:\n      - design\n    sequence_probability_adherence:\n      _target_: rfproteina.metrics.sequence_adherence_metric.SequenceProbabilityAdherenceMetric\n      required_tags_any:\n      - design\n    sse_distribution:\n      _target_: rfproteina.metrics.sse_metrics.SecondaryStructureDistribution\n      required_tags_any:\n      - design\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n    sse_accuracy:\n      _target_: rfproteina.metrics.sse_metrics.SecondaryStructureAccuracy\n      required_tags_any:\n      - design\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n    posebusters_metrics:\n      _target_: rfproteina.metrics.posebusters_metrics.PoseBustersMetric\n      atom_array_input_key: predicted_atom_array\n      required_tags_any:\n      - small_molecule_only\n    chiral_accuracy:\n      _target_: rfproteina.metrics.chiral_metric.ChiralAccuracy\n      subset_mask: is_ligand\n      required_tags_any:\n      - has_small_molecule\n    design_motif_allatom_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: sa_mask('SA_CRDSRC')\n      subset_mask: sa_mask('SA_CRDSRC')\n      subdivide_by_annotation: condition_CoordinateGroup_1_atom\n      gt_coord_annotation_name: annotation_coords-with-insertion_1_atom\n      metric_type: rmsd\n      aggregation:\n      - median\n      input_kwarg_names:\n        ground_truth_atom_array: predicted_atom_array\n        predicted_atom_array: predicted_atom_array\n      required_tags_any:\n      - 3d_coordinate_conditioning\n      - unindexed\n      - internal_coordinate_conditioning\n    design_unindexed_motif_allatom_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: sa_mask('SA_CRDSRC') & is_unindexed_insertion\n      subset_mask: sa_mask('SA_CRDSRC') & is_unindexed_insertion\n      subdivide_by_annotation: condition_CoordinateGroup_1_atom\n      gt_coord_annotation_name: annotation_coords-with-insertion_1_atom\n      metric_type: rmsd\n      aggregation:\n      - median\n      input_kwarg_names:\n        ground_truth_atom_array: predicted_atom_array\n        predicted_atom_array: predicted_atom_array\n      required_tags_all:\n      - unindexed\n    unindexed_insertion_mapping:\n      _target_: rfproteina.metrics.unindexed_insertion_metric.UnindexedInsertionMappingMetric\n      required_tags_all:\n      - unindexed\n    contact_molecular_surface:\n      _target_: rfproteina.metrics.physics.contact_ms.metric.ContactMolecularSurfaceMetric\n      required_tags_any:\n      - cms\n    sequence_similarity_to_input:\n      _target_: rfproteina.metrics.design_metrics.SequenceSimilarityToInput\n      required_tags_any:\n      - partial_diffusion\n    ca_rmsd_to_input:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: is_protein & (atom_name == 'CA')\n      subset_mask: is_protein & (atom_name == 'CA')\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - partial_diffusion\n    cath_metric:\n      _target_: rfproteina.metrics.cath_metric.CathMetric\n      required_tags_any:\n      - cath\n      annotator: foldseek_with_fallback\n    structure_prediction_lddt:\n      _target_: rfproteina.metrics.lddt_metric.AllAtomLDDT\n      predicted_atom_array_key: predicted_atom_array\n      ground_truth_atom_array_key: ground_truth_atom_array\n      required_tags_any:\n      - structure_prediction\n    sequence_developability:\n      _target_: rfproteina.metrics.physics.developability_metrics.SequenceDevelopabilityMetric\n      required_tags_any:\n      - developability\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n    rosetta_developability:\n      _target_: rfproteina.metrics.physics.developability_metrics.RosettaDevelopabilityMetric\n      required_tags_any:\n      - developability\n      prohibited_tags:\n      - small_molecule_only\n      - structure_prediction\n      sasa_cutoff: 20.0\n    antibody_contacts:\n      _target_: rfproteina.metrics.antibody_metrics.AntibodyContacts\n      required_tags_any:\n      - antibody\n      contact_threshold: 7.0\n  refolding_oracles:\n    oracle:\n      _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle\n      oracle_name: af3\n      aggregation:\n      - median\n      frac_under_thresholds:\n        min_ipae_coi:\n        - 1\n        - 1.5\n        - 2\n      required_tags_any:\n      - af3_refolding\n      - unconditional_refolding\n      - motif_scaffold_refolding\n      - internal_coordinate_motif_scaffold_refolding\n      - sm_binder_refolding\n      - ame_refolding\n      - ame_no_ligand_refolding\n      - ame_original_benchmark_refolding\n      - disco_refolding\n    oracle_ppi:\n      _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle\n      oracle_name: af3_ppi\n      template_query: (sa_mask('C_CRD') | sa_mask('C_INTCRD')) & is_protein\n      aggregation:\n      - median\n      frac_under_thresholds:\n        min_ipae_coi:\n        - 1\n        - 1.5\n        - 2\n      required_tags_any:\n      - ppi_refolding\n      - antibody\n    oracle_dna:\n      _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle\n      oracle_name: af3_dna\n      template_query: sa_mask('C_CRD') & ~is_nucleic_acid\n      aggregation:\n      - median\n      frac_under_thresholds:\n        min_ipae_coi:\n        - 1\n        - 1.5\n        - 2\n      required_tags_any:\n      - dna_refolding\n    oracle_apo:\n      _target_: rfproteina.metrics.oracles.af3_oracle.AF3Oracle\n      oracle_name: af3_apo\n      aggregation:\n      - median\n      pre_oracle_transform:\n        _target_: rfproteina.metrics.oracles.pre_oracle_transform.ApoOnlyTransform\n      required_tags_any:\n      - apo_refolding\n  refolding_metrics:\n    refolded_backbone_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: is_protein_backbone\n      subset_mask: is_protein_backbone\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - unconditional_refolding\n      - ppi_refolding\n      - antibody\n      - dna_refolding\n      - motif_scaffold_refolding\n      - internal_coordinate_motif_scaffold_refolding\n      - sm_binder_refolding\n      - ame_refolding\n      - ame_no_ligand_refolding\n      - ame_original_benchmark_refolding\n      - disco_refolding\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_target_aligned_binder_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: ~is_chain_of_interest & (sa_mask('C_CRD') | is_dna)\n      subset_mask: is_chain_of_interest & is_protein\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - ppi_refolding\n      - dna_refolding\n      - antibody\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_target_backbone_aligned_binder_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: ~is_chain_of_interest & sa_mask('C_CRD') & is_protein_backbone\n      subset_mask: is_chain_of_interest & is_protein\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - ppi_refolding\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_motif_allatom_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: sa_mask('SA_CRDSRC') & is_protein\n      subset_mask: sa_mask('SA_CRDSRC') & is_protein\n      subdivide_by_annotation: condition_CoordinateGroup_1_atom\n      gt_coord_annotation_name: annotation_coords-with-insertion_1_atom\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - motif_scaffold_refolding\n      - internal_coordinate_motif_scaffold_refolding\n      - ame_refolding\n      - ame_no_ligand_refolding\n      - ame_original_benchmark_refolding\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_motif_ca_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: sa_mask('SA_CRDSRC') & is_protein & (atom_name == 'CA')\n      subset_mask: sa_mask('SA_CRDSRC') & is_protein & (atom_name == 'CA')\n      subdivide_by_annotation: condition_CoordinateGroup_1_atom\n      gt_coord_annotation_name: annotation_coords-with-insertion_1_atom\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - motif_scaffold_refolding\n      - internal_coordinate_motif_scaffold_refolding\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_backbone_aligned_ligand_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: is_protein_backbone\n      subset_mask: is_ligand\n      metric_type: rmsd\n      aggregation:\n      - median\n      required_tags_any:\n      - sm_binder_refolding\n      required_tags_all:\n      - is_refold:untransformed\n    refolded_apo_holo_rmsd:\n      _target_: rfproteina.metrics.gt_structure_comparison.StructureComparisonMetric\n      align_mask: is_protein_backbone & ~sa_mask('C_CRD')\n      subset_mask: is_protein_backbone & ~sa_mask('C_CRD')\n      metric_type: rmsd\n      aggregation:\n      - median\n      input_kwarg_names:\n        ground_truth_atom_array: refold.apo\n        predicted_atom_array: refold.untransformed\n      required_tags_all:\n      - is_refold:apo\n      - exists_refold:untransformed\n    max_ligand_centroid_distance:\n      _target_: rfproteina.metrics.gt_structure_comparison.LigandCentroidDistanceMetric\n      align_mask: is_protein_backbone\n      aggregation: max\n      required_tags_any:\n      - disco_refolding\n      required_tags_all:\n      - is_refold:untransformed\n  pass_criteria:\n    unconditional:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        refolded_backbone_rmsd.rmsd:\n          max: 1.5\n      required_tags_any:\n      - unconditional_refolding\n    ppi:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        oracle_ppi.ptm_coi:\n          min: 80.0\n        oracle_ppi.min_ipae_coi:\n          max: 1.5\n        refolded_target_backbone_aligned_binder_rmsd.rmsd:\n          max: 2.5\n      required_tags_any:\n      - ppi_refolding\n    antibody:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        oracle_ppi.min_ipae_coi:\n          max: 2.0\n        refolded_target_aligned_binder_rmsd.rmsd:\n          max: 2.0\n      required_tags_any:\n      - antibody\n    dna:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        oracle_dna.min_ipae_coi:\n          max: 1.5\n        refolded_target_aligned_binder_rmsd.rmsd:\n          max: 8.0\n      required_tags_any:\n      - dna_refolding\n    motif_scaffold:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        refolded_backbone_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_allatom_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_ca_rmsd.rmsd:\n          max: 1.0\n      required_tags_any:\n      - motif_scaffold_refolding\n    internal_coords:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        refolded_backbone_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_allatom_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_ca_rmsd.rmsd:\n          max: 1.0\n      required_tags_any:\n      - internal_coordinate_motif_scaffold_refolding\n    sm_binder:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        oracle.min_ipae_coi:\n          max: 1.5\n        oracle.iptm_coi:\n          min: 80.0\n        refolded_backbone_rmsd.rmsd:\n          max: 1.5\n        refolded_backbone_aligned_ligand_rmsd.rmsd:\n          max: 5.0\n      required_tags_any:\n      - sm_binder_refolding\n    ame:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        oracle.min_ipae_coi:\n          max_exclusive: 1.5\n        refolded_backbone_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_allatom_rmsd.rmsd:\n          max: 1.5\n        clash_metrics.frac_atoms_clashing_inter_residue_polymer_ligand_1p5A:\n          max: 0\n      required_tags_any:\n      - ame_refolding\n      prohibited_tags:\n      - no_ligand\n    ame_no_ligand:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        refolded_backbone_rmsd.rmsd:\n          max: 2.0\n        refolded_motif_allatom_rmsd.rmsd:\n          max: 1.5\n      required_tags_any:\n      - ame_refolding\n      required_tags_all:\n      - no_ligand\n    disco:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        refolded_backbone_rmsd.rmsd:\n          max: 2.0\n        max_ligand_centroid_distance.ligand_centroid_distance:\n          max: 2.0\n      required_tags_any:\n      - disco_refolding\n    developability:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        rosetta_developability.sap_score:\n          max: 50.0\n        rosetta_developability.hydrophobic_exposure_sasa:\n          max: 1500.0\n        sequence_developability.gravy:\n          max: 0.1\n        sequence_developability.instability_index:\n          max: 40.0\n      required_tags_any:\n      - developability\n  pre_oracle_filters:\n    unknown_residue_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        amino_acid_composition.n_generated_unknown_residues:\n          max: 0\n    sequence_adherence_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      required_tags_any:\n      - design\n      metric_thresholds:\n        sequence_adherence.n_violations:\n          max: 0\n    unindexed_insertion_mapping_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      required_tags_all:\n      - unindexed\n      metric_thresholds:\n        unindexed_insertion_mapping.n_unmapped_tokens:\n          max: 0\n        unindexed_insertion_mapping.n_sequence_mismatches:\n          max: 0\n    insertion_rmsd_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        unindexed_metrics.insertion_rmsd:\n          max: 1.0\n      required_tags_all:\n      - unindexed\n      - insertion_rmsd_filter\n    motif_rmsd_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      required_tags_all:\n      - motif_rmsd_filter\n      metric_thresholds:\n        motif_rmsd.rmsd:\n          max: 1.0\n    ligand_clash_filter:\n      _target_: rfproteina.metrics.oracles.pass_criterion_metric.PassCriterionMetric\n      metric_thresholds:\n        clash_metrics.frac_atoms_clashing_inter_residue_polymer_ligand_1p5A:\n          max: 0\n      required_tags_all:\n      - ligand_clash_filter\n      prohibited_tags:\n      - no_ligand\ninputs: /tmp/rfd4_in/spec_v4_chainA.yaml\nglobal_prefix: null\n\nEnvironment variable CCD_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:\n  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file\n  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'\n  (3) write it to a .env file in the root of the atomworks.io repository\nEnvironment variable PDB_MIRROR_PATH not set. Will not be able to use function requiring this variable. To set it you may:\n  (1) add the line 'export VAR_NAME=path/to/variable' to your .bashrc or .zshrc file\n  (2) set it in your current shell with 'export VAR_NAME=path/to/variable'\n  (3) write it to a .env file in the root of the atomworks.io repository\nError while loading libcue_ops.so: libcuda.so.1: cannot open shared object file: No such file or directory\n",
+ "tagcheck_rc": 0,
+ "tagcheck": "$ /usr/local/bin/python /tmp/tagcheck.py\n[exit 0, 0.6s]\n{\n \"selected\": [\n  \"inline_metrics.amino_acid_composition\",\n  \"inline_metrics.bond_length_metrics\",\n  \"inline_metrics.clash_metrics\",\n  \"inline_metrics.hotspot_obedience\",\n  \"inline_metrics.interchain_interactions\",\n  \"inline_metrics.sequence_adherence\",\n  \"inline_metrics.sequence_probability_adherence\",\n  \"inline_metrics.sse_accuracy\",\n  \"inline_metrics.sse_distribution\",\n  \"pre_oracle_filters.sequence_adherence_filter\",\n  \"pre_oracle_filters.unknown_residue_filter\"\n ],\n \"skipped\": [\n  \"inline_metrics.antibody_contacts\",\n  \"inline_metrics.ca_rmsd_to_input\",\n  \"inline_metrics.cath_metric\",\n  \"inline_metrics.centroid_conditioning_adherence\",\n  \"inline_metrics.chiral_accuracy\",\n  \"inline_metrics.contact_molecular_surface\",\n  \"inline_metrics.design_motif_allatom_rmsd\",\n  \"inline_metrics.design_unindexed_motif_allatom_rmsd\",\n  \"inline_metrics.posebusters_metrics\",\n  \"inline_metrics.rasa_adherence\",\n  \"inline_metrics.rosetta_developability\",\n  \"inline_metrics.sequence_developability\",\n  \"inline_metrics.sequence_similarity_to_input\",\n  \"inline_metrics.structure_prediction_lddt\",\n  \"inline_metrics.unindexed_insertion_mapping\",\n  \"pass_criteria.ame\",\n  \"pass_criteria.ame_no_ligand\",\n  \"pass_criteria.antibody\",\n  \"pass_criteria.developability\",\n  \"pass_criteria.disco\",\n  \"pass_criteria.dna\",\n  \"pass_criteria.internal_coords\",\n  \"pass_criteria.motif_scaffold\",\n  \"pass_criteria.ppi\",\n  \"pass_criteria.sm_binder\",\n  \"pass_criteria.unconditional\",\n  \"pre_oracle_filters.insertion_rmsd_filter\",\n  \"pre_oracle_filters.ligand_clash_filter\",\n  \"pre_oracle_filters.motif_rmsd_filter\",\n  \"pre_oracle_filters.unindexed_insertion_mapping_filter\",\n  \"refolding_metrics.max_ligand_centroid_distance\",\n  \"refolding_metrics.refolded_apo_holo_rmsd\",\n  \"refolding_metrics.refolded_backbone_aligned_ligand_rmsd\",\n  \"refolding_metrics.refolded_backbone_rmsd\",\n  \"refolding_metrics.refolded_motif_allatom_rmsd\",\n  \"refolding_metrics.refolded_motif_ca_rmsd\",\n  \"refolding_metrics.refolded_target_aligned_binder_rmsd\",\n  \"refolding_metrics.refolded_target_backbone_aligned_binder_rmsd\",\n  \"refolding_oracles.oracle\",\n  \"refolding_oracles.oracle_apo\",\n  \"refolding_oracles.oracle_dna\",\n  \"refolding_oracles.oracle_ppi\"\n ]\n}\n\n"
+}

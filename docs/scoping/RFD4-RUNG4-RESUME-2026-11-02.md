@@ -170,6 +170,59 @@ not reproduce them. That is why the CIFs are committed rather than regenerated:
 an earlier draft of this note claimed a bare `prep_input.py` rebuilt all three,
 which would instead have died on `sys.argv` at the first step of the paid run.
 
+## The free pre-flight RAN and PASSED on 2026-11-03 (commit 422787d2)
+
+`--mode cpu --spec-name spec_v4_chainA.yaml`, app `ap-URDXzh8fvVRksAPNWLjbcC`,
+exit 0, app stopped itself; result committed as
+`rung4-probe/cpu_result_20261103T103209.json`. Cost **$0.00466825**
+(`modal billing report --for today`). No GPU, no weights volume: `cpu_probe` is
+declared `cpu=4, memory=16384` with no `gpu=` and no `volumes=`
+(`rung4-probe/rung4_app.py:68`).
+
+What it checked, and what each check settles:
+
+1. **The approved spec builds its conditioning CIF.** `write_cifs_rc: 0`,
+   `write_condition_spec_cifs.py` exit 0 in 27.2 s, wrote one file,
+   `/tmp/cifs/fc_binder.cif`.
+2. **`C_HOT` lands on the eight intended residues — this closes the hotspot
+   mechanism question.** The readback column
+   `_atom_site.condition_hotspot_1_atom` has exactly 8 residues `True` and 204
+   `False`. The eight are PHE/PHE/PRO/LYS/THR/VAL/VAL/ARG at output residues
+   8, 10, 11, 13, 27, 29, 31, 68. **Compare by identity, not by number:** the
+   output CIF renumbers the target chain 1-based from the input's first present
+   residue (input `label_seq_id` 10-220, so output = input − 9), and after that
+   shift the flagged set is identical to the intended set in both number and
+   amino acid — input labels 17/19/20/22/36/38/40/77, which are author/EU
+   241/243/244/246/260/262/264/301. Asserted, not eyeballed: the check is the
+   `assert remapped == got` run against the result file and `3ave_fc_A.cif`.
+   Read naively off the numbers alone this looks like an off-by-9 wrong-epitope
+   bug, which is the §10 item-5 failure class; it is not one here.
+3. **`C_CRDGRP` covers the whole target chain.** CoordinateGroup `1` holds 211
+   residues, exactly the chain-A residue count of the input (211, counted from
+   `3ave_fc_A.cif`). The `-1` bucket reports 212; that one-residue excess is
+   **UNVERIFIED** — the probe truncates long lists to a placeholder, so the
+   bucket cannot be enumerated from the committed result. The likely cause is
+   the per-atom split (the spec selects only `[N,CA,C,O]`, so sidechain atoms of
+   the same residues fall to `-1`), but that is inference.
+4. **`C_SEQ` reveals the target and leaves the binder masked.** The per-residue
+   sequence column carries chain A by residue type, and the binder appears once
+   as `B/1/1/60-120` under the mask key `<M>`, so the 60-120 length range
+   survives into the conditioning CIF.
+5. **The production configuration composes.** `cfg_rc: 0` for
+   `inference_experiment=inference_on_user_inputs` with
+   `metrics_tags=[design,interchain_interactions,hotspot_conditioning]`,
+   `num_replicates=4` — not `quickstart`.
+6. **The tag gate needs no oracle.** `tagcheck_rc: 0`; 11 metrics selected
+   including `inline_metrics.amino_acid_composition` (question 1) and
+   `inline_metrics.hotspot_obedience`, 42 skipped including every
+   `refolding_oracles.*`, so no AF3/OpenFold3 and no PyRosetta container is
+   needed for the paid run.
+
+**Still UNKNOWN after the pre-flight:** §10 item 4, the real
+`per_example_metrics.csv` header with `metrics_tags` set. The tag gate shows
+which metrics are *selected*; only a run that writes the CSV shows the header.
+Questions 1-4 all still need the paid run.
+
 Step 1, free CPU pre-flight — **this has not been run for V4 and must be, to
 confirm the hotspot flags land on the eight intended residues** (author/EU
 241, 243, 244, 246, 260, 262, 264, 301 maps to `label_seq_id` 17, 19, 20, 22, 36,
