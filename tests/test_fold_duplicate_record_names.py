@@ -8,7 +8,7 @@ without having the same name.
 
 Each test drives the tool's ``run_pipeline.main`` with the fold and every
 network edge stubbed, records the keys it asks ``request_upload_urls`` for,
-then asks the adapter's ``validate`` about the same input.
+and asks the adapter's ``validate`` about the same input.
 
 Runs fully offline: no Modal, no Supabase, no GPU.
 """
@@ -43,7 +43,8 @@ def _stub_consolidated_fold(out_subdir):
     """Stand in for ``_run_colabfold_consolidated``.
 
     Writes every record's rank_001 scores JSON and PDB where the streamer
-    looks for them, then returns a process that has already exited 0.
+    looks for them, then returns a process that has already exited 0, and
+    the output dir.
     """
 
     def _fold(*, fasta_path, workdir, **_):
