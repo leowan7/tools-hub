@@ -5313,13 +5313,12 @@ def _run_shard() -> None:
             # A no-op on the upload path: ``inline_pdbs`` is False there, the
             # pop never fires, and this reads back exactly ``pdb_key``.
             #
-            # KNOWN GAP, NOT FIXED: the streamed copy of ``target_numbering``
-            # has no reader today. ``_sanitize_candidate`` preserves it, but
-            # ``shared/job_recovery.py::_candidate_from_partial`` — the path a
-            # job finalised from streamed heartbeats goes through — does not
-            # carry it, so such a job renders NO numbering line rather than a
-            # wrong one. Silent, not false, which is the right failure
-            # direction; it costs the operator a sentence, never a guarantee.
+            # The streamed ``target_numbering`` is what a job finalised from
+            # heartbeats renders its numbering line from:
+            # ``webhooks/modal.py::_sanitize_candidate`` allowlists it and
+            # ``shared/job_recovery.py::_candidate_from_partial`` copies it to
+            # the candidate root, where
+            # templates/tools/proteina_results.html reads it.
             send_heartbeat(
                 webhook_url, job_id, stage="searching",
                 designs_completed=len(out_designs), designs_total=designs_total,
