@@ -409,6 +409,15 @@ def _element_of(raw_name: str, raw_element: str) -> str:
     listed in ``_TWO_LETTER_ELEMENTS``
     (`test_a_hydrogen_name_in_column_13_is_not_mercury`).
 
+    A NUMBERED two-letter element is admitted too: ``FE1`` in an Fe-S cluster,
+    ``CL1`` on a halogenated ligand, ``MG1``. Those are three characters in
+    columns 13-15, and a three-character HYDROGEN name is right-justified into
+    column 14 (``" HB2"``), so a single trailing digit does not re-admit the
+    ``HG12`` case, which is four characters and stays excluded. Without this arm
+    ``MG1`` fell to the one-letter fallback and was written ``M``, which is not
+    an element -- the same defect class this docstring describes above
+    (`test_a_numbered_two_letter_element_is_not_truncated_to_one`).
+
     One ambiguity is NOT resolved and cannot be: a writer that left-justifies
     every atom name into column 13 makes an alpha carbon ``CA`` and a calcium
     ion ``CA`` identical in every column this function can see. Such a file
@@ -419,13 +428,13 @@ def _element_of(raw_name: str, raw_element: str) -> str:
     """
     if raw_element:
         return raw_element.capitalize()
-    head = raw_name[:2].upper()
+    name = raw_name.strip().upper()
     if (
-        head == raw_name.strip().upper()
-        and head.isalpha()
-        and head in _TWO_LETTER_ELEMENTS
+        raw_name[:1] not in ("", " ")
+        and name[:2] in _TWO_LETTER_ELEMENTS
+        and (len(name) == 2 or (len(name) == 3 and name[2].isdigit()))
     ):
-        return head.capitalize()
+        return name[:2].capitalize()
     for ch in raw_name:
         if ch.isalpha():
             return ch.upper()
@@ -762,6 +771,22 @@ def pdb_to_cif(
             label_seq_id=label_seq,
         ))
     mapping = ResidueMapping(entries)
+    if not mapping.polymer_entries():
+        # Every later loop that carries sequence information draws its rows from
+        # the polymer entries, so with none the writer emitted an
+        # `_entity_poly_seq` loop_ with tags and no data rows, which CIF 1.1
+        # grammar does not allow. Refused rather than emitted empty, because an
+        # input with no polymer residue cannot be an RFD4 target at all: there
+        # is no chain for a contig to cover and no residue id for a hotspot to
+        # name. Whether the container's reader would reject the empty loop is
+        # UNVERIFIED -- gemmi accepts it -- which is the reason to refuse here
+        # and not rely on the answer
+        # (`test_a_structure_with_no_polymer_residue_is_refused`).
+        raise NumberingError(
+            "no polymer residue in the first model: "
+            f"{len(entries)} residue(s), all non-polymer; "
+            "an RFD4 target needs a chain a contig can cover"
+        )
 
     lines: list[str] = [f"data_{entry_id}", "#", f"_entry.id {_cif_value(entry_id)}", "#"]
 

@@ -963,3 +963,45 @@ def test_a_space_insertion_code_is_the_same_residue_as_no_insertion_code():
     _cif, mapping = _convert_text(pdb)
     assert mapping.label_for("A", 7, " ") == mapping.label_for("A", 7, "")
     assert mapping.label_for("A", 7, " ") == ("A", 1)
+def test_a_numbered_two_letter_element_is_not_truncated_to_one():
+    """``MG1`` was written ``type_symbol M``, and M is not an element.
+
+    The first repair of the blank-element-column defect admitted a two-letter
+    element only when the atom name was EXACTLY the symbol, so every numbered
+    variant -- ``FE1`` in an Fe-S cluster, ``CL1`` on a halogenated ligand,
+    ``MG1`` -- fell back to its first letter: iron written as fluorine, chlorine
+    as carbon, magnesium as a non-element. Three characters in columns 13-15,
+    while a three-character hydrogen name is right-justified into column 14, so
+    one trailing digit separates them; ``HG12`` is four characters and stays
+    excluded, which the mercury test pins.
+    """
+    pdb = (
+        "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "HETATM    2 FE1  FES B   1       4.000   5.000   6.000  1.00  0.00\n"
+        "HETATM    3 CL1  LIG B   2       7.000   8.000   9.000  1.00  0.00\n"
+        "HETATM    4 MG1   MG B   3      10.000  11.000  12.000  1.00  0.00\n"
+    )
+    cif, _mapping = _convert_text(pdb)
+    cols, rows = _atom_site_rows(cif)
+    ix = {c: i for i, c in enumerate(cols)}
+    assert {r[ix["label_atom_id"]]: r[ix["type_symbol"]] for r in rows} == {
+        "CA": "C", "FE1": "Fe", "CL1": "Cl", "MG1": "Mg",
+    }
+
+
+def test_a_structure_with_no_polymer_residue_is_refused():
+    """A ligand-only upload wrote an `_entity_poly_seq` loop with no rows.
+
+    Every loop carrying sequence information draws its rows from the polymer
+    entries, so with none the writer emitted the tags and then the terminating
+    `#`, which CIF 1.1 grammar does not allow -- and which gemmi nonetheless
+    accepts, so a lenient reader would not have reported it. Refused instead of
+    emitted empty: an input with no polymer residue has no chain for a contig to
+    cover and no residue id for a hotspot to name.
+    """
+    pdb = (
+        "HETATM    1 C1   NAG A   1       1.000   2.000   3.000  1.00  0.00\n"
+        "HETATM    2  O   HOH A   2       4.000   5.000   6.000  1.00  0.00\n"
+    )
+    with pytest.raises(NumberingError, match="no polymer residue"):
+        _convert_text(pdb)
