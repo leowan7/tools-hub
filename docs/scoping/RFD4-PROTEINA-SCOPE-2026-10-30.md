@@ -526,7 +526,7 @@ rfd4-generate inference_experiment=inference_on_user_inputs hf_ckpt_path=null \
   delete_failing_pre_oracle=False out_dir=/tmp/rfd4_run
 ```
 
-**Three** deltas from rung 3, and nothing else: `inference_experiment=quickstart` → `inference_on_user_inputs`, `metrics_tags` set, and `delete_failing_pre_oracle` set to `False`, a change of value — the default is `True` (`configs/inference.yaml:44`), not a value this override merely spells out. The §5.3 pins are unchanged and remain the configuration of record; the variant that ran is cu13 on A100-80GB with the renamed `-ema.ckpt` flow checkpoint, as at rung 3.
+**Three** deltas from rung 3, and nothing else: `inference_experiment=quickstart` → `inference_on_user_inputs`, `metrics_tags` set, and `delete_failing_pre_oracle` set to `False`, a change of value — the default is `True` (`configs/inference.yaml:44` — an **upstream** file, not in this repository; read first-hand and recorded at §5.1 and line 693 of this document, and the `cfg_dump` in the probe artefacts shows only the overridden value, so it is not second evidence for the default), not a value this override merely spells out. The §5.3 pins are unchanged and remain the configuration of record; the variant that ran is cu13 on A100-80GB with the renamed `-ema.ckpt` flow checkpoint, as at rung 3.
 
 #### Question 1 — sequence credibility. **The poly-glutamate is gone.**
 
