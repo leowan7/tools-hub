@@ -8,7 +8,8 @@ print every figure those two quote, and the three it misses each carry their own
 command instead:
 
 * the 14 and 50 duplicate label keys, which only exist against the pre-rebuild
-  blob `a4108d6d` (command in `test_each_ligand_copy_gets_its_own_asym`);
+  file as it stood at commit `a4108d6d` (command in
+  `test_each_ligand_copy_gets_its_own_asym`);
 * 1HEW's 103 waters / 3 NAG split between its two author chains, which is read
   off the fixture (said so at the figure, in `pdb_to_cif`'s docstring);
 * the scope doc section 10A atom counts for option B (TRP 10, ALA and GLY 1),
@@ -109,8 +110,10 @@ def identity_mutation() -> None:
     CALLING process; it is NOT an ordering requirement. These are class
     attributes, so code that imported the module earlier sees the replacement
     anyway -- measured by importing both the module and the test module first
-    and patching afterwards in one process, which gave the same 18 failed, 34
-    passed.
+    and patching afterwards in one process, which gave the same kill count as
+    the subprocess did. That cross-check ran when the suite held 52 tests (18
+    failed, 34 passed); the kill count this script prints below is the current
+    one, and the cross-check has not been re-run since.
     """
     patch = (
         "import tools.rfd4.numbering as n\n"

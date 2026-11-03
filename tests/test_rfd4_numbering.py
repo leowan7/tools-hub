@@ -882,7 +882,8 @@ def test_each_ligand_copy_gets_its_own_asym(fixture):
     ``label_atom_id``. Any reader that groups atom rows by that identity --
     which is what the ``label_*`` columns are for in mmCIF -- then sees one
     ligand carrying N copies of each atom; whether upstream RFD4's reader groups
-    that way is UNVERIFIED. Measured against the pre-fix blob ``a4108d6d`` by
+    that way is UNVERIFIED. Measured against this file as it stood at commit
+    ``a4108d6d`` by
     substituting it and re-running this test, these fixtures produced 14 such
     keys (1HEW) and 50 (3ave, whose chain C is an N-glycan with four NAGs); 1igt_fv
     carries no non-polymer records and produced 0, which is why it cannot
@@ -940,10 +941,10 @@ def test_diverges_is_true_for_an_insertion_coded_chain_at_the_same_seq():
     """An insertion-coded residue diverges even where the seq ids coincide.
 
     ``7`` and ``7A`` are two residues at one author number, so the second gets
-    ``label_seq_id`` 2 while its author resSeq is still 7. The FIRST residue's
-    ids coincide (``label_seq_id`` 1 vs author 7 -- they do not), so this names
-    the residue that makes the predicate true rather than asserting the
-    predicate alone.
+    ``label_seq_id`` 2 while its author resSeq is still 7. Neither residue's
+    ids coincide -- the first is ``label_seq_id`` 1 against author 7 -- so the
+    assertions name both residues that make the predicate true rather than
+    asserting the predicate alone.
     """
     pdb = (
         "ATOM      1  CA  ALA A   7       1.000   2.000   3.000  1.00  0.00           C\n"
@@ -1024,8 +1025,11 @@ def test_common_side_chain_names_are_not_metals():
     ``CE``, ``ND`` and ``HG`` are all real elements. Nothing failed: every
     ``type_symbol`` was a well-formed element symbol, just the wrong one.
 
-    The residue name is the discriminator: cadmium is only ever found in a
-    residue named after it, never inside a leucine.
+    The residue name is the discriminator, and after round 9 it is looked up
+    rather than reasoned about: these four residues are in
+    ``_CCD_COVERED_RESIDUES``, so no shape test runs on their atom names at
+    all. That cadmium is never deposited inside a leucine is not cited here
+    and is not what makes this pass.
     """
     pdb = (
         "ATOM      1  CA  LEU A   1       1.000   2.000   3.000  1.00  0.00\n"
@@ -1051,8 +1055,9 @@ def test_element_fallback_ceilings():
     """The two cases the element LOOKUP does not reach, pinned as they behave.
 
     Neither CCD table closes either ceiling: both residues here are in neither
-    of them -- ``FES`` is a four-atom cluster, not a covered residue and not a
-    monatomic component, and ``LIG`` is not a real component at all -- so both
+    of them. ``FES`` is a four-atom cluster (``Fe2 S2``) and ``LIG`` a 29-atom
+    organic component (``C15 H11 N3``) -- both are real CCD entries, neither is
+    monatomic, and neither is a residue this module treats as polymer, so both
     atoms fall through to the shape rule that every earlier version of
     `_element_of` used. What the lookup did close is every residue the
     generator covers, which is where the oscillating defects were; the two
@@ -1111,9 +1116,11 @@ def test_selenomethionine_epsilon_carbon_is_not_cerium():
     The previous revision read a column-13 two-letter element prefix for any
     residue outside the 20 standard amino acids -- which includes every name in
     ``_MODRES_EQUIV``, the modified residues this module treats AS polymer. So
-    selenomethionine, the commonest modified residue in the PDB, had its
-    epsilon carbon turned into a lanthanide while its ``SE`` was right by
-    accident. The CCD gives both: ``MSE.CE`` is ``C`` and ``MSE.SE`` is ``Se``,
+    selenomethionine had its epsilon carbon turned into a lanthanide while its
+    ``SE`` was right by accident. How common MSE is in the PDB is not cited
+    here; that it is in ``_MODRES_EQUIV``, and so carried as polymer, is what
+    makes this a defect in the mapping's own residues
+    (`numbering.py` ``_is_polymer``). The CCD gives both: ``MSE.CE`` is ``C`` and ``MSE.SE`` is ``Se``,
     and `_CCD_ELEMENT_EXCEPTIONS` carries the second because it is the one that
     the name's first letter gets wrong.
     """

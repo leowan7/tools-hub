@@ -12,16 +12,18 @@ cannot settle it -- in a file that left-justifies atom names and omits columns
 way out is to stop guessing and look the pair up, and the only honest way to
 hold a lookup table is to generate it from the dictionary that defines it.
 
-Two tables are emitted, between the markers in `tools/rfd4/numbering.py`:
+Three constants are emitted, between the markers in `tools/rfd4/numbering.py`:
 
 * ``_CCD_COVERED_RESIDUES`` -- every residue this module can treat as polymer:
   the 20 standard amino acids, ``UNK``, water, and every name in
   ``_MODRES_EQUIV``. Inside one of these the element is NEVER guessed from the
   name's shape.
 * ``_CCD_ELEMENT_EXCEPTIONS`` -- for those residues, only the atoms whose
-  element is not the first alphabetic character of the atom name. This script
-  asserts that every atom it leaves out does satisfy that, and prints the count
-  it checked, so the omission is measured rather than assumed.
+  element is not the first alphabetic character of the atom name. There is no
+  assertion to make here: this script reads every atom of those residues and
+  lists exactly the ones that differ, so an atom it leaves out is one the
+  dictionary says first-letter gets right. It prints the TOTAL it read and the
+  number it listed; the difference is how many the rule covers.
 * ``_MONATOMIC_ION_ELEMENTS`` -- for each candidate element symbol, the CCD
   component of that name when it is monatomic, and its element. The candidate
   list below is hand-written; what each one's element IS, and whether a
