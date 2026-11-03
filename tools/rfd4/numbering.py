@@ -501,9 +501,13 @@ def pdb_to_cif(
     there would declare a ``polymer`` entity holding both a protein and its
     non-polymer residues: ``static/example/1HEW.pdb`` carries 106 of them, 103
     waters on chain A and 3 NAG on chain B, so chain A's own entity would absorb
-    the 103 (counted by calling this function on it, 2026-11-02). Each
-    ``(chain, resname)`` group therefore gets its own ``non-polymer`` entity and
-    its own asym id, written ``<chain>_<resname>``
+    the 103 (re-derive with ``scripts/measure_rfd4_numbering_figures.py``).
+    Non-polymers therefore get their own ``non-polymer`` entity and their own
+    asym id, following RCSB: each LIGAND COPY gets its own, written
+    ``<chain>_<resname>_<author seq><icode>``
+    (``test_each_ligand_copy_gets_its_own_asym``), while a chain's WATERS stay
+    grouped in one asym written ``<chain>_<resname>`` and are told apart only by
+    ``auth_seq_id``, which is what RCSB does
     (``test_waters_get_their_own_asym_and_entity``). An author chain id is one
     column wide, so a generated id can never collide with one.
 
