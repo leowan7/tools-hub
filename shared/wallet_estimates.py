@@ -711,9 +711,11 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # The container's own session cap: ``_MAX_SESSION_S = 2700`` passed as
         # ``timeout=_MAX_SESSION_S`` (tools/rfd4/modal_app.py:72,187). The
         # subprocess call at :226-233 has its ``_stash_raw`` in a ``finally``,
-        # so a run that hangs to the ceiling can still
-        # deliver designs and bill its actual wall-clock -- which is what the
-        # floor branch in ``cushioned_hold_usd`` above exists for. 2700 s is
+        # so a run that hangs to the ceiling can still deliver designs and bill
+        # its actual wall-clock -- which is what the floor branch in
+        # ``cushioned_hold_usd`` above exists for. ``_SESSION_CAP_SOURCE`` in
+        # tests/test_worst_case_hold_floor.py maps this slug to that container
+        # and pins the two numbers to each other. 2700 s is
         # $4.72 at this rate, so the floor clamps to the hard cap and the hold
         # becomes the full $2.00 at default size: a customer needs the cap in
         # balance to start. rfdiffusion and bindcraft reach that same outcome by
