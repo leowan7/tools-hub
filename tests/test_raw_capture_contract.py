@@ -59,6 +59,7 @@ from tools.iggm import run_pipeline as iggm_rp
 from tools.mpnn import run_pipeline as mpnn_rp
 from tools.opendde import run_pipeline as opendde_rp
 from tools.proteina import run_pipeline as proteina_rp
+from tools.rfd4 import run_pipeline as rfd4_rp
 
 
 class _PoisonPath:
@@ -225,6 +226,15 @@ CAPTURES = [
         has_dest_param=True,
         has_dest_cleanup=True,
         missing_src_log="raw capture: nothing to archive, no dir at ",
+    ),
+    Capture(
+        "rfd4", rfd4_rp, "_ship_raw",
+        # A clone of iggm's, including its log line: production passes a Path.
+        call=lambda fn, src: fn(Path(src)),
+        poison_call=lambda fn, bad: fn(bad),
+        has_dest_param=True,
+        has_dest_cleanup=True,
+        missing_src_log="[raw] no work dir to archive (nothing was created?)",
     ),
     Capture(
         "esmfold2_design", esmfold2_rp, "_archive_raw",
@@ -582,7 +592,7 @@ def test_explicit_dest_still_wins(cap, tmp_path, monkeypatch):
 # directory fails too and is swallowed — nothing is left. esmfold2_design tars
 # into a staging dir and ``shutil.move``s the finished file AT a directory,
 # which moves it INSIDE, so it succeeds and leaves the archive in the cwd.
-# boltz2, opendde and proteina behave as colabfold and iggm do, and it was
+# boltz2, opendde, proteina and rfd4 behave as colabfold and iggm do, and it was
 # measured rather than reasoned from their shape: each was run with dest="" and
 # observed to raise nothing, write nothing to the constant, and leave nothing
 # new in the cwd. Their commonpath self-containment guard does NOT fire on the
@@ -596,6 +606,7 @@ _EMPTY_DEST_LEAVES_IN_CWD = {
     "boltz2": None,
     "opendde": None,
     "proteina": None,
+    "rfd4": None,
 }
 
 

@@ -44,6 +44,7 @@ _SESSION_CAP_SOURCE = {
     "alphafold2": "af2",  # historic alias, same container
     "esmfold2-design": "esmfold2_design",
     "opendde": "opendde",
+    "rfd4": "rfd4",
 }
 
 # A p90 far below every tool's session cap, to force the floor (not the cushion)

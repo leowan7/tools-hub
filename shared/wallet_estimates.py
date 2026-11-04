@@ -660,6 +660,72 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         absolute_cap_usd=Decimal("15.00"),
         worst_case_gpu_seconds=3600.0,
     ),
+    "rfd4": ToolSpec(
+        slug="rfd4",
+        # The GPU its container requests: ``_GPU`` in tools/rfd4/modal_app.py:53.
+        # test_wallet_gpu_class_matches_container in
+        # tests/test_gpu_class_drift.py pins this field to that one.
+        gpu_class="A100-80GB",
+        # The section-4.3 runtime fit evaluated at 8 designs -- the default
+        # section 4.2 proposes, and what the pipeline falls back to
+        # (DEFAULT_NUM_DESIGNS in tools/rfd4/run_pipeline.py); no rfd4 form
+        # exists yet to call it a form default:
+        # 65 + 12.3 x 8 = 163.4 s
+        # (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 4.3). The
+        # fit is affine and this field is scaled purely proportionally
+        # (``_scale_seconds`` below), so its 65 s fixed term has no field of
+        # its own and SOME quote error is unavoidable. Anchoring at the
+        # default puts that error in the OVER-quote direction as N rises
+        # (N=100 quotes 163.4 x 12.5 = 2042.5 s = $3.57 where the fit predicts
+        # 1295 s = $2.26) instead of under-quoting the size most runs use.
+        # The MEASURED number behind the fit is rung 3's 159.2 s over eight
+        # designs, ~$0.278 to the customer; 163.4 is the fit's value at N=8,
+        # not a second measurement. So this constant is a JUDGMENT, not a
+        # mechanical fill-in: it buys accuracy at the size most runs use and
+        # pays for it with a ~58% over-quote at N=100.
+        expected_gpu_seconds=163.4,
+        designs_per_run_baseline=8,
+        # The design count, under the name six other adapters already stamp
+        # (tools/af2/__init__.py:351, boltz2:418, esmfold2_design:227,
+        # iggm:394, opendde:463, proteina:756). The pipeline's own job-spec key
+        # is ``nsamples`` (``parse_num_designs`` in
+        # tools/rfd4/run_pipeline.py); the adapter translates.
+        #
+        # ``_effective_scaling_value`` looks this key up in the caller's params
+        # and falls back to ``designs_per_run_baseline`` when it is ABSENT,
+        # without raising -- so until an rfd4 adapter stamps it, and an rfd4
+        # form carries it, every run of every size will price as the default
+        # eight. That adapter does not exist yet, so
+        # ``test_the_adapter_stamps_the_key_the_wallet_scales_on`` in
+        # tests/test_rfd4_pipeline.py skips today and starts enforcing the
+        # stamp the moment tools/rfd4/__init__.py appears.
+        scaling_param="n_designs_total",
+        # Caps: Leo, 2026-11-03, with the ~$0.28 (N=8) and ~$2.26 (N=100)
+        # figures in front of him. His numbers, NOT derived from the runtime
+        # above. ``compute_hard_cap`` scales the first by
+        # ``max(N/8, 1.0)`` and clamps at the second, and $2.00 x (100/8) is
+        # exactly $25.00, so from N=100 upward the cap is flat and no longer
+        # tracks the design count.
+        base_hard_cap_usd=Decimal("2.00"),
+        absolute_cap_usd=Decimal("25.00"),
+        # The container's own session cap: ``_MAX_SESSION_S = 2700`` passed as
+        # ``timeout=_MAX_SESSION_S`` (tools/rfd4/modal_app.py:72,187). The
+        # subprocess call at :227-230 is wrapped in a ``try`` whose ``finally``
+        # (:231) calls ``_stash_raw`` (:235),
+        # so a run that hangs to the ceiling can still deliver designs and bill
+        # its actual wall-clock -- which is what the floor branch in
+        # ``cushioned_hold_usd`` above exists for. ``_SESSION_CAP_SOURCE`` in
+        # tests/test_worst_case_hold_floor.py maps this slug to that container
+        # and pins the two numbers to each other. 2700 s is
+        # $4.72 at this rate, so the floor clamps to the hard cap and the hold
+        # becomes the full $2.00 at default size: a customer needs the cap in
+        # balance to start. rfdiffusion and bindcraft reach that same outcome by
+        # a different branch -- neither sets a worst case, and the 1.5x cushion
+        # on their point estimate clamps to their cap on its own. One container
+        # per job (one ``timeout`` on one function, no fan-out), so
+        # ``worst_case_scales_with_param`` stays False.
+        worst_case_gpu_seconds=2700.0,
+    ),
 }
 
 
