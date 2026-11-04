@@ -938,21 +938,21 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     #   preflight:fixed_positions "is not in the input PDB"
     #                                  -> chain     (mpnn's own row)
     #   preflight:fixed_positions "appears more than once"
-    #                                  -> generic   (tools/mpnn/run_pipeline.py:294-299)
+    #                                  -> fixed_positions (mpnn's own row;
+    #                                     tools/mpnn/run_pipeline.py:294-299)
     #   preflight:fixed_positions "is not among the designed chains"
-    #                                  -> generic   (tools/mpnn/run_pipeline.py:310-322)
+    #                                  -> fixed_positions (mpnn's own row;
+    #                                     tools/mpnn/run_pipeline.py:310-322)
     #
     # For the generic ones this sentence is the page cause as well as the
-    # email one, and all of them carry ``retry_unchanged=True``. Pinned by
+    # email one, and all of them carry ``retry_unchanged=True``. The
+    # fixed_positions lines are pinned by
     # tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_mpnn_fixed_positions_routing.
     #
-    # Two of those are wrong advice, pre-existing and NOT fixed here: a user
-    # who froze positions on a chain listed twice or on a chain they are not
-    # designing is told "Try again with the same settings" (no existing row's
-    # wording fits either refusal), and a jax-gpu timeout -- ours, not
-    # theirs -- is told to ask for fewer designs or crop the target. Both are
-    # the same shape as telling someone to change their seed when the seed
-    # cannot matter.
+    # One of those is wrong advice, pre-existing and NOT fixed here: a
+    # jax-gpu timeout -- ours, not theirs -- is told to ask for fewer designs
+    # or crop the target. That is the same shape as telling someone to
+    # change their seed when the seed cannot matter.
     "preflight_miss":      "A check on the GPU machine stopped the run "
                            "before it began.",
     "no_progress_timeout": "The run hit its time limit before it finished.",
@@ -1186,6 +1186,19 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "residues in it.",
      "Check which chains your file contains and pick the one you want to "
      "design amino acid sequence for."),
+    # mpnn's other two fixed_positions refusals
+    # (tools/mpnn/run_pipeline.py:294-299 and 310-322); the labels are the
+    # form's (templates/tools/mpnn_form.html:56 and :96).
+    ("fixed_positions", re.compile(
+        r"chain \S+ appears more than once in fixed_positions", re.I),
+     "The same chain is listed more than once in your fixed positions.",
+     "List each chain once in Fixed positions, with all of its positions "
+     "together."),
+    ("fixed_positions", re.compile(
+        r"chain \S+ is not among the designed chains", re.I),
+     "You fixed positions on a chain that is not in Chains to design.",
+     "Fix positions only on chains you are designing, or add that chain to "
+     "Chains to design."),
     ("chain", re.compile(
         r"antigen_chain|chain \S+ (produced 0 residues|"
         r"is not present)", re.I),

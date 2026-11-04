@@ -481,34 +481,49 @@ class TestSilentStubIsOurSide:
     # The three chain refusals in tools/mpnn/run_pipeline.py::normalise_fixed_positions,
     # as that function formats them for a key "B" on an upload holding only
     # chain A, with chains_to_design "A".
-    _MPNN_FIX = ("Check which chains your file contains and pick the one you "
-                 "want to design amino acid sequence for.")
+    _NOT_DESIGNED = (
+        "fixed_positions",
+        "You fixed positions on a chain that is not in Chains to design.",
+        "Fix positions only on chains you are designing, or add that chain "
+        "to Chains to design.")
     _MPNN_FIXED_POSITIONS = [
-        ("chain", _MPNN_FIX,
+        (("chain",
+          "The chain you picked is not in the uploaded structure, or has no "
+          "residues in it.",
+          "Check which chains your file contains and pick the one you want "
+          "to design amino acid sequence for."),
          "chain 'B' is not in the input PDB (chains: ['A'])"),
-        ("generic", _GENERIC_FIX,
+        (("fixed_positions",
+          "The same chain is listed more than once in your fixed positions.",
+          "List each chain once in Fixed positions, with all of its "
+          "positions together."),
          "chain 'B' appears more than once in fixed_positions "
          "(keys differing only by surrounding whitespace); merge them"),
-        ("generic", _GENERIC_FIX,
+        (_NOT_DESIGNED,
          "chain 'B' is not among the designed chains (['A']); "
          "fixing positions there does nothing"),
+        # The suffix the same call appends when chains_to_design is "A,B".
+        (_NOT_DESIGNED,
+         "chain 'B' is not among the designed chains (['A,B']); "
+         "fixing positions there does nothing — chains_to_design must be "
+         "SPACE-separated: ProteinMPNN splits it on whitespace only, so a "
+         "comma yields one token that matches no chain at all"),
     ]
 
-    @pytest.mark.parametrize("kind,fix,detail", _MPNN_FIXED_POSITIONS)
-    def test_mpnn_fixed_positions_routing(self, kind, fix, detail):
-        """A chain missing from the upload gets mpnn's own "chain" row, in both shapes.
+    @pytest.mark.parametrize("expected,detail", _MPNN_FIXED_POSITIONS)
+    def test_mpnn_fixed_positions_routing(self, expected, detail):
+        """Each mpnn chain refusal gets its own row, in both shapes.
 
-        On main before that row existed the first detail fell to ``generic``
-        and told the customer to resubmit the same chain. The other two keep
-        ``generic``: the "chain" cause says the chain is not in the
-        structure, which is false for both.
+        On main before those rows existed every one of these fell to
+        ``generic`` and told the customer to resubmit the same settings.
         """
         for error in (_poll_error("preflight", "fixed_positions", detail),
                       {"bucket": "preflight", "check": "fixed_positions",
                        "detail": detail}):
             advice = failure_advice(_job(
                 tool="mpnn", failure_class="preflight_miss", error=error))
-            assert (advice["kind"], advice["fix"]) == (kind, fix), error
+            assert (advice["kind"], advice["cause"], advice["fix"]) == expected, error
+            assert advice["retry_unchanged"] is False, error
 
 
 def _ledger(usd, settled, held):
