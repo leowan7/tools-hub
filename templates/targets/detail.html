@@ -292,7 +292,8 @@
 
            `not agg.tools` is the load-bearing half of this gate rather than
            tidiness. standalone_jobs counts every succeeded non-refold
-           standalone job INCLUDING the ones whose designs are in the table, so
+           standalone job, and every cancelled one that kept a design,
+           INCLUDING the ones whose designs are in the table, so
            without it this announces "3 runs finished against this target
            without returning a design" directly above those runs' designs.
 
