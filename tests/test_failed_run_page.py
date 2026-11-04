@@ -478,6 +478,33 @@ class TestSilentStubIsOurSide:
         assert advice["kind"] != "our_side"
         assert "not because of your input" not in advice["cause"]
 
+    # The three chain refusals in tools/mpnn/run_pipeline.py::normalise_fixed_positions,
+    # as that function formats them for a key "B" on an upload holding only
+    # chain A, with chains_to_design "A".
+    _MPNN_FIXED_POSITIONS = [
+        ("chain", "chain 'B' is not in the input PDB (chains: ['A'])"),
+        ("generic", "chain 'B' appears more than once in fixed_positions "
+                    "(keys differing only by surrounding whitespace); merge them"),
+        ("generic", "chain 'B' is not among the designed chains (['A']); "
+                    "fixing positions there does nothing"),
+    ]
+
+    @pytest.mark.parametrize("kind,detail", _MPNN_FIXED_POSITIONS)
+    def test_mpnn_fixed_positions_routing(self, kind, detail):
+        """A chain missing from the upload gets the "chain" row, in both shapes.
+
+        On main before this row learned "is not in the input pdb" the first
+        detail fell to ``generic`` and told the customer to resubmit the
+        same chain. The other two keep ``generic``: the "chain" row's cause
+        says the chain is not in the structure, which is false for both.
+        """
+        for error in (_poll_error("preflight", "fixed_positions", detail),
+                      {"bucket": "preflight", "check": "fixed_positions",
+                       "detail": detail}):
+            advice = failure_advice(_job(
+                tool="mpnn", failure_class="preflight_miss", error=error))
+            assert advice["kind"] == kind, error
+
 
 def _ledger(usd, settled, held):
     return {"tx-hold-stub": {"usd": Decimal(usd), "settled": settled, "held": Decimal(held)}}

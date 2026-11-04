@@ -921,7 +921,7 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     #
     # These checks do NOT all reach a _FAILURE_RULES row. Measured by
     # routing each tool's real detail string through ``failure_advice``
-    # in the shape the POLL path stores (blueprints/jobs.py:945-948: the
+    # in the shape the POLL path stores (blueprints/jobs.py::job_status: the
     # flattened ``"preflight:weights -- detail"`` under a ``detail``
     # key), which is the only shape these nine tools produce -- they
     # return their terminal payload inline as ``smoke_result`` rather
@@ -935,16 +935,24 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     #                                                not the check)
     #   preflight:jax-gpu "(exit N)"   -> generic
     #   preflight:module               -> generic
-    #   preflight:fixed_positions      -> generic
+    #   preflight:fixed_positions "is not in the input PDB"
+    #                                  -> chain
+    #   preflight:fixed_positions "appears more than once"
+    #                                  -> generic   (tools/mpnn/run_pipeline.py:294-299)
+    #   preflight:fixed_positions "is not among the designed chains"
+    #                                  -> generic   (tools/mpnn/run_pipeline.py:310-322)
     #
-    # For the generic three this sentence is the page cause as well as the
-    # email one, and all three carry ``retry_unchanged=True``.
+    # For the generic ones this sentence is the page cause as well as the
+    # email one, and all of them carry ``retry_unchanged=True``. Pinned by
+    # tests/test_failed_run_page.py::TestSilentStubIsOurSide::test_mpnn_fixed_positions_routing.
     #
     # Two of those are wrong advice, pre-existing and NOT fixed here: a user
-    # whose chain name is wrong is told "Try again with the same settings",
-    # and a jax-gpu timeout -- ours, not theirs -- is told to ask for fewer
-    # designs or crop the target. Both are the same shape as telling someone
-    # to change their seed when the seed cannot matter.
+    # who froze positions on a chain listed twice or on a chain they are not
+    # designing is told "Try again with the same settings" (no existing row's
+    # wording fits either refusal), and a jax-gpu timeout -- ours, not
+    # theirs -- is told to ask for fewer designs or crop the target. Both are
+    # the same shape as telling someone to change their seed when the seed
+    # cannot matter.
     "preflight_miss":      "A check on the GPU machine stopped the run "
                            "before it began.",
     "no_progress_timeout": "The run hit its time limit before it finished.",
@@ -1173,7 +1181,7 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "for each hotspot (for example A45)."),
     ("chain", re.compile(
         r"antigen_chain|chain \S+ (produced 0 residues|"
-        r"is not present)", re.I),
+        r"is not present|is not in the input pdb)", re.I),
      "The chain you picked is not in the uploaded structure, or has no "
      "residues in it.",
      "Check which chains your file contains and pick the one you want to "
