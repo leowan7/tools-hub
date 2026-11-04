@@ -690,6 +690,35 @@ def normalize_for_bindcraft(
     )
 
 
+def normalize_for_rfd4(
+    input_path: str, output_path: Optional[str], *, target_chain: str
+) -> PipelineNormalizationReport:
+    """rfd4 preset: keep the single target chain, preserve original numbering.
+
+    Numbering is load-bearing and renumbering here would be silent. RFD4
+    itself addresses residues by mmCIF ``label_seq_id``, not by author
+    number, and the hub is what bridges the two: the user types an AUTHOR
+    number -- shared/pdb_inspect.py::split_hotspot is what reads a typed
+    ``A56`` into (chain, author number) -- and
+    tools/rfd4/numbering.py::ResidueMapping.label_for maps it across. Both
+    ends of that map are read off the same structure, so a renumbered upload
+    would map cleanly and point at the wrong residue.
+
+    ONE chain, unlike proteina: tools/rfd4/__init__.py::validate refuses a
+    second, mirroring tools/rfd4/run_pipeline.py::resolve_target_chain.
+    ``target_chain`` is still passed through as given rather than asserted
+    here -- this is a dry run for a panel, and the chain-count refusal
+    belongs to the adapter.
+    """
+    return normalize_for_pipeline(
+        input_path, output_path,
+        target_chain=target_chain,
+        keep_hetatm=False, keep_waters=False, keep_hydrogens=False,
+        drop_zero_backbone=True, convert_modres=True,
+        renumber_residues=False,
+    )
+
+
 # -- Preview entry point ------------------------------------------------------
 
 def preview_for_tool(

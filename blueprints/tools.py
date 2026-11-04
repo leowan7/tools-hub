@@ -94,9 +94,18 @@ tools_bp = Blueprint("tools", __name__)
 # when no evaluator exists, because it guards a different thing (panel markup
 # present in the template) than PREFLIGHT_TOOLS. The plain ``error`` string
 # fallback in tool_submit is the defensive net.
+# Membership is not decoration: tests/test_reuse_preflight.py::
+# test_every_preflight_tool_has_a_panel asserts
+# ``shared.pdb_preflight.PREFLIGHT_TOOLS <= this set``, so a tool that joins
+# TOOL_RULES as a binder-design tool has to be listed here or the suite goes
+# red -- which is the point, since the alternative is landing on the plain
+# -error path by omission. rfd4 joined with its adapter (behind
+# FLAG_TOOL_RFD4; _require_tool 404s a flag-off slug before this is read, so
+# no customer reaches the panel yet). The panel MARKUP in its form template
+# is step 7's, not step 3's: this declares which tools must have it.
 _PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
     {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "boltz2",
-     "proteina"}
+     "proteina", "rfd4"}
 )
 
 

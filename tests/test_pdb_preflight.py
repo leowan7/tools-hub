@@ -70,9 +70,18 @@ def test_binder_design_tools_locked():
     # upload their own: an oversized target runs to the 7200 s wall, is killed,
     # and bills the full per-shard ceiling for zero designs across every shard
     # in the wave. Its SizeEnvelope is the gate that stops that.
+    #
+    # rfd4 (RFD4-Proteina) joined with its adapter, BEHIND FLAG_TOOL_RFD4 and
+    # reachable by no customer. It belongs here for the same reason proteina
+    # does and one more: it takes an uploaded target plus REQUIRED hotspots
+    # (tools/rfd4/run_pipeline.py::build_hotspot_selections _fails an empty
+    # token list), and its container is the first whose wall-clock ceiling is
+    # read out of THIS repo -- tools/rfd4/modal_app.py:229. Membership here is
+    # also what puts it in PREFLIGHT_TOOLS and therefore what obliged it to
+    # have a _PREVIEW_FN entry; see the next test.
     assert BINDER_DESIGN_TOOLS == frozenset({
         "rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign",
-        "proteina",
+        "proteina", "rfd4",
     })
 
 
@@ -115,9 +124,15 @@ def test_preflight_tools_includes_boltz2():
     assert "boltz2" not in BINDER_DESIGN_TOOLS
 
 
-def test_hotspots_required_for_four_tools():
+def test_hotspots_required_for_five_tools():
+    # rfd4 is the fifth, and unlike proteina it is REQUIRED rather than merely
+    # directed: release 1 runs upstream's hotspot-conditioned configuration,
+    # which has nothing to condition on without them, and the container refuses
+    # an empty list outright (tools/rfd4/run_pipeline.py::
+    # build_hotspot_selections). tools/rfd4/__init__.py::validate refuses it
+    # one layer earlier so an unfundable run is never funded.
     assert HOTSPOTS_REQUIRED == frozenset({
-        "rfantibody", "rfdiffusion", "bindcraft", "pxdesign",
+        "rfantibody", "rfdiffusion", "bindcraft", "pxdesign", "rfd4",
     })
 
 
@@ -936,12 +951,34 @@ def test_single_chain_gap_message_is_unchanged():
 #                 way to clear it is a full paid pilot. Temporary: "not yet".
 #   rfantibody  — model limit. Builds a VHH against one chain by construction.
 #                 Permanent: never.
+#
+# A THIRD JOINED LATER, for a third reason: unknown rather than limited.
+#   rfd4        — not expressible through the spec format we invoke upstream
+#                 with. Six variants ran on free CPU, tabulated in
+#                 docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md (NOT scope
+#                 section 5.8, which an earlier draft of this comment cited).
+#                 FIVE name two target chains; V4 names chain A alone and is
+#                 the one-chain control, not evidence about either rule. Of
+#                 the two-chain five, V1 and V5 carry a committed
+#                 index_group_molecule_must_be_connected traceback and V2 only
+#                 an rc of 1 (its result JSON was overwritten), and V3/V7
+#                 returned 0 and built a CIF -- the two that carry the second
+#                 chain UNINDEXED (V3 both, V7 B only). So the measured rule
+#                 is at most one INDEXED target chain, an unindexed chain is
+#                 not a
+#                 conditioned target, and C_IDXGRP -- which would express one
+#                 -- is Python-API only. An open question, not a model limit:
+#                 the mechanism, and the V2-V4 rows, are both still
+#                 UNVERIFIED. The container refuses the
+#                 case outright (tools/rfd4/run_pipeline.py::
+#                 resolve_target_chain), which is why both flags read False.
+#                 Exit condition: one two-chain run that upstream accepts.
 # ---------------------------------------------------------------------------
 
 # Tools whose container is NOT multi-chain ready today. Deliberately spelled
 # out rather than derived from TOOL_RULES: if someone flips a flag, these
 # tests must FAIL and make them justify it, not silently follow along.
-_SINGLE_CHAIN_TOOLS = ["rfantibody", "bindcraft"]
+_SINGLE_CHAIN_TOOLS = ["rfantibody", "bindcraft", "rfd4"]
 _MULTI_CHAIN_TOOLS = ["proteina", "rfdiffusion", "boltzgen", "pxdesign"]
 
 
@@ -2729,11 +2766,20 @@ def test_zero_fixed_term_leaves_every_other_envelope_bit_identical():
     with_fixed = sorted(
         slug for slug, r in TOOL_RULES.items() if r.size.runtime_fixed_min
     )
-    assert with_fixed == ["rfdiffusion"], (
+    # TWO envelopes, and the names are asserted rather than the count: the
+    # prose in shared/pdb_preflight_rules.py that says which tools decompose
+    # into a fixed stage plus a per-design stage is unguarded otherwise, and it
+    # had already gone stale once -- the module header read "rfdiffusion is the
+    # only envelope that sets it" and runtime_estimate_min's zero-design branch
+    # read "for rfdiffusion, the one two-term envelope" after rfd4 landed.
+    # Both were corrected in the same change as this line. A third entry reds
+    # this and sends whoever adds it back to that prose.
+    assert with_fixed == ["rfd4", "rfdiffusion"], (
         f"envelopes carrying a fixed term are now {with_fixed}. That is a "
-        f"legitimate change, but the module header and SizeEnvelope docstring "
-        f"in shared/pdb_preflight_rules.py both say rfdiffusion is the only "
-        f"one -- update them, then update this assertion."
+        f"legitimate change, but the module header of "
+        f"shared/pdb_preflight_rules.py and the zero-design branch of its "
+        f"runtime_estimate_min both NAME the two-term envelopes -- update "
+        f"them, then update this assertion."
     )
 
     grid = [

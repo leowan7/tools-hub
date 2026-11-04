@@ -62,8 +62,16 @@ CEILING_TOOLS = sorted(
 
 
 def test_there_is_at_least_one_ceiling_tool():
-    """Guards the two loops below against vacuously passing on an empty set."""
-    assert CEILING_TOOLS == ["bindcraft", "boltzgen"]
+    """Guards the two loops below against vacuously passing on an empty set.
+
+    rfd4 is the third, and the first whose ceiling was read out of THIS repo
+    rather than llm-proteinDesigner: tools/rfd4/modal_app.py stops the
+    subprocess at ``max(60, _MAX_SESSION_S - 30)`` = 2670s. It is also the
+    first ceiling tool whose hard_cap_target_aa sits BELOW the largest sizes
+    this file parametrizes, which is what the branch in
+    test_a_run_that_cannot_finish_is_refused now accounts for.
+    """
+    assert CEILING_TOOLS == ["bindcraft", "boltzgen", "rfd4"]
 
 
 def test_boltzgen_runtime_curve_reproduces_its_one_measured_run():
@@ -121,7 +129,17 @@ def test_a_run_that_cannot_finish_is_refused(tool, target_aa, num_designs):
             f"{tool} {num_designs}d at {target_aa}aa overruns "
             f"{env.runtime_ceiling_s}s and was ACCEPTED"
         )
-        assert "returns nothing" in refusal
+        if target_aa <= env.hard_cap_target_aa:
+            # Only INSIDE the envelope is the runtime message the one that
+            # fires. size_only_refusal checks size before runtime, so a target
+            # over the hard cap is refused for that reason and names the size
+            # limit instead -- still refused, which the assertion above pins,
+            # just not for the reason this branch was written for. rfd4 is the
+            # first ceiling tool to reach that case: its hard cap is 400 aa
+            # while this grid goes to 480, where bindcraft (500) and boltzgen
+            # (600) have every overrunning point inside their caps, so the
+            # interaction had never been exercised.
+            assert "returns nothing" in refusal
     elif target_aa <= env.hard_cap_target_aa:
         # Above the hard cap a refusal is expected but for the other reason,
         # so only sizes inside the envelope pin acceptance.
