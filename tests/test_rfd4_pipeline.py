@@ -743,3 +743,57 @@ def test_the_sweep_runs_between_waits_and_a_raise_does_not_kill_the_run(tmp_path
 
     assert run_rfd4(tmp_path / "s.yaml", tmp_path / "out", 8, on_poll=on_poll) == 0
     assert len(calls) == 2
+
+
+# ===========================================================================
+# The wallet spec
+# ===========================================================================
+
+
+def test_the_wallet_scales_with_the_design_count():
+    """The estimate and the hard cap MOVE when the design count rises.
+
+    ``_effective_scaling_value`` in shared/wallet_estimates.py looks the
+    scaling key up in the caller's params and falls back to
+    ``designs_per_run_baseline`` when it is absent -- silently. So a spec with
+    no scaling param, or a key nothing supplies, does not raise: the estimate
+    and the hard cap simply stop moving with the design count and every size
+    prices as the default eight, and no assertion anywhere fires.
+    """
+    from shared import wallet_estimates as we
+
+    spec = we.TOOL_SPECS["rfd4"]
+    assert spec.scaling_param, "rfd4 must scale on something"
+    small = {spec.scaling_param: spec.designs_per_run_baseline}
+    large = {spec.scaling_param: spec.designs_per_run_baseline * 10}
+    assert we.compute_hard_cap("rfd4", large) > we.compute_hard_cap("rfd4", small)
+    assert we.estimated_cost_for_tool(None, "rfd4", large) > (
+        we.estimated_cost_for_tool(None, "rfd4", small)
+    )
+
+
+def test_the_adapter_stamps_the_key_the_wallet_scales_on():
+    """Whoever writes the rfd4 adapter must stamp ``scaling_param`` by that name.
+
+    The test above proves the SPEC scales; it cannot prove anything reaches it,
+    because the two shapes that feed it are built elsewhere -- the raw submit
+    form (``_wallet_params_from_form`` in shared/wallet_guard.py) and the
+    stored job_spec an adapter writes. tools/rfd4/__init__.py does not exist
+    yet, so the body below is skipped; it starts enforcing the stamp the moment
+    that file lands, which is the point at which a missing one would otherwise
+    price every size as the default eight in silence.
+
+    The six adapters that already stamp this key are listed beside
+    ``scaling_param`` in the rfd4 spec.
+    """
+    from shared import wallet_estimates as we
+
+    adapter = REPO / "tools" / "rfd4" / "__init__.py"
+    if not adapter.exists():
+        pytest.skip("no rfd4 adapter yet (step 3); this guard arms when it lands")
+    key = we.TOOL_SPECS["rfd4"].scaling_param
+    assert f'"{key}"' in adapter.read_text(encoding="utf-8"), (
+        f"the wallet scales rfd4 on {key!r} but the adapter never stamps that "
+        f"key, so _effective_scaling_value falls back to the baseline and "
+        f"every run prices as {we.TOOL_SPECS['rfd4'].designs_per_run_baseline} designs"
+    )

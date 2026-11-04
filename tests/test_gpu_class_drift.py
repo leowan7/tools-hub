@@ -320,7 +320,7 @@ def test_the_spec_table_has_not_shrunk() -> None:
     assert set(TOOL_SPECS) == {
         "af2", "alphafold2", "bindcraft", "boltz2", "boltzgen", "colabfold",
         "esmfold", "esmfold2-design", "iggm", "mpnn", "opendde", "proteina",
-        "pxdesign", "rfantibody", "rfdiffusion",
+        "pxdesign", "rfantibody", "rfd4", "rfdiffusion",
     }, "a wallet spec was added or removed; confirm its gpu_class and update"
 
 
