@@ -1384,13 +1384,17 @@ _MAX_CHILD_PAGES = (MAX_SUBJOBS_PER_CAMPAIGN * DEFAULT_MAX_ATTEMPTS) // _CHILD_P
 
 
 def iter_succeeded_children(campaign_id: str, client, *, columns: str = None):
-    """Yield every succeeded or cancelled sub-job row of a campaign, paging past max_rows.
+    """Yield every succeeded, cancelled or timed-out sub-job row of a campaign, paging past max_rows.
 
     Cancelled rows are read because ``cancel_campaign`` cancels each in-flight
-    child through ``shared.jobs.cancel_job``, which stores the designs that
-    child already finished as a ``partial`` result (``_keep_cancelled_designs``);
-    a cancelled child that kept nothing has no result and yields no candidate
-    (tests/test_campaign_results.py::test_a_cancelled_childs_kept_designs_are_aggregated).
+    child through ``shared.jobs.cancel_job``, and timed-out rows because the
+    sweeper and the inline poll both end a stalled child through
+    ``shared.jobs.timeout_stuck_job``; both store the designs that child had
+    already streamed as a ``partial`` result
+    (``shared.jobs._keep_streamed_designs``). A child that kept nothing has no
+    result and yields no candidate
+    (tests/test_campaign_results.py::test_a_cancelled_childs_kept_designs_are_aggregated,
+    tests/test_timeout_keeps_designs.py::test_a_campaign_aggregates_a_timed_out_childs_designs).
 
     A plain ``.select()`` is clamped by PostgREST to the project's ``max_rows``
     (1000 in ``supabase/config.toml``) while a campaign may hold up to
@@ -1403,14 +1407,14 @@ def iter_succeeded_children(campaign_id: str, client, *, columns: str = None):
     ``.range()`` is the only way past it. Ordered by ``id`` so page boundaries
     are stable and no row is skipped or repeated across pages.
     """
-    select_cols = columns or "id,chunk_index,attempt,result"
+    select_cols = columns or "id,chunk_index,attempt,status,result"
     start = 0
     for _ in range(_MAX_CHILD_PAGES):
         resp = (
             client.table("tool_jobs")
             .select(select_cols)
             .eq("campaign_id", campaign_id)
-            .in_("status", ["succeeded", "cancelled"])
+            .in_("status", ["succeeded", "cancelled", "timeout"])
             .order("id")
             .range(start, start + _CHILD_PAGE_SIZE - 1)
             .execute()
@@ -1441,7 +1445,11 @@ def aggregate_campaign_candidates(
     Returns ``{"candidates": [...top ``limit``...], "total": int,
     "columns": [...], "capped": bool, "tool": str, "partial_chunks": int,
     "timeout_chunks": int}``; the last two count kept sub-jobs whose result
-    carries ``partial``, and of those, ``search.status == "timeout"``. Each returned candidate
+    carries ``partial``, and of those, the ones that ran out of time -- either
+    the tool's own search did (``search.status == "timeout"``) or the whole
+    child did (row ``status == "timeout"``, whose kept result carries no
+    ``search`` key: ``shared.jobs._keep_streamed_designs`` writes candidates
+    only). Each returned candidate
     is a shallow copy tagged with ``_source_job_id`` / ``_source_chunk`` /
     ``_source_index`` so the merged table can build per-candidate PDB, export,
     and shortlist references back to the child job that produced it.
@@ -1515,7 +1523,9 @@ def aggregate_campaign_candidates(
         if isinstance(res, dict) and res.get("partial"):
             partial_chunks += 1
             search = res.get("search")
-            if isinstance(search, dict) and search.get("status") == "timeout":
+            if r.get("status") == "timeout" or (
+                isinstance(search, dict) and search.get("status") == "timeout"
+            ):
                 timeout_chunks += 1
         for local_idx, cand in enumerate(candidate_records(r.get("result"))):
             if not isinstance(cand, dict):

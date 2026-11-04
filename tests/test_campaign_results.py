@@ -354,7 +354,7 @@ def test_aggregate_merges_sorts_dedupes(monkeypatch):
 def test_a_cancelled_childs_kept_designs_are_aggregated(monkeypatch):
     """cancel_campaign cancels an in-flight child through cancel_job, which
     stores the designs it already finished with ``partial`` (shared/jobs.py::
-    _keep_cancelled_designs). The campaign page and its exports read
+    _keep_streamed_designs). The campaign page and its exports read
     aggregate_campaign_candidates, so those designs must come back from it."""
     rows = [
         {"id": "j0", "campaign_id": "C", "status": "succeeded", "chunk_index": 0,

@@ -1770,7 +1770,9 @@ def mark_timeout(
     """CAS-style timeout transition. Returns True iff the row actually moved.
 
     Timeouts classify as ``no_progress_timeout`` (infra-side stall),
-    which routes to a full refund.
+    which routes to a full refund. Writes no ``result``: the designs the run
+    had already streamed are attached afterwards, in a second write, by
+    ``_keep_streamed_designs``.
     """
     return _cas_update(
         job_id,
@@ -1863,12 +1865,17 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         )
         return ""
 
-    # Nothing recoverable — genuine stall. Time it out and settle (refund).
+    # Nothing recoverable — genuine stall. Time it out and settle (refund),
+    # then keep the designs the run had already streamed. The keep runs
+    # after the settle and writes only ``result``, so what the run charges
+    # is unchanged
+    # (tests/test_timeout_keeps_designs.py::test_keeping_designs_does_not_change_the_settle).
     if not mark_timeout(job_id):
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
+        _keep_streamed_designs(fresh, status="timeout")
     return "timed_out"
 
 
@@ -2065,7 +2072,7 @@ def cancel_job(
          zero-consumption ``release_hold`` path in
          ``_settle_wallet_hold_for_completed_job``.
       5. If the Modal cancel in step 2 succeeded, attach the designs that
-         already finished (``_keep_cancelled_designs``). The row stays
+         already finished (``_keep_streamed_designs``). The row stays
          ``cancelled``.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
@@ -2133,29 +2140,41 @@ def cancel_job(
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
         if modal_cancelled:
-            fresh = _keep_cancelled_designs(fresh)
+            fresh = _keep_streamed_designs(fresh, status="cancelled")
         if fresh.campaign_id:
             _drive_campaign_after_terminal(fresh)
     return fresh, None
 
 
-def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
-    """Attach the designs a cancelled run already finished as a partial result.
+def _keep_streamed_designs(job: "ToolJob", *, status: str) -> "ToolJob":
+    """Attach the designs a run already streamed as a partial result.
+
+    Called by the two paths that end a run before its terminal webhook:
+    ``cancel_job`` (``status="cancelled"``) and the timeout writers
+    ``timeout_stuck_job`` / ``complete_job`` (``status="timeout"``). Leo
+    2026-11-04: a run that times out keeps the designs it already streamed,
+    the same way a cancelled one does.
 
     The rebuild is ``meter_live_runs``'s (``job_recovery.reconstruct``).
-    ``cancel_job`` calls this after the settle, so the settle reads the row
+    Both callers call this after their settle, so the settle reads the row
     as it did before this step existed
-    (tests/test_cancel_keeps_designs.py::test_keeping_designs_does_not_change_the_settle).
-    The write is ``{"result": ...}`` through ``_cas_update`` on status
-    ``cancelled``. A rebuild that raises or finds nothing writes nothing
-    (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels).
+    (tests/test_cancel_keeps_designs.py::test_keeping_designs_does_not_change_the_settle,
+    tests/test_timeout_keeps_designs.py::test_keeping_designs_does_not_change_the_settle).
+    The write is ``{"result": ...}`` through ``_cas_update`` constrained to
+    ``status``, so a row a concurrent writer has already moved elsewhere is
+    left alone. A rebuild that raises or finds nothing writes nothing
+    (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels,
+    tests/test_timeout_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_times_out).
     """
     from shared.job_recovery import reconstruct  # noqa: PLC0415
 
     try:
         candidates = reconstruct(job)
     except Exception:
-        logger.warning("cancel_job: reconstruct raised for job %s", job.id, exc_info=True)
+        logger.warning(
+            "_keep_streamed_designs: reconstruct raised for %s job %s",
+            status, job.id, exc_info=True,
+        )
         return job
     if not candidates:
         return job
@@ -2164,7 +2183,7 @@ def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
         "candidate_count": len(candidates),
         "partial": True,
     })
-    if not _cas_update(job.id, {"result": result}, allowed_current=("cancelled",)):
+    if not _cas_update(job.id, {"result": result}, allowed_current=(status,)):
         return job
     return replace(job, result=result)
 
@@ -2344,6 +2363,13 @@ def complete_job(
 
     _charge_workspace_for_completed_job(fresh)
     _settle_wallet_hold_for_completed_job(fresh)
+    if fresh.status == "timeout":
+        # Keep what the run streamed, after the settle, as cancel_job does.
+        # No non-test caller passes terminal_status="timeout" today -- the
+        # inline poll and the sweeper both route through timeout_stuck_job
+        # (blueprints/jobs.py::job_status, cron/sweep_stuck_jobs.py) -- so
+        # this makes the keep a property of the status, not of one writer.
+        fresh = _keep_streamed_designs(fresh, status="timeout")
     if fresh.campaign_id:
         # Compute-campaign sub-job: suppress the per-child completion email
         # (the campaign owns its own summary) and re-drive the campaign so
