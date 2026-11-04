@@ -80,6 +80,60 @@ def test_invalid_input_is_rejected(client, sequence, reason):
     )
 
 
+VALID_VL = (
+    "DIQMTQSPSSLSASVGDRVTITCRASQSISSYLNWYQQKPGKAPKLLIYAASSLQSGVPSRFSGSGSG"
+    "TDFTLTISSLQPEDFATYYCQQSYSTPLTFGQGTKVEIK"
+)
+
+
+def test_two_fasta_records_are_refused_not_fused(client, monkeypatch):
+    """A heavy and a light chain pasted as two records used to be joined into
+    one string and scored as a single chain, with no warning."""
+    import tools.developability as dev  # noqa: PLC0415
+
+    def _must_not_score(*a, **kw):
+        raise AssertionError("two records reached the scorer as one sequence")
+
+    monkeypatch.setattr(dev, "score_developability", _must_not_score)
+    resp = client.post(
+        "/developability/score",
+        data={
+            "sequence": f">heavy\n{VALID_VH}\n>light\n{VALID_VL}\n",
+            "chain_type": "VH",
+        },
+    )
+    assert resp.status_code == 200
+    assert "Found 2 FASTA records." in resp.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        VALID_VH,
+        f">heavy\n{VALID_VH}",
+        f"  >heavy chain\n{VALID_VH[:60]}\n{VALID_VH[60:]}\n",
+    ],
+    ids=["bare", "one-header", "one-header-wrapped"],
+)
+def test_one_record_or_none_still_scores(client, monkeypatch, sequence):
+    import tools.developability as dev  # noqa: PLC0415
+
+    seen = []
+    real = dev.score_developability
+
+    def _spy(seq, **kw):
+        seen.append(seq)
+        return real(seq, **kw)
+
+    monkeypatch.setattr(dev, "score_developability", _spy)
+    resp = client.post(
+        "/developability/score",
+        data={"sequence": sequence, "chain_type": "VH"},
+    )
+    assert resp.status_code == 200
+    assert seen == [VALID_VH]
+
+
 def test_unknown_chain_type_falls_back_not_crashes(client):
     resp = client.post(
         "/developability/score",

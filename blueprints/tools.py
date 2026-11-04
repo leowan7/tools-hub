@@ -130,8 +130,9 @@ def developability_score():
     over the cleaned string, and renders a template.
 
     The trust boundary is enforced below and is unchanged by opening the
-    route: FASTA headers stripped, length bounded to 10-2000 residues,
-    canonical amino acids only, chain_type checked against an allowlist.
+    route: FASTA headers stripped (more than one record refused), length
+    bounded to 10-2000 residues, canonical amino acids only, chain_type
+    checked against an allowlist.
     That bounds the work any one anonymous request can ask for.
 
     Deliberately NOT adding a per-IP rate limiter here: the repo has no HTTP
@@ -144,6 +145,12 @@ def developability_score():
 
     raw_sequence = request.form.get("sequence", "")
     chain_type = request.form.get("chain_type", "VH").strip() or "VH"
+
+    # Two records joined below would be scored as one fused chain, so more
+    # than one header is refused rather than stripped.
+    record_count = sum(
+        1 for line in raw_sequence.splitlines() if line.lstrip().startswith(">")
+    )
 
     # Strip FASTA headers (lines starting with '>') and whitespace.
     lines = [
@@ -162,7 +169,12 @@ def developability_score():
     # Sequence validation.
     valid_aa = set("ACDEFGHIKLMNPQRSTVWY")
     error = None
-    if not cleaned_sequence:
+    if record_count > 1:
+        error = (
+            f"Found {record_count} FASTA records. Paste one chain at a time "
+            "and submit each chain separately."
+        )
+    elif not cleaned_sequence:
         error = "Paste a sequence before submitting."
     elif not (10 <= len(cleaned_sequence) <= 2000):
         error = (
