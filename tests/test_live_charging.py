@@ -48,8 +48,8 @@ ESMFOLD2_START = Decimal("15.00")
 # next round figure above a one-design pxdesign run's live cost. See
 # shared/wallet_guard.py::live_start_usd.
 PXDESIGN_START = Decimal("2.00")
-# A flat $1.00 to start an rfd4 run. PROPOSED in scope §9 item 6, not yet
-# confirmed by Leo. See shared/wallet_guard.py::live_start_usd.
+# A flat $1.00 to start an rfd4 run. Proposed in scope §9 item 6, confirmed
+# by Leo on 2026-11-04. See shared/wallet_guard.py::live_start_usd.
 RFD4_START = Decimal("1.00")
 # The live tools that refuse a balance below a start minimum.
 STARTS = {"rfdiffusion": RFD_START, "rfantibody": RFA_START,
@@ -384,8 +384,8 @@ def test_rfd4_starts_at_one_dollar():
     """The three figures scope §9 item 6's $1.00 was proposed against.
 
     Measured, not derived: §5.8 timed the production configuration on an
-    8-design run. The figure is PROPOSED and awaits Leo's confirmation, so
-    this test is what makes a change to it visible.
+    8-design run. Leo confirmed the figure on 2026-11-04, so this test is
+    what makes a later change to it visible.
     """
     from shared.wallet import MIN_TOPUP_USD
     from shared.wallet_guard import live_due_usd

@@ -114,8 +114,8 @@ PROTEINA_START_USD = Decimal("1.00")
 # derivation and for what a flat figure does not cover.
 PXDESIGN_START_USD = Decimal("2.00")
 RFANTIBODY_START_USD = Decimal("2.00")
-# Proposed in scope §9 item 6 and NOT yet confirmed by Leo. See live_start_usd
-# for the derivation and for the scoring leg it does not pay for.
+# Leo confirmed this figure, flat, on 2026-11-04. See live_start_usd for the
+# derivation and for the scoring leg it does not pay for.
 RFD4_START_USD = Decimal("1.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
@@ -217,8 +217,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     non-numeric value counts as 1, and it is clamped to 1..``N_SEEDS_MAX``
     (::test_esmfold2_start_minimum_scales_with_seeds).
 
-    rfd4's figure is a flat $1.00, PROPOSED in scope §9 item 6 and not yet
-    confirmed by Leo. Unlike the figures above it is measured, not derived:
+    rfd4's figure is a flat $1.00, proposed in scope §9 item 6 and confirmed
+    by Leo on 2026-11-04. Unlike the figures above it is measured, not derived:
     scope §5.8 timed the production configuration on an 8-design run and the
     first design reached Storage at 128.2 s, which is $0.2240 at the
     A100-80GB rate, so $1.00 is 4.46x the stretch before the first design
