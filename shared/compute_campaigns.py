@@ -1384,7 +1384,13 @@ _MAX_CHILD_PAGES = (MAX_SUBJOBS_PER_CAMPAIGN * DEFAULT_MAX_ATTEMPTS) // _CHILD_P
 
 
 def iter_succeeded_children(campaign_id: str, client, *, columns: str = None):
-    """Yield every succeeded sub-job row of a campaign, paging past max_rows.
+    """Yield every succeeded or cancelled sub-job row of a campaign, paging past max_rows.
+
+    Cancelled rows are read because ``cancel_campaign`` cancels each in-flight
+    child through ``shared.jobs.cancel_job``, which stores the designs that
+    child already finished as a ``partial`` result (``_keep_cancelled_designs``);
+    a cancelled child that kept nothing has no result and yields no candidate
+    (tests/test_campaign_results.py::test_a_cancelled_childs_kept_designs_are_aggregated).
 
     A plain ``.select()`` is clamped by PostgREST to the project's ``max_rows``
     (1000 in ``supabase/config.toml``) while a campaign may hold up to
@@ -1404,7 +1410,7 @@ def iter_succeeded_children(campaign_id: str, client, *, columns: str = None):
             client.table("tool_jobs")
             .select(select_cols)
             .eq("campaign_id", campaign_id)
-            .eq("status", "succeeded")
+            .in_("status", ["succeeded", "cancelled"])
             .order("id")
             .range(start, start + _CHILD_PAGE_SIZE - 1)
             .execute()

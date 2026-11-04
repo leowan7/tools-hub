@@ -98,8 +98,8 @@ class _FakeQuery:
     Public surface, matching what the aggregator and
     ``iter_succeeded_children`` actually call:
 
-        select(*cols) / eq(col, val) / is_(col, val) / order(col, desc=False)
-        / range(start, end) / limit(n) / execute()
+        select(*cols) / eq(col, val) / in_(col, vals) / is_(col, val)
+        / order(col, desc=False) / range(start, end) / limit(n) / execute()
 
     Every one of those is APPLIED in :meth:`execute`, never merely recorded.
     ``is_`` models only ``"null"``; any other argument raises rather than
@@ -118,6 +118,7 @@ class _FakeQuery:
         self._fail_when = fail_when
         self._columns = None
         self._eq = []
+        self._in = []
         self._null = []
         self._order = None
         self._desc = False
@@ -175,6 +176,11 @@ class _FakeQuery:
         self._eq.append((col, val))
         return self
 
+    def in_(self, col, vals):
+        """PostgREST ``.in_``, applied in execute()."""
+        self._in.append((col, [str(v) for v in vals]))
+        return self
+
     def is_(self, col, val):
         """PostgREST ``.is_(col, "null")``, applied in execute().
 
@@ -223,6 +229,8 @@ class _FakeQuery:
         # PostgREST filters on columns the select never returns.
         for col, val in self._eq:
             matched = [r for r in matched if str(r.get(col)) == str(val)]
+        for col, vals in self._in:
+            matched = [r for r in matched if str(r.get(col)) in vals]
         for col in self._null:
             matched = [r for r in matched if r.get(col) is None]
 
