@@ -1596,14 +1596,13 @@ def test_a_failed_standalone_page_keeps_the_pages_already_read(monkeypatch):
 
 
 def test_a_running_standalone_job_is_not_read(monkeypatch):
-    """``.eq("status", "succeeded")`` is a filter, not decoration.
+    """The status filter is a filter, not decoration.
 
-    Nothing but a succeeded job carries candidates, so an unfiltered read
-    would report runs contributing designs that have not produced any, and it
-    would stop being served by ``tool_jobs_target_status_idx``, which is keyed
-    ``(target_id, status)``. Asserted on the predicate as well as the count,
-    because a running job's empty result contributes no candidate either way
-    and only ``standalone_jobs`` and the query can tell the two apart.
+    A running job's result is not a finished run's, so an unfiltered read
+    would report runs contributing designs that have not produced any.
+    Asserted on the predicate as well as the count, because a running job's
+    empty result contributes no candidate either way and only
+    ``standalone_jobs`` and the query can tell the two apart.
     """
     rows = [
         _job_row(
@@ -1623,7 +1622,56 @@ def test_a_running_standalone_job_is_not_read(monkeypatch):
     assert agg["standalone_jobs"] == 1, f"partial={agg['partial']!r}"
     assert _keys(agg) == ["d.pdb"]
     for query in _standalone_queries(client):
-        assert ("status", "succeeded") in query._eq
+        assert ("status", ["succeeded", "cancelled"]) in query._in
+
+
+def test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target(monkeypatch):
+    """A cancelled run's kept designs reach the target table, its count and
+    its passed total; a cancelled run that kept nothing, and a failed run,
+    contribute nothing.
+
+    ``cancel_job`` stores the designs a cancelled run already finished as a
+    ``partial`` result (shared/jobs.py::_keep_cancelled_designs), and a
+    rebuild that finds nothing writes no result at all, which is the
+    ``result: None`` row here.
+    """
+    ok = {"ipTM": 0.95, "pLDDT": 0.95, "i_pAE": 5.0}
+    rows = [
+        _job_row(
+            "done-1", tool="bindcraft", preset="default", target_id="T",
+            candidates=[{"pdb_key": "done.pdb", "scores": dict(ok)}],
+        ),
+        _job_row(
+            "cancel-kept", tool="bindcraft", preset="default", target_id="T",
+            status="cancelled",
+            candidates=[{"pdb_key": "kept.pdb", "scores": dict(ok)}],
+            result_extra={"partial": True},
+        ),
+        {**_job_row(
+            "cancel-empty", tool="bindcraft", preset="default", target_id="T",
+            status="cancelled",
+        ), "result": None},
+        _job_row(
+            "failed-1", tool="bindcraft", preset="default", target_id="T",
+            status="failed",
+            candidates=[{"pdb_key": "failed.pdb", "scores": dict(ok)}],
+        ),
+    ]
+    _install(monkeypatch, rows=rows)
+
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["partial"] is False
+    assert _keys(agg) == ["done.pdb", "kept.pdb"]
+    assert agg["standalone_jobs"] == 2
+    expected_passed = sum(
+        target_results.count_candidates_meeting_bar(
+            r["result"], "bindcraft", "default",
+        )
+        for r in rows[:2]
+    )
+    assert expected_passed == 2, "the fixture's designs must each meet the bar"
+    assert agg["passed_total"] == expected_passed
 
 
 # ---------------------------------------------------------------------------

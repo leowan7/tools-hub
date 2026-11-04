@@ -336,7 +336,7 @@ def _drop_foreign_children(
 def _read_standalone_jobs(
     client, target_id: str, user_id: str,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """A target's succeeded standalone jobs. Returns ``(rows, incomplete)``.
+    """A target's succeeded and cancelled standalone jobs. Returns ``(rows, incomplete)``.
 
     NEVER raises. A page that fails returns the pages already read alongside
     ``incomplete=True``, mirroring the campaign loop's per-campaign
@@ -361,10 +361,17 @@ def _read_standalone_jobs(
         sub-job, so without this filter every campaign child comes back a
         second time here and the table doubles. It is server-side because the
         client-side equivalent would transfer every campaign result JSON twice.
-    ``.eq("status", "succeeded")``
-        Nothing else carries candidates. Served by
-        ``tool_jobs_target_status_idx``
-        (supabase/migrations/0039_design_targets.sql:184-186).
+    ``.in_("status", ["succeeded", "cancelled"])``
+        ``mark_succeeded`` writes a succeeded run's result, and
+        ``shared/jobs.py::_keep_cancelled_designs`` writes the designs a
+        cancelled run already finished as a ``partial`` result.
+        ``mark_timeout`` and ``mark_failed`` write no result, so those
+        statuses are not read. A cancelled job that kept nothing is skipped by
+        the caller
+        (tests/test_aggregate_target.py::test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target).
+        ``tool_jobs_target_status_idx`` is keyed ``(target_id, status)``
+        (supabase/migrations/0039_design_targets.sql:184-186), so both
+        predicates fall on its columns.
 
     Paged with ``.order("id").range()`` because a plain select is clamped by
     PostgREST at ``max_rows`` and ``.limit()`` is clamped identically, so a
@@ -379,7 +386,7 @@ def _read_standalone_jobs(
                 .select(_STANDALONE_COLUMNS)
                 .eq("target_id", target_id)
                 .eq("user_id", user_id)
-                .eq("status", "succeeded")
+                .in_("status", ["succeeded", "cancelled"])
                 .is_("campaign_id", "null")
                 .order("id")
                 .range(start, start + _STANDALONE_PAGE_SIZE - 1)
@@ -542,8 +549,10 @@ def aggregate_target_candidates(
                        reads it once more on the EMPTY path only, with
                        include_drafts, to count stranded drafts (this envelope
                        excludes them and cannot answer that question)
-        standalone_jobs  succeeded non-refold standalone jobs read
-        refold_jobs      succeeded standalone refold jobs, counted not ranked
+        standalone_jobs  non-refold standalone jobs read: succeeded, or
+                         cancelled with at least one kept design
+        refold_jobs      standalone refold jobs on the same terms, counted
+                         not ranked
         passed_total     see below
         provisional      see below
         sort_mode      the mode actually applied
@@ -581,9 +590,10 @@ def aggregate_target_candidates(
     than one this comparison would surface. Pinned by
     test_a_non_terminal_campaign_is_provisional, which uses those three.
     Standalone jobs cannot make a target provisional: they are read only at
-    status ``succeeded``, and ``succeeded`` is a ``tool_jobs`` status, not a
-    campaign one, so testing it against the campaign set would mark every
-    finished standalone run provisional forever. A target with only standalone
+    status ``succeeded`` or ``cancelled``, both terminal ``tool_jobs``
+    statuses, and ``succeeded`` is not a campaign one, so testing it against
+    the campaign set would mark every finished standalone run provisional
+    forever. A target with only standalone
     runs is therefore never provisional, which understates the case where one
     is still running; reading pending jobs to fix that is a second query for a
     banner and is not in this phase.
@@ -686,6 +696,11 @@ def aggregate_target_candidates(
         partial = True
 
     for job in standalone_rows:
+        # A cancelled job that kept no design is not a run that "finished
+        # without returning a design", which is what standalone_jobs feeds on
+        # the page (templates/targets/detail.html).
+        if job.get("status") == "cancelled" and not candidate_records(job.get("result")):
+            continue
         # A refold is not a design, it is a RE-MEASUREMENT of a design that is
         # already a row in this table. Ranking it double-counts the molecule
         # and files it under the REFOLDER's tool (boltz2 / esmfold /
