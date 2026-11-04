@@ -954,13 +954,17 @@ def test_single_chain_gap_message_is_unchanged():
 #
 # A THIRD JOINED LATER, for a third reason: unknown rather than limited.
 #   rfd4        — not expressible through the spec format we invoke upstream
-#                 with. Six two-chain variants ran on free CPU, tabulated in
+#                 with. Six variants ran on free CPU, tabulated in
 #                 docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md (NOT scope
-#                 section 5.8, which an earlier draft of this comment cited):
-#                 V1/V2/V5 failed upstream's
-#                 index_group_molecule_must_be_connected invariant, V3/V4/V7
-#                 returned 0 and built a CIF. So the measured rule is at most
-#                 one INDEXED target chain, an unindexed chain is not a
+#                 section 5.8, which an earlier draft of this comment cited).
+#                 FIVE name two target chains; V4 names chain A alone and is
+#                 the one-chain control, not evidence about either rule. Of
+#                 the two-chain five, V1/V2/V5 failed upstream's
+#                 index_group_molecule_must_be_connected invariant, and V3/V7
+#                 returned 0 and built a CIF -- the two that carry the second
+#                 chain UNINDEXED (V3 both, V7 B only). So the measured rule
+#                 is at most one INDEXED target chain, an unindexed chain is
+#                 not a
 #                 conditioned target, and C_IDXGRP -- which would express one
 #                 -- is Python-API only. An open question, not a model limit:
 #                 the mechanism, and the V2-V4 rows, are both still

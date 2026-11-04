@@ -2,8 +2,11 @@
 
 Modal app: ``ranomics-rfd4-prod`` (``tools/rfd4/modal_app.py``). GPU:
 A100-80GB. The container lives in this repo -- ``tools/rfd4/run_pipeline.py``
-is the contract this module writes to, and every bound below is quoted from
-it by symbol rather than restated.
+is the contract this module writes to. Every bound below is RESTATED as a
+literal with the container's symbol named in a trailing comment -- they are
+two files, not one import -- and
+tests/test_rfd4_adapter.py::test_adapter_bounds_are_the_containers_bounds
+is what fails if the two ever drift apart.
 
 Single modality in release 1: hotspot-conditioned protein binders against
 one target chain.
@@ -45,14 +48,15 @@ from tools.base import (
 # tests/test_citations_name_the_right_model.py::
 # test_every_tool_meta_is_covered_here globs ``tools/*/meta.py`` ON DISK and
 # demands a FIRST_AUTHOR, PAPER_YEAR and REQUIRED_URL_TOKENS entry for each,
-# and rfd4 has no honest REQUIRED_URL_TOKENS value. There IS a preprint --
-# the README at the SHA we pin, ARG RFD4_SHA in tools/rfd4/Dockerfile.modal,
-# carries an @article block, so FIRST_AUTHOR and PAPER_YEAR are fillable --
-# but all 14 entries that map already has are persistent identifiers (DOI
-# suffixes, bioRxiv dated ids, arXiv ids) and this preprint is a PDF on the
-# project's own domain with none of the three. Whether that guard grows an
-# affordance for a citation with no persistent identifier is open with Leo;
-# scope §9 item 10 records it, and step 7A owns it.
+# and rfd4 has no honest REQUIRED_URL_TOKENS value. Two of the three are
+# settled: Leo decided 2026-11-04 to cite the preprint the README carries at
+# the SHA we pin (ARG RFD4_SHA in tools/rfd4/Dockerfile.modal), so
+# FIRST_AUTHOR is Corley and PAPER_YEAR is 2026. The third is not: all 14
+# entries that map already has are persistent identifiers (DOI suffixes,
+# bioRxiv dated ids, arXiv ids) and this preprint is a PDF on the project's
+# own domain with none of the three. Whether that guard grows an affordance
+# for a citation with no persistent identifier is open with Leo; scope §9
+# item 10 records all three, and the registration step owns the file.
 
 # Mirrors of run_pipeline.py's own constants. Duplicated rather than
 # imported: run_pipeline.py imports ``gemmi`` and ``requests`` at module
@@ -115,8 +119,14 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce the RFD4 form into the job_spec ``run_pipeline.main`` reads.
 
-    Every refusal here mirrors one the container would make anyway, so that
-    a run the container cannot start is never funded:
+    Every refusal here mirrors one the container would make anyway. The
+    converse does NOT hold -- a run this function passes can still be one
+    the container refuses, and such a run IS funded: a PDB holding a second
+    polymer chain while the form names one gets through every hub-side gate
+    and dies in ``run_pipeline.resolve_target_chain``. That gap is pinned by
+    tests/test_rfd4_adapter.py::
+    test_an_extra_polymer_chain_passes_the_gates_the_container_refuses and
+    recorded as scope section 9 item 11, a blocker on registration.
 
     * ONE target chain. ``run_pipeline.resolve_target_chain`` ``_fail``s on
       a multi-chain target, and its docstring records why: no committed

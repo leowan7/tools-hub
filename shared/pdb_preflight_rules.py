@@ -999,14 +999,18 @@ _RFD4 = ToolRules(
     gpu="A100-80GB",                 # matches tools/rfd4/modal_app.py:53 (_GPU)
     # NOT EXPRESSIBLE THROUGH THE SPEC FORMAT WE INVOKE UPSTREAM WITH, which
     # is a stronger reason than "unknown" and is the one the evidence
-    # supports. Six two-chain variants ran on free CPU and are tabulated in
+    # supports. Six variants ran on free CPU and are tabulated in
     # docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md -- NOT scope section 5.8,
     # which an earlier draft of this comment cited and which carries no such
-    # table. V1, V2 and V5 failed upstream's
-    # ``index_group_molecule_must_be_connected`` invariant; V3, V4 and V7
-    # returned 0 and built a CIF. So the measured rule is AT MOST ONE
+    # table. FIVE of the six name two target chains; V4 names chain A alone
+    # and is the one-chain control, so it is evidence that the harness works
+    # and not evidence about either rule. Of the two-chain five, V1, V2 and
+    # V5 failed upstream's ``index_group_molecule_must_be_connected``
+    # invariant, while V3 and V7 returned 0 and built a CIF -- and those two
+    # are exactly the ones carrying the second chain UNINDEXED (V3 on both
+    # chains, V7 on B only). So the measured rule is AT MOST ONE
     # *INDEXED* target chain -- not "one chain", which V3 and V7 contradict
-    # by passing with the second chain unindexed. An unindexed chain is not a
+    # by passing with a second chain present. An unindexed chain is not a
     # conditioned target, and ``C_IDXGRP``, which would express one, is
     # Python-API only (absent from the YAML condition table), so a
     # multi-chain rigid target is not reachable the way we drive upstream.
