@@ -86,6 +86,12 @@ REASON_ESTIMATE_FAILED = "estimate_failed"
 # llm-proteinDesigner repo (docker/pxdesign/run_pipeline.py::_DesignStreamer,
 # branch feat/pxdesign-stream-designs), which no test here can read;
 # ::test_pxdesign_submits_only_the_pilot_tier pins the one tier the hub sends.
+# rfd4 uploads and beats once per design inside its own sweep, the same shape
+# as iggm's and in this repo: tools/rfd4/run_pipeline.py::sweep_designs calls
+# ``upload_one`` and ``send_heartbeat`` in its per-design loop, and
+# ::test_rfd4_uploads_and_beats_once_per_design pins both. Its one preset
+# (``binder_design``) is the only tier the adapter admits
+# (tools/rfd4/__init__.py::validate), so the set membership covers it.
 _LIVE_ALL_PRESETS = frozenset(
     {
         "bindcraft",
@@ -95,6 +101,7 @@ _LIVE_ALL_PRESETS = frozenset(
         "proteina",
         "pxdesign",
         "rfantibody",
+        "rfd4",
         "rfdiffusion",
     }
 )
@@ -107,6 +114,9 @@ PROTEINA_START_USD = Decimal("1.00")
 # derivation and for what a flat figure does not cover.
 PXDESIGN_START_USD = Decimal("2.00")
 RFANTIBODY_START_USD = Decimal("2.00")
+# Proposed in scope §9 item 6 and NOT yet confirmed by Leo. See live_start_usd
+# for the derivation and for the scoring leg it does not pay for.
+RFD4_START_USD = Decimal("1.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
 
@@ -120,7 +130,10 @@ def live_charging_enabled(tool_slug: str, params: dict) -> bool:
 
 
 def live_start_usd(tool_slug: str, params: dict) -> Decimal:
-    """The balance a live run needs to start: $0 on all but six tools.
+    """The balance a live run needs to start: $0 on every tool but the ones
+    branched for below. (It used to say "all but six" while seven were
+    branched -- pxdesign landed without bumping the count -- so the count is
+    gone rather than corrected.)
 
     rfdiffusion uploads its first design in the container's AF2 stage, after
     diffusion and MPNN (llm-proteinDesigner
@@ -203,6 +216,45 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     estimator's ``_effective_scaling_value`` reads it. A missing or
     non-numeric value counts as 1, and it is clamped to 1..``N_SEEDS_MAX``
     (::test_esmfold2_start_minimum_scales_with_seeds).
+
+    rfd4's figure is a flat $1.00, PROPOSED in scope §9 item 6 and not yet
+    confirmed by Leo. Unlike the figures above it is measured, not derived:
+    scope §5.8 timed the production configuration on an 8-design run and the
+    first design reached Storage at 128.2 s, which is $0.2240 at the
+    A100-80GB rate, so $1.00 is 4.46x the stretch before the first design
+    streams. The whole 8-design generation run was 217.4 s = $0.3799, so at
+    the default size $1.00 covers generation end to end, and it is below
+    ``MIN_TOPUP_USD``. ::test_rfd4_starts_at_one_dollar pins the three
+    figures. It does not scale with ``nsamples``, the same gap recorded for
+    pxdesign above: at the 200-design ceiling the §4.3 fit is ~2,525 s =
+    $4.41, admitted on $1.00 and stopped by the meter part-way, which is
+    what save-as-you-go is for.
+
+    What the $1.00 does NOT pay for is the Boltz-2 scoring leg. rfd4 streams
+    no score of its own (tools/rfd4/run_pipeline.py::_upload_design returns
+    rank/name/pdb_key only); every score column comes from folding the
+    delivered designs on the existing boltz2 app, which scope §7C.1 decided
+    is a SEPARATE Modal job, not work inside the rfd4 container. Three
+    consequences, settled here because this is where the money is:
+
+    * The fold's own cost is covered by boltz2's existing cap and needs no
+      change: ``base_hard_cap_usd`` $0.40 scaling on ``n_designs_total``
+      (shared/wallet_estimates.py, the "boltz2" ToolSpec) computes $3.20 at
+      8 designs, against §7C.4's batched measurement of $0.21-$0.31 for the
+      same fold and $0.69 at its per-design ceiling.
+    * boltz2's start minimum stays $0 (it has no branch here, so it falls
+      through to the ``Decimal("0")`` below). A non-zero branch would refuse
+      standalone boltz2 folds that nobody asked to refuse -- boltz2 is a
+      live paid tool today, with its own form and its own customers.
+    * So the hole §7C.4 names -- a balance drained by generation leaves the
+      fold job to start at $0 and deliver structures with no scores -- closes
+      at the SPAWN, in the step that builds the chain: refuse to spawn the
+      fold unless the balance covers it. The figure that gate needs is
+      $0.11 for the first fold record (93 GPU-s, the batched anchor's slow
+      end) and $0.31 for the whole 8-design fold. No spawn path exists in
+      this repository yet (shared/refold.py::SOURCE_TOOLS has no rfd4 entry),
+      so there is nothing to gate in this step and no constant is left here
+      for it.
     """
     if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
@@ -214,6 +266,8 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return PXDESIGN_START_USD
     if tool_slug == "rfantibody":
         return RFANTIBODY_START_USD
+    if tool_slug == "rfd4":
+        return RFD4_START_USD
     if tool_slug != "rfdiffusion":
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60

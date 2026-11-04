@@ -146,6 +146,14 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     "boltzgen":    Decimal("300.00"),
     "boltz2":      Decimal("50.00"),
     "iggm":        Decimal("75.00"),
+    # rfd4: one A100-80GB container per job, no fan-out
+    # (tools/rfd4/modal_app.py::run_tool, ``timeout=_MAX_SESSION_S`` = 2700 s).
+    # A full session is $4.72 of marked-up compute at this file's A100-80GB
+    # rate, so $25 sits above physical and bounds a pricing bug rather than a
+    # run. Mirrors TOOL_SPECS absolute_cap_usd (Leo, 2026-11-03); the mirror is
+    # pinned by tests/test_live_charging.py::
+    # test_the_rfd4_cap_mirrors_its_spec, which also re-derives the $4.72.
+    "rfd4":        Decimal("25.00"),
     # proteina: per-shard ceiling. One shard is one 7200 s A100-80GB container
     # (~$12.58 marked-up physical max), so $60 sits well above any real single
     # shard and never clips a legit charge while still bounding a pricing bug.
