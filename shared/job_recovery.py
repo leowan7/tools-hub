@@ -61,6 +61,15 @@ _PROTEINA_SCORE_KEYS = (
     "ligand_scrmsd", "ff_energy", "rmsd", "min_ipae",
 )
 
+# Other measurement fields of webhooks/modal.py::_sanitize_candidate, kept under
+# the streamed name, which is the name the finished run's rows use: boltz2 and
+# af2 stream their design_entry as new_candidate (tools/*/run_pipeline.py).
+# Without them a kept boltz2 design's CSV had ipTM as its only score
+# (tests/test_cancel_keeps_designs.py::test_a_kept_design_keeps_every_streamed_score).
+_STREAMED_SCORE_KEYS = (
+    "ptm", "complex_plddt", "complex_iplddt", "n_hotspot_contacts",
+)
+
 
 def _candidate_from_partial(part: dict) -> dict:
     """Rebuild a result.candidate (nested scores) from a streamed partial.
@@ -99,7 +108,7 @@ def _candidate_from_partial(part: dict) -> dict:
     # ``columns`` of templates/tools/proteina_results.html read. Without them a
     # kept proteina design showed every score as a dash (seen on prod job
     # 580d793b, 2026-10-19).
-    for key in _PROTEINA_SCORE_KEYS:
+    for key in _PROTEINA_SCORE_KEYS + _STREAMED_SCORE_KEYS:
         if part.get(key) is not None:
             scores[key] = part[key]
     candidate = {
