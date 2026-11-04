@@ -734,7 +734,7 @@ class TestTheBucketSurvivesFanout:
         An earlier version of this test asserted that every check routing
         here is on the ``our_side`` row. That was FALSE and review-claims
         caught it: mpnn emits ``preflight:fixed_positions`` for "chain 'B'
-        is not in the input PDB" (tools/mpnn/run_pipeline.py:301-305), which
+        is not in the input PDB" (tools/mpnn/run_pipeline.py:301-306), which
         genuinely IS the customer's input. So the sentence is pinned the
         only way it can be -- it must not say their input was rejected
         (false for ESM-C weights, af2's jax-gpu, mpnn's module) and must not

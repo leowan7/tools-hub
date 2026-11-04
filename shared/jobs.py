@@ -915,7 +915,7 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     # ``preflight:jax-gpu``, tools/mpnn/run_pipeline.py emits
     # ``preflight:module`` -- all ours. But mpnn also emits
     # ``preflight:fixed_positions`` for "chain 'B' is not in the input PDB"
-    # (tools/mpnn/run_pipeline.py:301-305), which genuinely IS the
+    # (tools/mpnn/run_pipeline.py:301-306), which genuinely IS the
     # customer's input. So this sentence cannot claim either side, and
     # attribution belongs to ``failure_advice``, which keys on the check.
     #
@@ -1179,7 +1179,7 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "Use the residue numbers exactly as they appear in your file, on the "
      "chain you picked. If the file has several chains, name the chain "
      "for each hotspot (for example A45)."),
-    # mpnn's fixed_positions refusal (tools/mpnn/run_pipeline.py:301-305);
+    # mpnn's fixed_positions refusal (tools/mpnn/run_pipeline.py:301-306);
     # mpnn designs a sequence rather than a binder, so its fix says so.
     ("chain", re.compile(r"chain \S+ is not in the input pdb", re.I),
      "The chain you picked is not in the uploaded structure, or has no "
