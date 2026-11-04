@@ -262,6 +262,7 @@ class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
         self._filters = []
+        self._in = None
         self._order_col = None
         self._range = None
 
@@ -270,6 +271,10 @@ class _FakeQuery:
 
     def eq(self, col, val):
         self._filters.append((col, str(val)))
+        return self
+
+    def in_(self, col, vals):
+        self._in = (col, {str(v) for v in vals})
         return self
 
     def order(self, col, **k):
@@ -284,6 +289,7 @@ class _FakeQuery:
         matched = [
             r for r in self._rows
             if all(str(r.get(c)) == v for c, v in self._filters)
+            and (self._in is None or str(r.get(self._in[0])) in self._in[1])
         ]
         if self._order_col:
             matched.sort(key=lambda r: str(r.get(self._order_col)))
@@ -343,6 +349,31 @@ def test_aggregate_merges_sorts_dedupes(monkeypatch):
     assert [round(c["scores"]["ipTM"], 2) for c in cands] == [0.95, 0.70, 0.50]
     assert cands[0]["_source_job_id"] == "j0b"
     assert cands[0]["_source_index"] == 1
+
+
+def test_a_cancelled_childs_kept_designs_are_aggregated(monkeypatch):
+    """cancel_campaign cancels an in-flight child through cancel_job, which
+    stores the designs it already finished with ``partial`` (shared/jobs.py::
+    _keep_cancelled_designs). The campaign page and its exports read
+    aggregate_campaign_candidates, so those designs must come back from it."""
+    rows = [
+        {"id": "j0", "campaign_id": "C", "status": "succeeded", "chunk_index": 0,
+         "attempt": 1, "result": {"candidates": [_cand(0, 0.7)]}},
+        {"id": "j1", "campaign_id": "C", "status": "cancelled", "chunk_index": 1,
+         "attempt": 1, "result": {"candidates": [_cand(0, 0.9), _cand(1, 0.8)],
+                                  "candidate_count": 2, "partial": True}},
+        # Cancelled before any design finished: no result, nothing to show.
+        {"id": "j2", "campaign_id": "C", "status": "cancelled", "chunk_index": 2,
+         "attempt": 1, "result": None},
+        {"id": "j3", "campaign_id": "C", "status": "failed", "chunk_index": 3,
+         "attempt": 1, "result": {"candidates": [_cand(0, 0.99)]}},
+    ]
+    _patch(monkeypatch, rows)
+    out = cc.aggregate_campaign_candidates("C", user_id="u", limit=None)
+
+    assert out["total"] == 3
+    assert sorted(c["_source_job_id"] for c in out["candidates"]) == ["j0", "j1", "j1"]
+    assert out["partial_chunks"] == 1
 
 
 def test_iter_succeeded_children_pages_and_filters():
