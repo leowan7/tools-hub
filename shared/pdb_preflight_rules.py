@@ -1004,9 +1004,13 @@ _RFD4 = ToolRules(
     # which an earlier draft of this comment cited and which carries no such
     # table. FIVE of the six name two target chains; V4 names chain A alone
     # and is the one-chain control, so it is evidence that the harness works
-    # and not evidence about either rule. Of the two-chain five, V1, V2 and
-    # V5 failed upstream's ``index_group_molecule_must_be_connected``
-    # invariant, while V3 and V7 returned 0 and built a CIF -- and those two
+    # and not evidence about either rule. Of the two-chain five, V1 and V5
+    # carry a committed ``index_group_molecule_must_be_connected`` traceback
+    # (V1's is quoted in that document; V5's is in that directory's
+    # variants_result_v5v7.json under spec_v5_nocrdgrp.yaml), and V2 returned
+    # rc 1 and built no CIF but had its result JSON overwritten, so reading V2
+    # as the same invariant failure is inference from the exit code rather
+    # than from a trace. V3 and V7 returned 0 and built a CIF -- and those two
     # are exactly the ones carrying the second chain UNINDEXED (V3 on both
     # chains, V7 on B only). So the measured rule is AT MOST ONE
     # *INDEXED* target chain -- not "one chain", which V3 and V7 contradict
@@ -1018,8 +1022,12 @@ _RFD4 = ToolRules(
     # one molecule, and the V2-V4 rows, whose result JSON the V5/V7 sweep
     # overwrote. Both columns therefore read False, and the container refuses
     # the case outright -- tools/rfd4/run_pipeline.py::resolve_target_chain,
-    # whose docstring repeats the same wrong citation and is left alone here
-    # because editing it would redeploy all nine GPU images. Scope section
+    # whose docstring is left alone here because editing it would redeploy
+    # all nine GPU images. That docstring cites scope section 4.2, not 5.8,
+    # so it does not carry this comment's old mis-citation; it is stale in its
+    # own way, naming only V1 and V5 as failing and asserting that no
+    # committed artefact shows upstream accepting a two-chain spec, which V3
+    # and V7 contradict. Scope section
     # 4.2's "multi-chain allowed" row predates that refusal; this PR
     # corrects it.
     multi_chain_supported=False,

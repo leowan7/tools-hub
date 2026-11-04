@@ -959,8 +959,9 @@ def test_single_chain_gap_message_is_unchanged():
 #                 section 5.8, which an earlier draft of this comment cited).
 #                 FIVE name two target chains; V4 names chain A alone and is
 #                 the one-chain control, not evidence about either rule. Of
-#                 the two-chain five, V1/V2/V5 failed upstream's
-#                 index_group_molecule_must_be_connected invariant, and V3/V7
+#                 the two-chain five, V1 and V5 carry a committed
+#                 index_group_molecule_must_be_connected traceback and V2 only
+#                 an rc of 1 (its result JSON was overwritten), and V3/V7
 #                 returned 0 and built a CIF -- the two that carry the second
 #                 chain UNINDEXED (V3 both, V7 B only). So the measured rule
 #                 is at most one INDEXED target chain, an unindexed chain is
