@@ -68,6 +68,11 @@ _PROTEINA_SCORE_KEYS = (
 # (tests/test_cancel_keeps_designs.py::test_a_kept_design_keeps_every_streamed_score).
 _STREAMED_SCORE_KEYS = (
     "ptm", "complex_plddt", "complex_iplddt", "n_hotspot_contacts",
+    # opendde's first column, under the name templates/tools/
+    # opendde_results.html:60 reads. Dropped here, so a kept OpenDDE
+    # prediction showed a dash where its ranking score belongs
+    # (tests/test_streamed_scores_survive_the_gates.py).
+    "ranking_score",
 )
 
 
@@ -93,6 +98,14 @@ def _candidate_from_partial(part: dict) -> dict:
         scores["ipTM"] = part["iptm"]
     if part.get("plddt") is not None:
         scores["pLDDT"] = part["plddt"]
+    if part.get("mean_plddt") is not None:
+        # Renamed to the display spelling, like the two above and for the same
+        # reason: it is the first column of templates/tools/af2_results.html
+        # (:68), colabfold (:58) and esmfold (:69), which all spell it
+        # ``mean_pLDDT``, so the rebuilt row's column reads the same as a
+        # finished run's. Unlike ``i_pae`` below there is only one spelling to
+        # pick. af2/colabfold/esmfold stream it as ``mean_plddt``.
+        scores["mean_pLDDT"] = part["mean_plddt"]
     if part.get("i_pae") is not None:
         # Kept under the streamed name. It is one quantity -- interface PAE --
         # that three containers spell three ways, and the partial schema has a
@@ -121,6 +134,13 @@ def _candidate_from_partial(part: dict) -> dict:
     # webhooks/modal.py::_sanitize_candidate.
     if part.get("target_numbering") is not None:
         candidate["target_numbering"] = part["target_numbering"]
+    # Also at the root, not in ``scores``: boltz2's against-bar reads
+    # ``c.n_hotspots`` as the denominator of its contacts cell
+    # (templates/tools/boltz2_results.html:191), and it is not a score column
+    # anywhere. Without it a kept design counted its contacts against the
+    # hotspots the operator ASKED for, which is a different number.
+    if part.get("n_hotspots") is not None:
+        candidate["n_hotspots"] = part["n_hotspots"]
     return candidate
 
 

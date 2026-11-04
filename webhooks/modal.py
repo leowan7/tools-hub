@@ -426,8 +426,15 @@ def _sanitize_candidate(cand: dict) -> dict | None:
     Schema is additive across tools — fields not set by a given pipeline
     come back as None and the results renderer hides them. Boltz-2 adds
     ``name``, ``ptm``, ``complex_plddt``, ``complex_iplddt``,
-    ``n_hotspot_contacts``, ``contacted_residues`` on top of the
-    composite-pipeline schema (rank/pdb_key/iptm/plddt/i_pae/filter_status).
+    ``n_hotspot_contacts``, ``n_hotspots``, ``contacted_residues`` on top of
+    the composite-pipeline schema
+    (rank/pdb_key/iptm/plddt/i_pae/filter_status); the batch fold tools add
+    ``mean_plddt``.
+
+    A key missing here is a score the customer loses on a run that streams
+    designs and is then kept by a cancel or a recovery, so the three names a
+    pipeline streams and this projection dropped are held by
+    tests/test_streamed_scores_survive_the_gates.py.
     """
     try:
         rank = int(cand.get("rank"))
@@ -465,6 +472,18 @@ def _sanitize_candidate(cand: dict) -> dict | None:
             n_hotspot_contacts = max(0, int(cand.get("n_hotspot_contacts")))
     except (TypeError, ValueError):
         n_hotspot_contacts = None
+
+    # Boltz-2's denominator for the field above: how many of the operator's
+    # hotspots resolved in the structure (streamed at
+    # tools/boltz2/run_pipeline.py:888, counted as ``len(hotspot_positions)``
+    # at :387). Bounded the same way because it is a count, not a measurement.
+    # templates/tools/boltz2_results.html:191 divides by it.
+    n_hotspots: int | None = None
+    try:
+        if cand.get("n_hotspots") is not None:
+            n_hotspots = max(0, int(cand.get("n_hotspots")))
+    except (TypeError, ValueError):
+        n_hotspots = None
 
     # Proteina-Complexa diversity cluster id (bounded non-negative int).
     #
@@ -515,7 +534,15 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         "complex_plddt": _num(cand.get("complex_plddt")),
         "complex_iplddt": _num(cand.get("complex_iplddt")),
         "i_pae": _num(cand.get("i_pae")),
+        # The batch fold tools' own confidence number, the mean of the
+        # per-residue pLDDT list each one streams as ``mean_plddt``
+        # (tools/af2/run_pipeline.py:1357, colabfold :1396, esmfold :1094). It
+        # is their first column AND their sort key
+        # (templates/tools/af2_results.html:68,76), so a kept design without it
+        # renders unsorted with a dash where its headline score belongs.
+        "mean_plddt": _num(cand.get("mean_plddt")),
         "n_hotspot_contacts": n_hotspot_contacts,
+        "n_hotspots": n_hotspots,
         "contacted_residues": contacts_out,
         "filter_status": str(filter_status)[:64] if filter_status else None,
         # Proteina-Complexa reward stack (additive; other tools leave these None
