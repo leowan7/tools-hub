@@ -936,7 +936,7 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     #   preflight:jax-gpu "(exit N)"   -> generic
     #   preflight:module               -> generic
     #   preflight:fixed_positions "is not in the input PDB"
-    #                                  -> chain
+    #                                  -> chain     (mpnn's own row)
     #   preflight:fixed_positions "appears more than once"
     #                                  -> generic   (tools/mpnn/run_pipeline.py:294-299)
     #   preflight:fixed_positions "is not among the designed chains"
@@ -1179,9 +1179,16 @@ _FAILURE_RULES: tuple[tuple[str, "re.Pattern[str]", str, str], ...] = (
      "Use the residue numbers exactly as they appear in your file, on the "
      "chain you picked. If the file has several chains, name the chain "
      "for each hotspot (for example A45)."),
+    # mpnn's fixed_positions refusal (tools/mpnn/run_pipeline.py:301-305);
+    # mpnn designs a sequence rather than a binder, so its fix says so.
+    ("chain", re.compile(r"chain \S+ is not in the input pdb", re.I),
+     "The chain you picked is not in the uploaded structure, or has no "
+     "residues in it.",
+     "Check which chains your file contains and pick the one you want to "
+     "design amino acid sequence for."),
     ("chain", re.compile(
         r"antigen_chain|chain \S+ (produced 0 residues|"
-        r"is not present|is not in the input pdb)", re.I),
+        r"is not present)", re.I),
      "The chain you picked is not in the uploaded structure, or has no "
      "residues in it.",
      "Check which chains your file contains and pick the one you want to "
