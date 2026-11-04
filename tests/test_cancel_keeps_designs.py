@@ -167,6 +167,23 @@ def test_job_page_for_a_cancel_that_kept_nothing_is_unchanged(client):
     assert "designs kept" not in html
 
 
+def test_a_kept_design_keeps_every_streamed_score():
+    """A boltz2 design streamed before the cancel, sent through the webhook's
+    sanitizer and the rebuild, exports the score columns a finished run's row has."""
+    from shared.exports import candidates_to_csv
+    from shared.job_recovery import _candidate_from_partial
+    from webhooks.modal import _sanitize_candidate
+
+    part = _sanitize_candidate({
+        "rank": 1, "name": "d1", "pdb_key": "designs/d1.pdb", "iptm": 0.8,
+        "ptm": 0.7, "complex_plddt": 0.85, "complex_iplddt": 0.8,
+        "n_hotspot_contacts": 3,
+    })
+    header = next(csv.reader(io.StringIO(candidates_to_csv([_candidate_from_partial(part)]))))
+    for col in ("ptm", "complex_plddt", "complex_iplddt", "n_hotspot_contacts"):
+        assert col in header, (col, header)
+
+
 @pytest.mark.parametrize("fmt", ["csv", "fasta"])
 def test_exports_carry_the_kept_designs(client, fmt):
     job = _cancelled(_rows(2))
