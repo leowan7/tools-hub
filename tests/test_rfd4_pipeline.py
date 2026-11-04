@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -796,4 +797,28 @@ def test_the_adapter_stamps_the_key_the_wallet_scales_on():
         f"the wallet scales rfd4 on {key!r} but the adapter never stamps that "
         f"key, so _effective_scaling_value falls back to the baseline and "
         f"every run prices as {we.TOOL_SPECS['rfd4'].designs_per_run_baseline} designs"
+    )
+
+
+def test_the_hold_floor_matches_the_containers_session_cap():
+    """``worst_case_gpu_seconds`` must track ``_MAX_SESSION_S``, or the hold under-reserves.
+
+    The floor branch in ``cushioned_hold_usd`` (shared/wallet_estimates.py) is
+    what makes the hold cover a run that hangs to the container ceiling and still
+    delivers -- ``run_tool``'s subprocess call in tools/rfd4/modal_app.py:226-233
+    has its ``_stash_raw`` in a ``finally``, so a timed-out run still parks
+    whatever the pipeline tarred and bills actual wall-clock. If
+    someone raises the Modal timeout and leaves the spec alone, the hold silently
+    stops covering the worst case and the difference posts as a variance charge
+    at settle.
+    """
+    from shared import wallet_estimates as we
+
+    source = (REPO / "tools" / "rfd4" / "modal_app.py").read_text(encoding="utf-8")
+    match = re.search(r"^_MAX_SESSION_S\s*=\s*(\d+)", source, re.MULTILINE)
+    assert match, "could not find _MAX_SESSION_S in tools/rfd4/modal_app.py"
+    assert we.TOOL_SPECS["rfd4"].worst_case_gpu_seconds == float(match.group(1)), (
+        "the rfd4 wallet spec's worst case no longer matches the container's "
+        "session cap, so cushioned_hold_usd floors the hold below what a "
+        "timed-out-but-delivering run can bill"
     )

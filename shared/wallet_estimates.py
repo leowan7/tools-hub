@@ -663,7 +663,8 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "rfd4": ToolSpec(
         slug="rfd4",
         # The GPU its container requests: ``_GPU`` in tools/rfd4/modal_app.py:53.
-        # tests/test_gpu_class_drift.py:177 pins this field to that one.
+        # test_wallet_gpu_class_matches_container in
+        # tests/test_gpu_class_drift.py pins this field to that one.
         gpu_class="A100-80GB",
         # The section-4.3 runtime fit evaluated at 8 designs -- the default
         # section 4.2 proposes, and what the pipeline falls back to
@@ -707,6 +708,20 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # tracks the design count.
         base_hard_cap_usd=Decimal("2.00"),
         absolute_cap_usd=Decimal("25.00"),
+        # The container's own session cap: ``_MAX_SESSION_S = 2700`` passed as
+        # ``timeout=_MAX_SESSION_S`` (tools/rfd4/modal_app.py:72,187). The
+        # subprocess call at :226-233 has its ``_stash_raw`` in a ``finally``,
+        # so a run that hangs to the ceiling can still
+        # deliver designs and bill its actual wall-clock -- which is what the
+        # floor branch in ``cushioned_hold_usd`` above exists for. 2700 s is
+        # $4.72 at this rate, so the floor clamps to the hard cap and the hold
+        # becomes the full $2.00 at default size: a customer needs the cap in
+        # balance to start. rfdiffusion and bindcraft reach that same outcome by
+        # a different branch -- neither sets a worst case, and the 1.5x cushion
+        # on their point estimate clamps to their cap on its own. One container
+        # per job (one ``timeout`` on one function, no fan-out), so
+        # ``worst_case_scales_with_param`` stays False.
+        worst_case_gpu_seconds=2700.0,
     ),
 }
 
