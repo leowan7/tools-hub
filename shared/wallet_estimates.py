@@ -710,7 +710,8 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         absolute_cap_usd=Decimal("25.00"),
         # The container's own session cap: ``_MAX_SESSION_S = 2700`` passed as
         # ``timeout=_MAX_SESSION_S`` (tools/rfd4/modal_app.py:72,187). The
-        # subprocess call at :226-233 has its ``_stash_raw`` in a ``finally``,
+        # subprocess call at :227-230 is wrapped in a ``try`` whose ``finally``
+        # (:231) calls ``_stash_raw`` (:235),
         # so a run that hangs to the ceiling can still deliver designs and bill
         # its actual wall-clock -- which is what the floor branch in
         # ``cushioned_hold_usd`` above exists for. ``_SESSION_CAP_SOURCE`` in
