@@ -341,11 +341,21 @@ class ToolRules:
 # new constant on the same curve: tools/rfdiffusion/meta.py records the
 # job as a fixed stage plus a per-design stage, which nothing purely
 # multiplicative can express, so SizeEnvelope grew an optional
-# runtime_fixed_min and rfdiffusion is the only envelope that sets it.
+# runtime_fixed_min, which rfdiffusion was the first envelope to set.
 # See the _RFDIFFUSION envelope below for the arithmetic. No other
-# envelope moves: runtime_fixed_min defaults to 0.0, every other tool
-# leaves it there, and the estimator adds the term in a position where
+# envelope moved with it: runtime_fixed_min defaults to 0.0, every other
+# tool left it there, and the estimator adds the term in a position where
 # 0.0 is an exact identity.
+#
+# RFD4 IS THE SECOND, AND IT ARRIVED THERE BY MEASUREMENT, NOT BY REPAIR.
+# Scope section 4.3's fit over its one completed run is ``65 + 12.3 x N``
+# seconds -- a two-term shape read straight off the data rather than a
+# constant found to be wrong afterwards -- so the field was already the
+# right one to carry it. See the _RFD4 envelope below for how those two
+# seconds-at-115-aa terms become minutes at the 120 aa anchor. The live
+# set is {rfdiffusion, rfd4} and tests/test_pdb_preflight.py::
+# test_zero_fixed_term_leaves_every_other_envelope_bit_identical asserts
+# it BY NAME, so a third entry reds that test rather than slipping in.
 #
 # RFANTIBODY IS THE LAST OF THOSE "other tools" TO LEAVE, and it is the
 # one the list started from -- the 41 min @ 412 aa x 4 designs quoted
@@ -984,6 +994,129 @@ _PROTEINA = ToolRules(
 )
 
 
+_RFD4 = ToolRules(
+    slug="rfd4",
+    gpu="A100-80GB",                 # matches tools/rfd4/modal_app.py:53 (_GPU)
+    # NOT EXPRESSIBLE THROUGH THE SPEC FORMAT WE INVOKE UPSTREAM WITH, which
+    # is a stronger reason than "unknown" and is the one the evidence
+    # supports. Six two-chain variants ran on free CPU and are tabulated in
+    # docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md -- NOT scope section 5.8,
+    # which an earlier draft of this comment cited and which carries no such
+    # table. V1, V2 and V5 failed upstream's
+    # ``index_group_molecule_must_be_connected`` invariant; V3, V4 and V7
+    # returned 0 and built a CIF. So the measured rule is AT MOST ONE
+    # *INDEXED* target chain -- not "one chain", which V3 and V7 contradict
+    # by passing with the second chain unindexed. An unindexed chain is not a
+    # conditioned target, and ``C_IDXGRP``, which would express one, is
+    # Python-API only (absent from the YAML condition table), so a
+    # multi-chain rigid target is not reachable the way we drive upstream.
+    # Two things stay UNVERIFIED: the mechanism that judges the two protomers
+    # one molecule, and the V2-V4 rows, whose result JSON the V5/V7 sweep
+    # overwrote. Both columns therefore read False, and the container refuses
+    # the case outright -- tools/rfd4/run_pipeline.py::resolve_target_chain,
+    # whose docstring repeats the same wrong citation and is left alone here
+    # because editing it would redeploy all nine GPU images. Scope section
+    # 4.2's "multi-chain allowed" row predates that refusal; this PR
+    # corrects it.
+    multi_chain_supported=False,
+    multi_chain_container_ready=False,
+    # REQUIRED, and this is the other row scope section 4.2 gets wrong.
+    # Release 1 runs upstream's hotspot-conditioned configuration, which has
+    # nothing to condition on without them, and the container ``_fail``s an
+    # empty token list in
+    # tools/rfd4/run_pipeline.py::build_hotspot_selections.
+    hotspots_required=True,
+    min_target_aa=30,                # run_pipeline.MIN_TARGET_AA
+    size=SizeEnvelope(
+        # Both caps are the container's own constants
+        # (run_pipeline.HARD_CAP_TARGET_AA, run_pipeline.HARD_CAP_COMBINED_AA),
+        # so a run this gate admits is one the container will also start. 400
+        # rather than proteina's 500 on purpose: proteina's is a policy number
+        # anchored on a measured VRAM curve to 415 aa, and rfd4 has no curve at
+        # all here. Scope section 4.3: "Tighten on measurement, loosen later."
+        hard_cap_target_aa=400,
+        soft_warn_target_aa=240,     # 60% of the hard cap, as the five
+                                     # literature-backed envelopes above do
+        hard_cap_combined_aa=520,    # 400 target + 120 binder
+        # FITTED OVER ONE OF TWO RUNS, AT ONE TARGET SIZE, AND NOT OVER THE
+        # CONFIGURATION RELEASE 1 SHIPS -- see the basis note below.
+        # Scope section 4.3's fit over the rung-3 run is
+        # ``65 + 12.3 x N`` seconds at 115 aa, and
+        # runtime_estimate_min's shape is
+        # base*(aa/120)^alpha*(N/8) + fixed*(aa/120)^alpha. Dividing the fit's
+        # two terms by (115/120)^1.0 = 0.95833 moves them to the 120 aa anchor:
+        # 12.3 s per design -> base 1.71 min at 8 designs; 65 s fixed ->
+        # 1.13 min. Round-tripped at 115 aa and N=8 that is 163.3 s against the
+        # fit's 163.4.
+        #
+        # WHAT THE PANEL SHOWS IS NOT THAT NUMBER. runtime_estimate_min ends in
+        # ``max(5.0, est)`` and eight designs estimate 2.72 min at the
+        # measured 115 aa target, 2.84 at the 120 aa anchor these terms are
+        # expressed against -- under the floor either way, so the floor is
+        # what renders. These two values describe the rung-3 run;
+        # they do not reproduce on screen at default size.
+        #
+        # BASIS, AND WHICH WAY IT IS WRONG. Rung 3 ran the eager
+        # ``quickstart`` path: no torch.compile warm-up and no batching, all
+        # three caveats flagged in scope section 5.7 itself. The production
+        # path release 1 runs was measured separately at rung 4 -- the same
+        # 115 aa target and the same 8 designs took 217.4 s where this fit
+        # predicts 163.4 -- and section 5.8 fits THAT run as
+        # ``128 + 4.3 x (N-1) + 20 x (B-1) + 21`` for B distinct padded
+        # length buckets. So the two bases disagree in BOTH directions: a
+        # much bigger fixed cost (~149 s against 65 s, first compile
+        # included) and a marginal slope roughly a third of rung 3's
+        # (4.3 against 12.3 s per design). They cross near N=10, so below
+        # that these terms UNDER-estimate and above it they OVER-estimate.
+        #
+        # Over-estimating is the safe direction for the one place these
+        # numbers refuse money rather than decorate a panel:
+        # _check_size_envelope only bites near runtime_ceiling_s, which is
+        # large N, where this fit is the pessimistic of the two. Re-fitting
+        # to rung 4 is a number change and was not step 3's to make; it is
+        # open in that step's PR.
+        runtime_base_min=1.71,
+        runtime_fixed_min=1.13,
+        # STILL UNMEASURED, and load-bearing because _check_size_envelope
+        # refuses on it: one 115 aa target cannot set an exponent, and scope
+        # section 4.3 says proteina's 0.34 must not be copied. 1.0 is the
+        # no-evidence value -- cost rising linearly with target size -- and the
+        # same choice _BOLTZGEN makes above for the same reason. A second
+        # measured target size is what moves it.
+        runtime_alpha=1.0,
+        runtime_baseline_designs=8,  # run_pipeline.DEFAULT_NUM_DESIGNS
+        # 2670 s, and the SOURCE DIFFERS from every other entry's. This field's
+        # docstring quotes the sibling repo llm-proteinDesigner because that is
+        # where the other six tools' pipelines live; rfd4's lives here, so the
+        # number is read from this repo -- the
+        # ``subprocess.run(..., timeout=max(60, _MAX_SESSION_S - 30))`` in
+        # tools/rfd4/modal_app.py:229, which fires 30 s before Modal's own
+        # function timeout on the same decorator (line 187).
+        runtime_ceiling_s=2670,
+        # NOTHING HAS BEEN RUN NEAR 400 aa: both completed rfd4 runs were on
+        # the same 115 aa target (scope sections 5.7 and 5.8). This is the
+        # first entry in this file to
+        # declare the field's own default basis explicitly, and the refusal
+        # copy must not predict an OOM off it --
+        # pdb_preflight.py::_check_size_envelope reserves that wording for a
+        # literature-backed cap.
+        cap_basis="untested",
+    ),
+    gap=GapThresholds(
+        warn_length=20,
+        needs_fix_length=50,
+        needs_fix_hotspot_distance=10,
+    ),
+    # Same answer as proteina and by the same route: a hotspot's atom set is
+    # intersected with the atoms the structure actually contains, and falls
+    # back to CA when the side chain is absent --
+    # tools/rfd4/numbering.py::hotspot_atoms_for_residue, pinned by
+    # tests/test_rfd4_numbering.py::test_glycine_hotspot_falls_back_to_CA. So a
+    # residue modelled to backbone only still yields a selection.
+    hotspot_needs_full_backbone=False,
+)
+
+
 TOOL_RULES: dict[str, ToolRules] = {
     _RFANTIBODY.slug: _RFANTIBODY,
     _RFDIFFUSION.slug: _RFDIFFUSION,
@@ -991,6 +1124,7 @@ TOOL_RULES: dict[str, ToolRules] = {
     _BOLTZGEN.slug: _BOLTZGEN,
     _PXDESIGN.slug: _PXDESIGN,
     _PROTEINA.slug: _PROTEINA,
+    _RFD4.slug: _RFD4,
 }
 
 
@@ -1060,8 +1194,9 @@ def runtime_estimate_min(
         # add runtime_fixed_min. That is a choice, not a derivation: an
         # input describing no job is not a shorter job, so neither term is
         # meaningful and a fixed stage attributed to zero designs would
-        # only look more authoritative. For rfdiffusion, the one two-term
-        # envelope, the bare anchor is the wrong shape whatever it returns.
+        # only look more authoritative. On a two-term envelope -- today
+        # rfdiffusion and rfd4 -- the bare anchor is the wrong shape
+        # whatever it returns.
         # Advisory copy on an input that is already nonsense; a second
         # branch would not make it less so.
         return float(rules.size.runtime_base_min)

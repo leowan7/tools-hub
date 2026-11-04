@@ -360,6 +360,18 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # per-prediction wall-clock; historical p90 supersedes at >=20 runs.
     ("opendde", "general"):         3600,
     ("opendde", "abag"):            3600,
+    # RFD4-Proteina binder design on A100-80GB. 2700 s matches
+    # tools/rfd4/modal_app.py:72 (_MAX_SESSION_S), the house convention for
+    # this dict: the physical bound on one job's spend. The container dies
+    # 30 s earlier than this (modal_app.py:229 kills the subprocess at
+    # _MAX_SESSION_S - 30), which is the number the preflight runtime ceiling
+    # carries; the pre-authorisation cap stays on the outer bound.
+    # BOOTSTRAP: TWO runs have completed, both on the same 115 aa target at
+    # 8 designs -- 159.2 s on the eager ``quickstart`` configuration (scope
+    # section 5.7) and 217.4 s on the production one release 1 runs (section
+    # 5.8). Against the slower, production figure this cap is 12x. Historical
+    # p90 supersedes it at >=20 runs, as for every other tool here.
+    ("rfd4", "binder_design"):      2700,
 }
 
 

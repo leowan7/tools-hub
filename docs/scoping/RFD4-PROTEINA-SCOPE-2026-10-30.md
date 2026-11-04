@@ -300,8 +300,8 @@ Mirror `tools/proteina/__init__.py` so the customer sees one consistent binder f
 | Field | Proposal | Basis |
 |---|---|---|
 | Target structure | PDB or CIF upload | our convention; wrapper converts to CIF |
-| Target chain(s) | multi-chain allowed | upstream binder example is chain-scoped; multi-chain is an upstream validated case for this model family |
-| Hotspots | optional, max 64 | matches `tools/proteina/__init__.py:224` (`_MAX_HOTSPOTS`) |
+| Target chain(s) | ~~multi-chain allowed~~ **ONE chain. Corrected 2026-11-04 by step 3.** | The proposal was wrong for this tool. The landed container refuses a multi-chain target outright (`tools/rfd4/run_pipeline.py::resolve_target_chain`) because a multi-chain rigid target is **not expressible through the YAML spec format we invoke upstream with**. Of the six two-chain variants run on free CPU — tabulated in `docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md`, **not** here in §5.8, which an earlier draft of this row cited — V1/V2/V5 failed upstream's `index_group_molecule_must_be_connected` invariant while V3/V4/V7 returned 0 and built a CIF, so the measured rule is **at most one *indexed* target chain** rather than one chain. An unindexed chain is not a conditioned target, and `C_IDXGRP` is Python-API only. Still UNVERIFIED: the mechanism, and the V2-V4 rows, whose result JSON the V5/V7 sweep overwrote. `tools/rfd4/__init__.py::validate` refuses more than one chain **named on the form** (`len(target_chains) > 1`) one layer earlier, and `_RFD4` in `shared/pdb_preflight_rules.py` carries both multi-chain flags False. Neither refuses a *file* that holds extra chains while naming one — `validate` never opens the upload and `_multi_chain_block` counts the chains named, not the chains present. That gap is §9 item 11 and is pinned by `tests/test_rfd4_adapter.py::test_an_extra_polymer_chain_passes_the_gates_the_container_refuses`. **Unknown, not absent:** the exit condition is one two-chain run upstream accepts |
+| Hotspots | ~~optional~~ **REQUIRED, max 64. Corrected 2026-11-04 by step 3.** | Release 1 runs upstream's hotspot-conditioned configuration, which has nothing to condition on without them, and the container `_fail`s an empty token list (`tools/rfd4/run_pipeline.py::build_hotspot_selections`). `hotspots_required=True` on `_RFD4`; `tools/base.py::parse_hotspot_residues` already refuses an empty field. The 64 ceiling is the container's own `MAX_HOTSPOTS`, which matches `tools/proteina/__init__.py:224` |
 | Binder length | range, default `[60, 120]`, allowed 20–300 | matches `tools/proteina/__init__.py:263-265`; upstream's own example uses `50-120` |
 | Number of designs | default 8 | matches `designs_per_run_baseline=8`, `shared/wallet_estimates.py:525` |
 | Thinking level | **release 1: fixed at `medium`, not exposed** | three levels exist upstream; exposing a 3× cost knob before we have measured any of them is how a tool over-quotes |
@@ -992,7 +992,16 @@ Each has a recommendation. Items 1 and 2 are needed before step 5 is written; 3 
     **The measured fact Leo is overriding, stated once and not re-argued.** §7C.10 folded rung 4's eight designs three times each on **real RFD4 output**, not on the decoy that prompted the original doubt: `pdl1_binder_7` read **0.7369 at seed 2 and 0.8873 at seed 3**, so at n=1 it falls either side of an 0.8 shortlist cut on the draw alone, and its rank against `pdl1_binder_5` flips with it. One *shortlist-changing* inversion in eight designs, at $0.30 a measured run - not the only reordering: §7C.10 also records the top four permuting among themselves between seeds 1 and 3, inside a 0.007 band. The call is n=1 and this section records n=1 (this is a scoping document; step 5 is where it is built); what that carries is that a shortlist cut near 0.8 is not reproducible run-to-run, and the labelling condition above is what keeps the page honest about it. Original objection that prompted the probe, kept for the record. Leo: *"i find it weird that the design scores from 0.26 to 0.83 on the same designs, i don't believe that"* - a fair objection, and §7C.8 is the answer to it. He approved a paid run to settle the question on real RFD4 output instead of on the decoy; see §7C.10. Original recommendation: **Recommendation: three, and show the range.** Cost is $0.63-$0.94 against $0.21-$0.31 on an 8-design run (§7C.4) — under a dollar either way. Our own Boltz-2 spans ipTM 0.263-0.830 on byte-identical input - but **only on a decoy**; the cognate held to 0.0026 across the same three runs (§7C.8). So a single number is one draw from a distribution whose width is itself unknown until you fold twice. Three folds with a visible range is the honest version of the same column. **If you want n=1 for release 1 to keep the page simple, the condition is that the column is labelled as a single fold** — not as a confidence score.
 2. **Sort key.** -> **DECIDED 2026-11-03, following item 1: the single fold's ipTM.** With n=1 there is no median and no range, so the displayed number and the sort key are the same quantity by construction - the property the recommendation below was protecting, obtained for free at n=1. **pLDDT remains ineligible, and that half does not depend on n:** it rests on the measurement, not on the fold count. Original recommendation, which the measurement upheld: **Recommendation: median ipTM over the n folds, and display that same median with the min-max range beside it.** Sorting on something other than the number shown invites "why is #1 below #2". Rejected alternative: sort on the worst fold, which is defensible but ranks a design by its unluckiest draw. **Do not** sort on `hotspot_obedience` — its denominator is unexplained (§5.8 reading 1). **Nor on pLDDT:** §7C.10 measured all eight rung-4 designs inside a 0.058-wide complex-pLDDT band while their ipTM ran 0.2651 to 0.9262, and the pLDDT order ranks the best of the weak designs last of eight, below two designs that do not bind.
 3. **The `af2`-oracle licence question (§9 item 9).** -> **CLOSED 2026-11-03 by Leo: *"we already checked license"*.** The reading itself is **not recorded in this document**, so this line claims only that the question is closed, not what the answer was - anything that turns on the outcome must cite where it is recorded. Original recommendation, now moot: **ask, but do not wait for it.** AF2 parameters have been CC BY 4.0 since the 2022-12-06 release (§7B.1), so the restrictive oracle is AF3, not AF2; whether the brief's exclusion of the optional `alphafold2/runtime` **image** also closes the route to our own ColabFold weights is a licence reading, not a technical one. It would recover `min_ipae_coi` directly. But §7C.3 says that term is **probably already in a tar we have parked**, at $0 — so this question is now worth less than it was when §9 raised it. Spend the free volume read first.
-4. **Drop the developability columns for release 1?** -> **DECIDED 2026-11-03: dropped.** Leo chose "leave them out". They are out of release 1 and §8's step list should not carry them. Original recommendation: yes, drop them. The Rosetta pair needs a PyRosetta apptainer with its own licence question (§7A.6), our `binder-developability` skill covers only the two *sequence* terms and lives outside this repository so using it means porting it (§7B.5), and whether `sequence_developability` also needs the apptainer is still unread (§10 item 13). Nothing in the chain above depends on them.
+4. **Drop the developability columns for release 1?** -> **ANSWERED TWICE, AND THE SECOND ANSWER IS THE ONE THAT HOLDS. Split the group.** First answer, 2026-11-03: *"leave them out"*, all four. **Reversed by Leo, relayed through the hub lead and recorded here 2026-11-04:** the two **sequence** terms -- GRAVY and the instability index -- **are in release 1**; the two **Rosetta** terms -- `sap_score` and `hydrophobic_exposure_sasa` -- **stay out**, on the licence question of §7A.6 and because we have no counterpart for either in our own script (§7B.5: GRAVY and the instability index are computed at `scripts/dev_analysis.py:125,130`, `sap_score` has no counterpart, and `hydrophobic_exposure_sasa` has only a patch proxy that `scripts/build_report.py:696-697` itself calls "a single-snapshot proxy").
+
+    **Never call that surviving pair "developability" bare.** It is 2 of upstream's 4, both pure-sequence, and it says nothing about whether the binder binds. Upstream's own criterion is a monomer triage bar (§7A.4); half of one is less than that. Write "the two sequence developability terms", or name them.
+
+    **Whose step this is: 5, not 3.** Both terms compute hub-side at result ingest, from the sequence we already have, so no GPU column and no upstream config change is involved, and §10 item 13 (does `sequence_developability` need the PyRosetta apptainer?) does not gate them -- we are not running upstream's class. **Two traps step 5 will hit:**
+
+    * **`_sanitize_candidate` is a literal allowlist.** `webhooks/modal.py` copies named keys out of each candidate at heartbeat time, so a new score key that is not listed there is **silently discarded** -- the design streams, the column is simply never populated, and nothing errors. Add the keys in the same PR that computes them.
+    * **`shared/job_recovery.py`'s rebuild has no rfd4 keys.** `_candidate_from_partial` carries `iptm`/`plddt`/`i_pae` unconditionally *and* the nine `_PROTEINA_SCORE_KEYS`, plus `target_numbering` — and nothing else. So it is an allowlist with no rfd4 entry rather than a three-key list: a cancelled or recovered job loses any key on neither list, and the two terms need an entry there too or they vanish on exactly the runs a customer is most likely to ask about.
+
+    Original recommendation, superseded in part: yes, drop them. The Rosetta pair needs a PyRosetta apptainer with its own licence question (§7A.6), our `binder-developability` skill covers only the two *sequence* terms and lives outside this repository so using it means porting it (§7B.5), and whether `sequence_developability` also needs the apptainer is still unread (§10 item 13). Nothing in the chain above depends on them.
 
 **One thing to note rather than decide: the start-minimum hole in §7C.4.** The recommended route (a separate `boltz2` fold job) keeps `rfd4`'s $1.00 correct but lets the fold start at $0, so a drained balance delivers structures with no scores. That is an engineering fix in step 4 — refuse the spawn, or give the chained fold its own minimum — and it does not need Leo's input unless he wants the other route.
 
@@ -1085,12 +1094,35 @@ Each step is one PR with a gate. Sizes are rough.
 | 0 | This scope doc | XS | Leo reads §9 and answers the open questions |
 | 1 | `tools/rfd4/Dockerfile.modal` + `seed_volumes.py`, digest-pinned, SHA-pinned, no oracle images | **M** | Rung 1 passes: image builds, CLI runs, accelerator variant known |
 | 2 | `tools/rfd4/modal_app.py` + `run_pipeline.py` — **PDB→CIF conversion, contig and atom-level hotspot construction live here**; `'~metrics'` enforced; byte-identical `_start_beat` | **L** — the biggest step, and where the risk is | Rungs 2–3: a real 8-design run completes, with its wall-clock and its real metrics header |
-| 3 | Adapter + preflight: `tools/rfd4/{__init__.py,meta.py}`, `shared/pdb_preflight_rules.py`, `gpu/modal_client.py` ceilings, `app.py` import, feature flag off | **M** | Form validates; flag-off means no customer sees it |
+| 3 | Adapter + preflight, **built but NOT registered**: `tools/rfd4/__init__.py` (defines and exports `adapter`), `shared/pdb_preflight_rules.py` envelope, `shared/pipeline_normalize.py::normalize_for_rfd4` + its mandatory `shared/pdb_preflight.py::_PREVIEW_FN` entry, `gpu/modal_client.py` ceiling, feature flag off. No `meta.py` (see §9 item 10), no `register(adapter)`, no `app.py` import — both are step 7A | **M** | `validate()` coerces the form into the container's `job_spec` and refuses what `run_pipeline.py` would refuse; the slug is unreachable twice over — not in the registry, and `FLAG_TOOL_RFD4` unset |
 | 4 | Wallet: `TOOL_SPECS`, `PER_JOB_HARD_CAP_USD`, `_LIVE_ALL_PRESETS`, `RFD4_START_USD`, `shared/job_recovery.py` score keys | **M** | Numbers come from rung 3, not from `proteina`'s |
-| 5 | Results + exports: `shared/result_columns.py`, `shared/score_legends.py`, templates, CIF export path | **M** | Export parity tests pass |
+| 5 | Results + exports: `shared/result_columns.py`, `shared/score_legends.py`, templates, CIF export path, **plus the two sequence developability terms (GRAVY, instability index) that §7C.6 item 4 put back into release 1** -- they compute hub-side at ingest, so watch the `_sanitize_candidate` allowlist in `webhooks/modal.py` and the score-key allowlist in `shared/job_recovery.py` (which has no rfd4 entry — see §7C.6 item 4) | **M** | Export parity tests pass |
 | 6 | Guard-test entries: `test_deploy_paths_exclusions.py`, `test_modal_stale_result_guard.py`, `test_export_sequence_matrix.py`, `test_export_page_parity.py`, `test_signup_credit_covers_smallest_run.py`, `test_live_charging.py`, the deploy workflow matrix | **S**, but **do not skip** — several of these are hardcoded tool lists that fail on a new slug | Full suite green |
 | 7 | Catalog and copy: `shared/tools_catalog.py`, `shared/tool_chooser.py`, `shared/email.py`, comparison and guide templates | **M**, customer-visible | **SEO lead sign-off.** Includes the unanswered positioning question: *what does a customer choose between `rfd4`, `proteina` and `rfdiffusion`, in one sentence?* |
+| 7A | **Registration.** Add `register(adapter)` to `tools/rfd4/__init__.py` and `import tools.rfd4` to `app.py`'s adapter block, and flip the registry assertion in `tests/test_rfd4_adapter.py::test_the_adapter_is_built_and_the_flag_is_off`. Needs `tools/rfd4/meta.py`, which waits on §9 item 10. **Date open.** | **S** if steps 4–7 are complete; otherwise it is their remainder | Full suite green with rfd4 in `all_adapters()`: no guard left demanding a registry row rfd4 does not have, **and §9 item 11 closed** |
 | 8 | Flag flip after rung 4 | XS | Leo's go |
+
+**Why registration is a step of its own (split out 2026-11-04, during step 3).** `register(adapter)` is one line, and it is the line that turns rfd4 into a row every guard iterating `tools.base.all_adapters()` reads. Measured on step 3's branch in both directions over the **whole** suite — `venv/Scripts/python.exe -m pytest -q -p no:randomly`, with `register(adapter)` and the `app.py` import temporarily added and then reverted — nothing else touching the tree: **with** the call, **66 failed, 10147 passed** across **14 modules**; **without** it, on the committed tree with nothing else running, **0 failed, 10212 passed, 33 skipped, 3 xfailed in 481.28s**, exit 0. Registration changes the collected total by exactly **one**: `--collect-only -q` gives **10248** without and **10249** with, and diffing the two id lists names the single addition, `tests/test_guide_bar_matches_legend.py::test_stated_threshold_is_a_number_its_own_legend_publishes[rfd4]`. (The diff also shows one id of `tests/test_gpu_class_drift.py::test_prose_gpu_labels_match_the_wallet_spec` *renamed*: that test is parametrized on the line number of each prose GPU label it finds, and the temporary `register,` line shifted this file's by one. An id, not a test — and its number moves again with any edit above that line, which is why it is described here rather than quoted.) So **65 of the 66 are pre-existing cases flipping from pass to fail**, not new ones appearing. Two earlier drafts of this paragraph are replaced rather than restated: the first said 63 across 14 modules and 24+23 templates, from a partial module set I could not reproduce; the second said `10193 passed` and that the registry adds 20 parametrized cases, which came from a run that overlapped two other pytest processes and collected 10229, 19 short of the committed tree's 10248. Every one of the 66 failure banners is accounted for:
+
+```
+ 25  TemplateNotFound tools/rfd4_form.html
+ 23  TemplateNotFound tools/rfd4_results.html
+  7  AssertionError: expected 14 adapters, got [...13 slugs...]
+  2  AssertionError: discovery missed /tools/rfd4
+  1  AssertionError: _tool_label returns the bare slug for: ['rfd4']
+  1  AssertionError: no workflow band for ['rfd4']; add them to _TOOL_CATEGORIES
+  1  AssertionError: adapters with no _TOOL_CATEGORIES entry (they render under "Other")
+  1  AssertionError: catalog bands with no glyph: ['Other']
+  1  AssertionError: catalog entries with no metadata resolved
+  1  AssertionError: meta.py declares no PILOT for: ['rfd4']
+  1  AssertionError: meta.py declares no EXAMPLE for: ['rfd4']
+  1  AssertionError: assert 14 == 13
+  1  AssertionError: assert {...14 slugs...} == {...13 slugs...}
+```
+
+So 48 of the 66 are the two templates steps 7 and 5 own, and the rest demand a registry row's worth of customer-visible copy: a catalog band (and the glyph for the "Other" band rfd4 otherwise falls into), an email label, a pilot card, a worked example, and the two `meta.py` maps. Most of that is Leo's and the SEO lead's. One of the 66 is this PR's own `tests/test_rfd4_adapter.py::test_the_adapter_is_built_and_the_flag_is_off`, which asserts rfd4 is **absent** from the registry — it is what goes red if a later step registers the slug without landing the rest.
+
+The house precedent allowed the other reading and is stale: `tools/proteina/__init__.py` landed registered and flag-off in `c03aa1df` naming `form_template="tools/proteina_form.html"`, a file that did not arrive until `ee9c1121` three weeks later, with no proteina entry in `shared/email.py::_tool_label` either. But **not one of the 13 pre-existing guard tests that now go red existed at `c03aa1df`**: 12 of their modules are absent from that tree (checked per path with `git cat-file -e c03aa1df:tests/<name>.py`), and the thirteenth, `tests/test_email_failure_copy.py`, existed there without `test_every_registered_slug_gets_a_label` (`git cat-file blob` on that revision of the file finds no such def). The fourteenth failing module is this PR's own. They have accumulated since, precisely to stop a half-registered tool, so in practice `register()` has come to mean "every registry and every string is complete". Note that this reading is narrower than `shared/feature_flags.py`'s own docstring, which still says the route, form and submission plumbing ship in one commit behind the flag.
 
 **Rollout order is fixed by the deploy workflow:** seed the volumes → deploy Modal → merge the hub PR → flip the flag. One trap: `.github/workflows/deploy-modal.yml` has **no per-app routing** — its matrix of nine apps means a `tools/**` change redeploys the whole fleet. (The trigger paths do negate `tools/**/meta.py`, `tools/**/example/**` and `tools/**/__init__.py`, so a data-only or adapter-only edit does not trigger it — but any Dockerfile or `modal_app.py` edit does, for all nine.) **Merge only when the fleet is idle** (no pending or running jobs for any tool), per standing practice.
 
@@ -1114,6 +1146,14 @@ Each step is one PR with a gate. Sizes are rough.
 6. **Start minimum.** $1.00 proposed, and rung 3 has now supplied the missing input: designs stream one at a time from 68.1 s, so $1.00 covers the pre-first-design stretch roughly eight times over (§7.1). **Rung 4 re-checked it (§5.8 Question 3): the production first design lands at 128.2 s, $0.2240 of customer money, so $1.00 holds at 4.46× headroom against rung 3's 8.40×.** The figure stands and still needs Leo's confirmation; what rung 4 adds is that the headroom varies with the spread of binder lengths, and that two places must be edited for the $1.00 to bind at all (§7.1).
 7. **Positioning.** Three binder tools on the shelf. What does a customer choose between them, in one sentence? This blocks step 7, not the engineering.
 8. **Alpha software, four weeks old, 7 open issues.** Are we comfortable selling it? My read: yes, behind a flag and after rung 4, because the licence is clean and the downside is a refund, not a liability. Leo's call.
+10. **There IS a preprint; this document's earlier "never a paper" was false. The citation URL is DECIDED (2026-11-04, Leo); the author/year half and the guard's identifier shape are not.** Corrected 2026-11-04 during step 3, by reading the two upstream sources at the revisions we actually pin rather than this document's own summary of them.
+
+    **What the two upstream sources say, and they do not agree.** The code repo's README has a `## Citation` section — `@article{corley2026rfd4proteina}`, *Biomolecular design through latent reasoning with RFD4-Proteina*, `year = {2026}`, `note = {Preprint}`, authors Corley, Didi, Kazman, Brent and others, `url = {https://rfd4-proteina.org/assets/paper/RFD4-Proteina.pdf}`. It is present **at the SHA we pin**, not something upstream added afterwards: read with `gh api 'repos/RosettaCommons/RFD4-Proteina/contents/README.md?ref=aaccdd2ad0720c180468df5f9cf037a713d403e5'` (the SHA at `tools/rfd4/Dockerfile.modal:34`). The §1-§3 research pass simply missed it, which is the first of the two possibilities this item used to name. The Hugging Face model card at the weights revision we pin (`a06e2509c7033b010fc43614e9fd840303588502`, `tools/rfd4/seed_volumes.py:81`) asks for something else: `@software{rfd4_proteina_2026}`, authored by the two **organisations** with no individuals named, `url` the HF model page, and a `note` pinning model revision `cf31b935…` — which is not the revision we pin. That card also links its code as `github.com/baker-laboratory/RFD4-Proteina-dev`, which `gh api` returns 404 for, while the code we pin is `RosettaCommons/RFD4-Proteina`.
+
+    **Who publishes it.** Not one of the two: the weights, the training dataset, the Diffusers pipeline and both Spaces are all under the Hugging Face org `nvidia/`; the code is under `RosettaCommons`; the model card's licence line is BSD 3-Clause, "Copyright (c) 2026, Institute for Protein Design, University of Washington"; and both the README and the card carry the byline "Baker Lab × NVIDIA GenAIR". The project's own page, declared in the repo's `homepage` field, is a third thing — `https://rfd4-proteina.org/` — and it returned **503** when checked on 2026-11-04, though the preprint PDF on that same domain returned 200 (54.8 MB).
+
+    **DECIDED (2026-11-04, Leo):** cite the upstream project's own web page. That is `https://rfd4-proteina.org/` by the repo's own declaration. Leo's instruction also said to leave `FIRST_AUTHOR` and `PAPER_YEAR` empty because there is no paper; that premise is the one falsified above, so **the author/year half goes back to Leo** — `Corley` and `2026` can now be filled from the pinned README, and the choice between the preprint and the model card's organisation-only `@software` entry is his. **Still OPEN, and step 7A's:** the preprint has no DOI, no bioRxiv id and no arXiv id, so a `REQUIRED_URL_TOKENS` entry of the shape the guard's other 14 carry does not exist for this tool; whether the guard grows an affordance for a paper with no persistent identifier, or takes a project-page token, changes what it proves for the other tools and is not a worker's call. **Step 3 still ships no `tools/rfd4/meta.py`**: the guard keys off that file's existence, so not creating it remains the only state that invents nothing.
+11. **An extra polymer chain in the upload passes every hub gate and then fails in the container. Which side gives?** `run_pipeline.py::resolve_target_chain` `_fail`s when the upload holds any polymer chain besides the named one ("Crop the structure to one chain and resubmit"). Nothing hub-side mirrors that: `validate` never opens `files`, and `shared/pdb_preflight.py::_multi_chain_block` keys on the count of chains NAMED IN THE FORM, not on the chains present in the file. Measured on step 3's branch: a two-chain PDB with one chain named returns `READY` for rfd4 — **and for `rfantibody` and `bindcraft` too**, so the preflight is behaving to house convention; what diverges is the container, whose siblings' normalizer crops to the named chain instead of refusing the file. The customer case is the ordinary one for binder design: upload a crystal dimer, pick the antigen chain, get funded for a run that cannot start. Pinned by `tests/test_rfd4_adapter.py::test_an_extra_polymer_chain_passes_the_gates_the_container_refuses`, which fails the moment either side moves. Step 3 did not close it because both fixes are outside it — refusing hub-side needs new customer-visible copy (and `_multi_chain_block`'s existing wording says "named", which would be false here), and cropping in the container edits `tools/rfd4/run_pipeline.py`, which redeploys all nine GPU images. **Blocker for step 7A.** OPEN.
 
 ---
 
@@ -1124,7 +1164,7 @@ Each step is one PR with a gate. Sizes are rough.
 3. ~~**Do structure files land per design or only at run end?**~~ **ANSWERED 2026-10-30: per design**, one every ~12 s from 68.1 s onward (§5.7). Save-as-you-go is feasible. The watcher must skip the hidden `.generated-cif-*` temp directory each design is written through.
 4. ~~**The real `per_example_metrics.csv` header.**~~ **ANSWERED 2026-11-03 (§5.8).** 44 columns with no metrics group composed (rung 3), **89 columns with `metrics_tags=[design,interchain_interactions,hotspot_conditioning]`** (rung 4). The **46** added columns are the composition, bond-length, clash, hotspot-obedience, interchain-interaction, sequence-adherence, sequence-probability-adherence and SSE groups plus `pre_oracle_pass` (net +45: rung 4 carries 32 `generation.*` columns against rung 3's 33, and which one dropped is unrecoverable) — and **still no refold, confidence or ipTM column**, which is hard confirmation of §7B.
 5. **PDB→CIF conversion and `label_seq_id` numbering.** Upstream resolves residue ids against mmCIF `label_seq_id`, not author numbering. Our whole stack speaks author numbering. **This is the most likely source of a silent wrong-residue bug** — the same class as the `proteina` hotspot defect already on record. Needs a deliberate test, not a code read.
-6. **Hotspot atom-set expansion.** Upstream hotspots are atom-level; our picker emits residues. Which atoms we choose is a scientific decision nobody has made. **STILL OPEN.** The options, their consequences, a recommendation and the single place in code that decides it are in §10A; no run has compared them.
+6. ~~**Hotspot atom-set expansion.**~~ **DECIDED 2026-11-04 by Leo: option B**, sidechain heavy atoms with `CA` for glycine, intersected with the atoms the structure actually contains. That is what `RFD4_HOTSPOT_ATOM_SET = "sidechain_heavy"` and `hotspot_atoms_for_residue(resname, observed_atom_names)` in `tools/rfd4/numbering.py` already implement, so the decision confirms the landed code rather than changing it. **D is the upgrade path** if B is ever shown to over-constrain; **C must not ship.** §10A keeps the options table and the reasoning as the record of what was weighed. Still true and unchanged by the decision: **no run has compared the options**, so B is chosen on reasoning, not on measurement.
 7. ~~**Real weights-volume size.**~~ **ANSWERED 2026-10-30: 2.59 GiB** (2,780,839,974 B), both digests verified against upstream's manifest (§5.6). The old ~1.7 GB figure was a single-file number; the volume must hold the matched flow/autoencoder pair.
 8. **VRAM at the top of the size envelope.** Only "≥40 GB recommended" upstream, with no curve. Rung 5.
 9. **Does `delete_failing_pre_oracle` race our uploader?** **NOT APPLICABLE to our configuration.** Rung 3 composed no metrics group, no oracle ran, and all eight designs persisted (§5.7). It would only matter if we later enabled an oracle, which the licence exclusion rules out.
@@ -1138,11 +1178,15 @@ Each step is one PR with a gate. Sizes are rough.
 
 ---
 
-## 10A. Note on §10 item 6: which atoms a hotspot should name
+## 10A. §10 item 6: which atoms a hotspot should name -- **DECIDED**
 
-Added 2026-11-02 by the numbering/conversion pass (`tools/rfd4/numbering.py`). This
-section **does not close item 6.** It lays out the options so the decision can be
-made on evidence later, and records where the code would change.
+Added 2026-11-02 by the numbering/conversion pass (`tools/rfd4/numbering.py`), which
+laid out the options so the decision could be made deliberately. **Leo decided on
+2026-11-04: option B, intersected with observed atoms** (§10 item 6). Everything below
+is the record of what was weighed, kept because the decision rests on it -- the options
+table and its reasoning are not superseded by the choice. What changed is the framing
+only: this section no longer asks the question, and the "Decision" heading below
+replaces what read "Recommendation ... this is a recommendation, not a decision".
 
 ### What the gap actually is
 
@@ -1180,24 +1224,75 @@ result to `format_hotspot_selection`.
 A cross-cutting consideration for every option except A: the atom set must be
 intersected with the atoms the structure **actually contains**, or a selection names
 an atom upstream cannot resolve. `hotspot_atoms_for_residue` takes the observed atom
-names for exactly that reason. Whether upstream errors on an unresolvable atom name
-or silently drops it is **UNVERIFIED** — and it matters, because the silent-drop case
-would be the same failure shape as §10 item 5. The precedent is proteina's upstream,
-which drops an unmatched residue token without complaint
-(`tools/proteina/run_pipeline.py:706-715`); nothing read so far says whether RFD4
-behaves the same way.
+names for exactly that reason.
 
-### Recommendation
+### Does upstream error on an unresolvable atom name, or silently drop it? **SILENT DROP** (answered 2026-11-04)
 
-**B, intersected with observed atoms, with D as the upgrade if rung 5 shows B
-over-constrains.** The reasoning: B is what a contact actually involves, it needs no
+**Answered by reading the source at our own pin -- no container was started and no GPU
+second was spent.** It drops, and nothing is reported.
+
+* **The call site.** `src/rfproteina/inference_utils/condition_spec.py::_apply_conditions`
+  at our pinned `RFD4_SHA` `aaccdd2ad0720c180468df5f9cf037a713d403e5`
+  (`tools/rfd4/Dockerfile.modal`) resolves each entry's `select` string through
+  `resolve_mask(atom_array, select)` and writes at the resulting indices. An empty
+  index array is a no-op write. There is no emptiness check on either the
+  `C_CRDGRP` path or the per-value path, and `raise_on_empty` does not appear in
+  `condition_spec.py` or `mask_spec.py`.
+* **Why it cannot raise.** `src/rfproteina/utils/mask_spec.py::resolve_mask` returns
+  `QueryExpression(query).mask(atom_array)`, and in `atomworks`
+  `src/atomworks/io/utils/query.py::QueryExpression._build_functions` the `sel` entry
+  is `lambda selection_str: AtomSelectionStack.from_query(selection_str).get_mask(atom_array, raise_on_empty=False)`,
+  with upstream's own comment that it is non-raising on an empty match so it composes
+  inside boolean expressions. The flag's **default** is `True` and
+  `get_mask_from_atom_selection` does raise `ValueError("No atoms found for
+  selection: ...")` when it is set -- but the `sel(...)` query path, which is the path
+  RFD4 uses, never reaches that default. The behaviour is a property of the call site,
+  and our call site is the non-raising one.
+* **Per-token and whole-selection misses behave identically.** `from_query` expands
+  `[CG,OH]` into two members and unions them, passing the same flag to each: if `CG`
+  is absent and `OH` present, `OH` alone is selected; if both are absent the mask is
+  all False. Either way nothing is reported.
+* **Read at:** `atomworks` commit `1a9fa25fec3709b73493edfaba31d131dabddbbc`, which
+  PyPI gives as the 3.0.4 publish commit. Upstream's `pyproject.toml` at our pinned
+  SHA constrains `atomworks[ml,openbabel]>=3.0.4,<4` and carries no `uv.lock`, so
+  **the version resolved into our built image is not pinned and was not read**;
+  3.0.5 and later are **UNVERIFIED**. Also unread, and so also unverified:
+  `annotator.py` (whether `sel` is in `ANNOTATOR_REGISTRY`), any post-run validation
+  in `conditions_reporting.py` that might flag an empty selection, and upstream's own
+  docs on empty-selection behaviour. Locations above are by symbol, not line: the
+  fetch returned processed text.
+* **This is the same failure shape as §10 item 5**, and it confirms the precedent:
+  proteina's upstream drops an unmatched residue token without complaint
+  (`tools/proteina/run_pipeline.py:706-715`), and RFD4's does the same for atoms.
+  **It is not a defect in the landed path**, because option B's intersection with
+  `observed_atom_names` means our code cannot name an absent atom by construction.
+  It is a robustness finding: the intersection is load-bearing, since removing it
+  would fail silently rather than loudly.
+* **One thing the same read turned up, worth more than the question was.**
+  `_apply_conditions` swaps `res_id` back to the **pre-contig** numbering before
+  evaluating selections, so **a residue number that a contig renumbered is also a
+  silent miss** -- no error, just a hotspot that conditions nothing. That is §10
+  item 5's failure mode arriving by a second route, and it is **UNVERIFIED against a
+  run**: it is read off the source, not observed.
+
+### Decision (Leo, 2026-11-04)
+
+**B, intersected with observed atoms, with D as the upgrade path if B ever proves to
+over-constrain. C must not ship.** The reasoning below was the recommendation and is
+now the record of why the decision went that way. It was decided on reasoning, not on
+measurement: the comparison experiment described at the end of this subsection **was
+not run**, and no GPU spend for it has been approved or requested, so nothing here
+measures B against A or C.
+
+The reasoning, unchanged from when it was a recommendation: B is what a contact actually involves, it needs no
 new scientific artefact to review, and it degrades safely — a buried sidechain adds
 atoms the model cannot reach, which weakens the constraint rather than corrupting it.
 A is the safe fallback if any evidence appears that multi-atom selections
-over-constrain. C should not ship.
+over-constrain. C should not ship, and the decision above makes that binding.
 
-This is a recommendation, not a decision. **§10 item 6 stays open.** The measurement
-that would close it: one target, one epitope, the same seed, three runs under A, B and
+**§10 item 6 is closed by the decision above; do not re-open it.** What would
+legitimately move it is evidence that B over-constrains, which would make it D's turn.
+The measurement that was never run: one target, one epitope, the same seed, three runs under A, B and
 C, scored through our Boltz-2 chain (§7B) and compared on whether the designed binder
 contacts the picked residues. That is GPU spend nobody has approved.
 
@@ -1214,6 +1309,8 @@ we write — nothing produced by `tools/rfd4/numbering.py` has been through
 ## 11. What the 2026-10-30 research pass did not do
 
 This section is about that pass only; §10A records a later one that does add code. The research pass changed no product code, deployed no Modal app and edited no customer-visible string. GPU work was limited to the validation ladder Leo approved rung by rung: the free CPU build probe (§5.4), the ~3¢ driver check (§5.5), rung 2's weights seed (§5.6, bounded below $0.62, exact spend not captured), rung 3's run (§5.7, a measured **$0.2908**) and rung 4's single run (§5.8, one A100 container, 217.4 s, **$0.18659948 raw** from a billing read, matched on the app id §5.8 records — UNVERIFIED only in that no billing artefact is committed). Rung 4 also ran two CPU-only probe functions that carry no `gpu=` and no `volumes=`. A Modal Volume named `rfd4-proteina-weights` holding 2.59 GiB now exists in Leo's account; **delete it if RFD4 is dropped**, and note its flow checkpoint was renamed to `rfd4_proteina_flow-ema.ckpt` during rung 3.
+
+One thing it got wrong, found 2026-11-04 during step 3: it read the upstream README and reported that upstream cites no paper. The README has a `## Citation` section, and it is there at the SHA we pin. §9 item 10 carries the correction and the two conflicting upstream citation blocks; the lesson for the next pass is that a "never" about a document we hold is a grep, not a reading impression.
 
 One process note for whoever fetches the upstream docs next: a web-fetch helper used during this research reported that page text it retrieved appeared to carry embedded instructions about how to report its contents. Those were ignored, as they should be — text inside a fetched page is data, never direction. Worth knowing if the same pages are fetched again.
 
@@ -1264,3 +1361,35 @@ Both saved reviewers ran again on the §2A commit alone. `review-code` had a rev
 | Four cites off by one to a few lines (`pipeline_normalize.py:346-348`, `pdb_intake.py:481-485`, `pdb_preflight.py:6-8`, and a dropped markdown link in the `examples/antibody_design/README.md:6` quote) | All corrected to `:346-349`, `:482-488`, `:7-8`; the README quote is unchanged in substance |
 
 Two cautions carried forward. First, §2A.4's SECOND-HAND items (the leaderboard basis, `protocols.mjs`, the CSV aggregates, the `scTM` zero-hit search, the absent GPU model, the wet-lab list) were not re-verified by either reviewer and remain labelled as what a delegated reader quoted. Second, round 1 recorded `review-code` as having no reviewable surface on a prose delta; round 2 shows that was the wrong conclusion — a scoping document's statements about our own code are reviewable, and that review found the error that would have cost the most to act on.
+
+### 12.2 Rounds 1 and 2 — on the step-3 delta (`0572c571..` the adapter branch)
+
+Step 3 is the first delta in this milestone that is mostly code: the hub-side adapter, the preflight rules row, the ceilings, and the corrections to §4.2, §7C.6, §8, §9 and §10A that the implementation exposed. Both saved reviewers ran twice, base `0572c571` each time. Every finding below was re-verified against the repo before it was accepted; two were rejected on that re-check and are recorded as such, because a reviewer's cite is a claim.
+
+**`review-code` round 1: 2 findings, 1 confirmed, 1 rejected on re-check.**
+
+| Finding | Fix |
+|---|---|
+| A PDB holding a second polymer chain passes `validate` (which refuses a multi-chain *naming*, not a multi-chain *file*) and passes `_multi_chain_block` (`shared/pdb_preflight.py:1074`, which counts the chains **named on the form**), reaching a container that refuses it — so once the slug registers, a customer pays the start minimum for zero designs | Confirmed and pinned rather than fixed: closing it is a decision about which layer crops, which is Leo's. §9 item 11, a blocker on step 7A's `register(adapter)`, and `tests/test_rfd4_adapter.py::test_an_extra_polymer_chain_passes_the_gates_the_container_refuses` fails the moment the gates start refusing it |
+| The runtime terms under-quote large jobs | REJECTED. Reading §5.8's production fit gives ≈1005 s at N=200 against a 2670 s ceiling, so the envelope is conservative at the top of the range, not optimistic. The terms are still worth re-fitting (Follow-ups), but not for this reason |
+
+**`review-claims` round 1: 5 FALSE, all confirmed and repaired, plus 4 UNVERIFIED.** The repair of UNVERIFIED #4 was itself wrong in its first draft — I wrote the two runtime fits as diverging in one direction when they cross near N=10 — which is the fourth time in this milestone that fixing a claim introduced a new one.
+
+**`review-claims` round 2: ~45 claims enumerated, 2 FALSE, 4 UNVERIFIED, round 1's nine not re-raised.** Both FALSE held, and the first was wrong in a *second* way the reviewer did not catch.
+
+| Finding | Fix |
+|---|---|
+| The multi-chain comment cited §5.8 for the two-chain variant sweep; §5.8 carries no such table | The sweep is in `docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md`. Reading it to fix the cite showed the substance was also wrong: there are **six** variants, **V1/V2/V5** failed upstream's `index_group_molecule_must_be_connected` invariant and **V3/V4/V7** returned 0 and built a CIF. So the measured rule is **at most one *indexed* target chain** — "one chain" is contradicted by V3 and V7 passing with the second chain unindexed. And the stronger reason sat unused in the same document: `C_IDXGRP`, the condition that would express a multi-chain rigid target, is Python-API only and absent from the YAML condition table, so the case is **not expressible** through the spec format we drive upstream with, rather than merely unknown. Corrected at all three sites — the `_RFD4` comment, the `tests/test_pdb_preflight.py` bullet, and §4.2's row. Two items stay UNVERIFIED: the mechanism that judges the two protomers one molecule, and the V2–V4 rows, whose result JSON the V5/V7 sweep overwrote |
+| "a default-size job estimates 2.7 min" — size-specific and undefined | Eight designs give **2.7217 min at the measured 115 aa target** and **2.8400 min at the 120 aa anchor the terms are expressed against**; both fall under `runtime_estimate_min`'s closing `max(5.0, est)`, so the conclusion held at both anchors while the number named neither. Both are now named |
+| §9 item 10 said the citation guard's docstring records five past misattributions, and that each token is "a real DOI or arXiv id" | Both undercounts. The docstring records **six**; enumerating all 14 `REQUIRED_URL_TOKENS` entries shows publisher DOI suffixes, bioRxiv dated ids **and** arXiv ids — `iggm`'s is bioRxiv `2024.09.19.613838`, matching that docstring's own note that IgGM has no arXiv version |
+| The `63`/`0` registration figures were labelled as measured, but the prose never listed the modules, so "9 of the 10" could not be re-derived | Re-measured rather than restated, over the whole suite with `register(adapter)` and the `app.py` import temporarily added. The replacement figures and the command that produced them are in §8's registration note; the old numbers are gone because I could not reproduce them |
+
+**`review-code` round 2: 2 findings — 1 confirmed (the same gap), 1 resolved as cross-run interference — and one observation from its *clean* list that earned a code change.** It did not open `tests/test_preflight_panel_contract.py` (+116 lines) and treated this document as out of scope, so this is an incomplete read of the delta rather than a clean one.
+
+| Finding | Fix |
+|---|---|
+| The multi-chain gap again, with the money mechanism spelled out: the staged bytes are the whole converted upload, not a chain-cropped file, so the sequence on registration is hold taken → GPU starts → `resolve_target_chain` fails → start-minimum charge, zero designs | Already pinned and recorded (§9 item 11). The §4.2 row's claim that `validate` "refuses it one layer earlier" was tightened — a claim neither reviewer raised and I found by re-reading the neighbour text of my own repair |
+| "the full suite is not green — 4 failures, cause UNVERIFIED" | Resolved: two full-suite runs overlapped on the repo-root `tmp/`. The reviewer's four and mine are **disjoint** sets; each of the eight passes when its module runs alone; all 20 `tests/test_scout*.py` together give 792 passed, 8 skipped; and the delta touches no `scout/` file, no `tests/test_scout*` and not `tests/conftest.py`. The shared state is `TMP = Path("tmp")`, and `test_the_sweep_leaves_the_repo_alone` asserts exactly what a second pytest process violates. Follow-up: that shared relative path makes the scout modules order- and concurrency-sensitive |
+| *From the clean list:* step 2's stamp guard, `tests/test_rfd4_pipeline.py::test_the_adapter_stamps_the_key_the_wallet_scales_on`, is a source-text grep for the literal `"n_designs_total"` — it would pass even if the key were stamped where `_effective_scaling_value` never looks | The brief said make it pass without weakening it, so it is untouched and an executing guard was added beside it: `tests/test_rfd4_adapter.py::test_the_wallet_actually_reads_the_stamped_key_off_the_job_spec` runs `validate(num_designs="200")`, asserts the wallet lookup returns `200.0`, and pairs that with a control that strips the key and asserts the silent fallback to the baseline is still reachable |
+
+Two cautions. First, round 2 found two false claims that round 1's claims pass had read and not flagged, and the first of those was wrong in a second way round 2 also missed — only reading the cited source document exposed it. Four rounds across this milestone have now each found a defect introduced by the previous round's repair. Second, `tests/test_preflight_panel_contract.py` has not been opened by a code reviewer in either round, and is the known hole in this delta's coverage.

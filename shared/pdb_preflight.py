@@ -45,6 +45,7 @@ from shared.pipeline_normalize import (
     normalize_for_proteina,
     normalize_for_pxdesign,
     normalize_for_rfantibody,
+    normalize_for_rfd4,
     normalize_for_rfdiffusion,
 )
 from shared.pdb_inspect import split_hotspot
@@ -247,6 +248,7 @@ _PREVIEW_FN = {
     "boltzgen":     normalize_for_boltzgen,
     "pxdesign":     normalize_for_pxdesign,
     "proteina":     normalize_for_proteina,
+    "rfd4":         normalize_for_rfd4,
 }
 
 

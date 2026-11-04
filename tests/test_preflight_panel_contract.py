@@ -308,7 +308,19 @@ _PANEL_TOOLS = (
 @pytest.fixture
 def app(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
-    for slug in _PANEL_TOOLS:
+    # _PANEL_TOOLS alone is not enough: blueprints/tools.py::_require_tool
+    # returns coming_soon.html / 404 for a flag-off slug BEFORE tool_preflight
+    # reads anything, so a tool in PREFLIGHT_TOOLS that is not in
+    # _PANEL_TOOLS answers 404 to the CIF test below and fails on the status
+    # line rather than on a verdict. The union is the set of slugs this module
+    # posts to, and every route it exercises is flag-gated.
+    #
+    # The flag is the SECOND gate, not the only one: _require_tool reads
+    # tool_base.get(slug) first and 404s a None before it ever looks at the
+    # env var -- that is its first arm, and BOTH arms return 404. So a flag
+    # here does NOT make an unregistered slug answer 200 -- which is the case
+    # rfd4 is in, and which the CIF test asserts rather than skips.
+    for slug in set(_PANEL_TOOLS) | set(_CIF_SLUGS):
         monkeypatch.setenv("FLAG_TOOL_" + slug.upper(), "on")
     from app import create_app
     flask_app = create_app()
@@ -659,6 +671,15 @@ _PANEL_HOTSPOT_FORMS = {
                     "target_input": "A1-80,B1-80",
                     "binder_length_min": "55", "binder_length_max": "65",
                     "num_designs": "2"},
+    # rfd4 designs against ONE target chain -- its validate() refuses a
+    # second before it parses hotspots (tools/rfd4/__init__.py::validate),
+    # because tools/rfd4/run_pipeline.py::resolve_target_chain _fails one.
+    # That makes it the first row here whose adapter can refuse the
+    # two-chain target the three multi-chain tests below hand it, which
+    # test_what_each_adapter_does_with_a_chain_prefixed_hotspot handles by
+    # name. Its preset slug is "binder_design", not "pilot".
+    "rfd4":        {"preset": "binder_design", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
 }
 
 
@@ -913,12 +934,14 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
     """The landscape the panel has to live with, pinned so it cannot shift
     silently underneath it.
 
-    Three behaviours, not two, which is why a single "parse it like the
+    Four behaviours, not two, which is why a single "parse it like the
     adapters do" rule kept failing:
       - the four binder tools accept the prefixed form and EMIT it
       - proteina accepts it but emits bare ints, carrying the prefixed form
         separately under hotspot_spec
       - rfantibody and boltz2 reject it outright
+      - rfd4 never reaches the question: it refuses the two-chain TARGET
+        first, so its prefix behaviour is asserted on one chain instead
 
     proteina's split is safe because nothing range-checks the bare copy any
     more: the four money gates read `shared.pdb_preflight.shipped_hotspots`,
@@ -931,6 +954,26 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
     form = dict(_PANEL_HOTSPOT_FORMS[slug])
     form.update({"target_chain": "A B", "hotspot_residues": "A5,B7"})
     inputs, err = mod.validate(form, {})
+
+    if slug == "rfd4":
+        # REFUSES THE TARGET, NOT THE PREFIX, and the difference is why this
+        # cannot join the reject branch below: rfd4 is single-chain by
+        # construction (tools/rfd4/__init__.py::validate, mirroring
+        # tools/rfd4/run_pipeline.py::resolve_target_chain), so a two-chain
+        # form never gets as far as the hotspot field. Asserted on the
+        # refusal's own wording so that a future multi-chain rfd4 lands here
+        # rather than passing by falling into a wider branch.
+        assert err is not None and "one target chain" in err, (
+            f"rfd4 accepted a two-chain target: err={err!r}"
+        )
+        form.update({"target_chain": "A", "hotspot_residues": "A5"})
+        inputs, err = mod.validate(form, {})
+        assert err is None, f"rfd4 rejected its own single chain: {err}"
+        assert inputs.get("hotspot_residues") == ["A5"], (
+            f"rfd4 emitted {inputs.get('hotspot_residues')!r} for a prefixed "
+            f"single-chain field"
+        )
+        return
 
     if slug in {"rfantibody", "boltz2"}:
         assert err is not None, (
@@ -1013,10 +1056,13 @@ def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client
 # same bytes and ran the job. The panel refused targets the gate was happy to
 # run, and the run went ahead anyway because of the button defect below.
 #
-# SEVEN tools, not the eight forms that mount the panel: iggm mounts it and
-# is not in PREFLIGHT_TOOLS, so the route answers READY before it ever reads
-# the upload. Proved by test_iggm_mounts_the_panel_and_inspects_nothing
-# rather than asserted here.
+# PREFLIGHT_TOOLS, not the forms that mount the panel, and the two sets are
+# no longer even the same size: iggm mounts the panel and is not in
+# PREFLIGHT_TOOLS, so the route answers READY before it ever reads the upload
+# (proved by test_iggm_mounts_the_panel_and_inspects_nothing rather than
+# asserted here), while rfd4 is in PREFLIGHT_TOOLS and mounts no form yet --
+# this route is reachable for it, its rendered form is step 7's. So the
+# membership is read off PREFLIGHT_TOOLS and neither count is restated.
 #
 # Nothing caught it because no test fed a `.cif` through a TOOLS route --
 # scout has its own upload path and does, via _cif_two_chains in
@@ -1056,7 +1102,9 @@ _CIF_TWIN_PDB = _pdb({
 })
 
 
-def _preflight_upload(client, slug, data_bytes, filename, **extra):
+def _preflight_upload(
+    client, slug, data_bytes, filename, *, expect_status=200, **extra
+):
     data = {"target_chain": "A", "hotspot_residues": ""}
     data.update(extra)
     data["target_pdb"] = (io.BytesIO(data_bytes), filename)
@@ -1065,23 +1113,34 @@ def _preflight_upload(client, slug, data_bytes, filename, **extra):
             f"/tools/{slug}/preflight", data=data,
             content_type="multipart/form-data",
         )
-    assert resp.status_code == 200, f"{slug} {filename}: {resp.status_code}"
+    assert resp.status_code == expect_status, (
+        f"{slug} {filename}: {resp.status_code}"
+    )
+    if expect_status != 200:
+        # A refusal renders 404.html or coming_soon.html, and get_json()
+        # raises UnsupportedMediaType on HTML. A caller that asked for a
+        # non-200 is asserting the status, not reading a verdict.
+        return None
     return resp.get_json()
 
 
-# THE SEVEN THE ROUTE ACTUALLY INSPECTS, not the eight that render the
-# panel. iggm mounts it and is not in PREFLIGHT_TOOLS, so tool_preflight
-# returns an unconditional {"kind": "ready"} before it ever reads the
-# upload -- its panel inspects nothing at all. Parametrizing over the
-# eight added one case that compared "ready" with "ready" about a file
-# nothing had opened, and it was the one case that passed with the fix
-# reverted. The exclusion is proved rather than asserted, two tests down.
+# WHAT THE ROUTE ACTUALLY INSPECTS, not what renders the panel. iggm mounts
+# the panel and is not in PREFLIGHT_TOOLS, so tool_preflight returns an
+# unconditional {"kind": "ready"} before it ever reads the upload -- its panel
+# inspects nothing at all. Parametrizing over the panel forms added one case
+# that compared "ready" with "ready" about a file nothing had opened, and it
+# was the one case that passed with the fix reverted. The exclusion is proved
+# rather than asserted, two tests down.
 from shared.pdb_preflight import PREFLIGHT_TOOLS as _CIF_SLUGS
 
 
 # pytest turns an EMPTY parametrize into one silent skip and a green suite, so
-# the size of the set is asserted rather than trusted.
-assert len(_CIF_SLUGS) == 7, sorted(_CIF_SLUGS)
+# the set is asserted non-empty rather than trusted. A LOWER BOUND, not the
+# exact size: the literal 7 here was the one thing that went red when rfd4
+# joined TOOL_RULES (PREFLIGHT_TOOLS derives from BINDER_DESIGN_TOOLS, which
+# derives from it), and it failed at import, so the whole module stopped
+# collecting over a count that proves nothing the emptiness check does not.
+assert len(_CIF_SLUGS) >= 7, sorted(_CIF_SLUGS)
 
 
 @pytest.mark.parametrize("slug", sorted(_CIF_SLUGS))
@@ -1120,6 +1179,29 @@ def test_a_cif_upload_gets_the_same_verdict_as_its_own_pdb_twin(client, slug):
         share, so the count is what this asserts.
     """
     _login(client)
+
+    # A slug with no adapter in the registry has no route to compare two
+    # verdicts on, and that is the contract rather than an exemption:
+    # _require_tool reads tool_base.get(slug) first and 404s a None
+    # (_require_tool's first arm). rfd4 is the first slug to reach here that
+    # way -- it has a TOOL_RULES envelope and a _PREVIEW_FN entry, so
+    # PREFLIGHT_TOOLS carries it, while register(adapter) waits for its
+    # templates and registry copy.
+    #
+    # ASSERTED, NOT SKIPPED, and not excluded from _CIF_SLUGS by name: a skip
+    # reads green whatever the route does, a by-name exclusion silently
+    # outlives the deferral, and this branch stops being taken the moment
+    # registration lands, with no edit here. The 404 does not by itself prove
+    # WHICH gate refused -- both arms of _require_tool return 404 -- so the
+    # registry is read directly above it.
+    from tools.base import get as _registered_adapter
+
+    if _registered_adapter(slug) is None:
+        _preflight_upload(
+            client, slug, _CIF_TWIN_PDB, "twin.pdb", expect_status=404,
+        )
+        return
+
     pdb_body = _preflight_upload(client, slug, _CIF_TWIN_PDB, "twin.pdb")
     cif_body = _preflight_upload(
         client, slug, _as_cif(_CIF_TWIN_PDB), "twin.cif",
