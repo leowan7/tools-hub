@@ -459,6 +459,60 @@ class TestGenuinelyDeadJobStillTimesOut:
         release.assert_called_once()
         settle.assert_not_called()
 
+    def test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed(
+        self, patched_service_client, store
+    ):
+        # The sweeper terminalises a ``running`` row on AGE ALONE
+        # (cron/sweep_stuck_jobs.py's ``running_cutoff`` filter), so it can
+        # fire while the GPU is still working -- a lost-heartbeat run, the
+        # esmfold2 "metering invisible mid-run" shape. Modal then answers
+        # ``status="running"``: positive evidence that the run had NOT
+        # finished, i.e. that WE ended it.
+        #
+        # That is exactly the case Leo rejected in option B, so it must not
+        # be billed. It is not a crash either, so the designs it already
+        # streamed are kept and stay visible -- the two halves come apart
+        # here, and only here.
+        partials = [
+            {"rank": 1, "pdb_key": "design_001.cif", "iptm": 0.7},
+            {"rank": 2, "pdb_key": "design_002.cif", "iptm": 0.6},
+        ]
+        row = _row(
+            status="running",
+            gpu_seconds_used=3000,
+            modal_function_call_id="fc-still-running",
+            inputs={
+                "_wallet": {"hold_tx_id": "hold-1", "gpu_class": "a100-40gb"},
+                "_partial_candidates": partials,
+                "_progress": {"designs_completed": 2, "designs_total": 50},
+            },
+        )
+        store.rows[row["id"]] = row
+
+        with patch(
+            "gpu.modal_client.ModalClient.poll",
+            return_value={"status": "running", "result": None},
+        ), patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif", "design_002.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
+            outcome = timeout_stuck_job(row["id"])
+
+        assert outcome == "timed_out"
+        stored = store.rows[row["id"]]
+        assert stored["status"] == "timeout"
+        # Kept: the designs are in the result, not discarded as they are on
+        # the crash verdicts above.
+        assert len(stored["result"]["candidates"]) == 2
+        assert stored["result"]["partial"] is True
+        # Not billed: the class stays the refunded one even though designs
+        # were kept, which no other path does.
+        assert stored["failure_class"] == "no_progress_timeout"
+        release.assert_called_once()
+        settle.assert_not_called()
+
     def test_incomplete_progress_without_ground_truth_times_out(
         self, patched_service_client, store
     ):

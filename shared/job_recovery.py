@@ -273,10 +273,17 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         Modal necessarily answered. Every branch below treats it exactly as
         ``"unknown"``; only the money differs, on the safe side — see
         ``recover_stuck_job_result``'s docstring.
+      - ``"still_running"`` — ``status="running"``: Modal says this call
+        has not finished. Unlike ``"unknown"`` this is evidence, and it points
+        the other way — a caller about to terminalise the job is ending a
+        live run. Every branch below treats it as ``"unknown"``; only
+        ``timeout_stuck_job`` reads it, to keep designs without billing
+        (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
+        ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
       - ``"unknown"``     — no answer was even attempted or parsed: the id is
         an offline stub, the ``poll`` call itself raised, the payload was not
-        a dict, the call is still running, or the container hit its OWN
-        timeout (``status="timeout"``). Note that an unreachable Modal splits
+        a dict, or the container hit its OWN timeout
+        (``status="timeout"``). Note that an unreachable Modal splits
         across both values — it lands here when ``poll`` raises, and in
         ``"failed_unconfirmed"`` when ``poll`` swallows the fault and reports
         ``status="error"``. No ground truth either way; the caller must find
@@ -328,8 +335,14 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         # "failed_unconfirmed" bullet above for why that is not "unknown".
         return None, "failed_unconfirmed"
 
-    # running / timeout / anything else — no ground truth. A container that
-    # hit its OWN timeout lands here (status="timeout",
+    if status == "running":
+        # Modal says the call has not finished. That is not an absence of
+        # evidence like the tail below: it is positive evidence that the run
+        # was still alive, so whoever terminalises it now is us.
+        return None, "still_running"
+
+    # timeout / anything else — no ground truth. A container that hit its
+    # OWN timeout lands here (status="timeout",
     # gpu/modal_client.py::ModalClient.poll) and is the one shape that is
     # unambiguously a time-out rather than a failure.
     return None, "unknown"
@@ -373,9 +386,10 @@ def recover_stuck_job_result(
     (``timeout_with_delivery`` in shared/jobs.py::_BILLED_FAILURE_CLASSES).
     The two reasons for ``None`` below therefore need different money, and
     only the Modal probe can tell them apart. Pass a dict as ``verdict_out``
-    to receive that ground truth under ``"exit_verdict"``: ``"failed"`` and
-    ``"failed_unconfirmed"`` are both failures Modal reported, which must not
-    be billed off designs rebuilt from Storage, and ``timeout_stuck_job``
+    to receive that ground truth under ``"exit_verdict"``: ``"failed"`` is a
+    confirmed crash and ``"failed_unconfirmed"`` is a fault we could not pin
+    down — which, per ``_probe_modal``'s bullet, includes our own poll channel
+    wedging. Neither may be billed off designs rebuilt from Storage, and ``timeout_stuck_job``
     skips the keep for both
     (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut::
     test_crashed_pipeline_with_partial_designs_is_not_billed and

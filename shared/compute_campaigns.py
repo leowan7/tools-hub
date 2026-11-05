@@ -1448,8 +1448,9 @@ def aggregate_campaign_candidates(
     carries ``partial``, and of those, the ones that ran out of time -- either
     the tool's own search did (``search.status == "timeout"``) or the whole
     child did (row ``status == "timeout"``, whose kept result carries no
-    ``search`` key: ``shared.jobs._keep_streamed_designs`` writes candidates
-    only). Each returned candidate
+    ``search`` key: ``shared.jobs._keep_streamed_designs`` builds its result
+    from ``candidates`` / ``candidate_count`` / ``partial`` and nothing
+    else). Each returned candidate
     is a shallow copy tagged with ``_source_job_id`` / ``_source_chunk`` /
     ``_source_index`` so the merged table can build per-candidate PDB, export,
     and shortlist references back to the child job that produced it.

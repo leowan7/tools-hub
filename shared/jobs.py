@@ -1942,12 +1942,26 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     # settles exactly as it did before
     # (tests/test_timeout_keeps_designs.py::
     # test_a_timeout_that_kept_nothing_is_still_refunded).
+    #
+    # And one verdict splits the two halves apart. ``"still_running"`` is
+    # Modal saying the call had not finished (shared/job_recovery.py::
+    # _probe_modal), so the sweeper is killing a live run on age alone
+    # (cron/sweep_stuck_jobs.py's ``running_cutoff``) — our stall, which
+    # Leo refused to bill when he rejected option B. The designs still stay,
+    # because they still reached the user; only the class upgrade is withheld,
+    # which leaves the refund ``mark_timeout`` already wrote
+    # (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
+    # ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
     if not mark_timeout(job_id):
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
-        if verdict.get("exit_verdict") not in ("failed", "failed_unconfirmed"):
-            fresh = _keep_streamed_designs(fresh, status="timeout")
+        exit_verdict = verdict.get("exit_verdict")
+        if exit_verdict not in ("failed", "failed_unconfirmed"):
+            fresh = _keep_streamed_designs(
+                fresh, status="timeout",
+                reclassify=exit_verdict != "still_running",
+            )
         _settle_wallet_hold_for_completed_job(fresh)
     return "timed_out"
 
@@ -2219,7 +2233,9 @@ def cancel_job(
     return fresh, None
 
 
-def _keep_streamed_designs(job: "ToolJob", *, status: str) -> "ToolJob":
+def _keep_streamed_designs(
+    job: "ToolJob", *, status: str, reclassify: bool = True,
+) -> "ToolJob":
     """Attach the designs a run already streamed, and re-classify off them.
 
     Called by the two paths that end a run before its terminal webhook:
@@ -2236,7 +2252,10 @@ def _keep_streamed_designs(job: "ToolJob", *, status: str) -> "ToolJob":
        nothing writes nothing at all
        (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels,
        tests/test_timeout_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_times_out).
-    2. ``{"failure_class": ...}`` -- only when re-running
+    2. ``{"failure_class": ...}`` -- skipped entirely when
+       ``reclassify=False``, which is how ``timeout_stuck_job`` keeps the
+       designs of a run Modal still reported as running without billing it
+       (see that function's comment); otherwise only when re-running
        ``classify_terminal_state`` over the result just written disagrees
        with the class already on the row. Today that is the timeout split
        and nothing else: for a cancel the classifier returns
@@ -2280,6 +2299,8 @@ def _keep_streamed_designs(job: "ToolJob", *, status: str) -> "ToolJob":
         return job
     job = replace(job, result=result)
 
+    if not reclassify:
+        return job
     reclassified = classify_terminal_state(status=status, result=result)
     if reclassified is None or reclassified == job.failure_class:
         return job
