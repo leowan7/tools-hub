@@ -51,7 +51,7 @@ from shared.jobs import (
     timeout_stuck_job,
 )
 from shared.pdb_intake import job_preflight_for_display
-from shared.run_notices import cancelled_with_designs, run_notices, stopped_for_balance
+from shared.run_notices import kept_designs, run_notices, stopped_for_balance
 from shared.scale_up import quote as scale_up_quote
 from shared.storage import (
     StorageError,
@@ -792,7 +792,7 @@ def job_detail(job_id: str):
         preflight=job_preflight_for_display(job.inputs),
         run_notices=run_notices(job),
         stopped_for_balance=stopped_for_balance(job),
-        cancelled_with_designs=cancelled_with_designs(job),
+        kept_designs=kept_designs(job),
     )
 
 
@@ -1008,9 +1008,13 @@ def job_status(job_id: str):
             # SUCCEEDED off Storage + the heartbeat snapshot
             # (shared/job_recovery.py::recover_stuck_job_result), not refunded
             # with its results discarded. Only when nothing is recoverable does
-            # it mark_timeout + settle, which releases the hold in full
-            # (status="timeout" -> failure_class="no_progress_timeout" ->
-            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES).
+            # it mark_timeout + keep + settle, which releases the hold in
+            # full when the run delivered nothing
+            # (status="timeout" with no kept designs ->
+            # failure_class="no_progress_timeout" ->
+            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES) and charges the GPU
+            # when it did (-> "timeout_with_delivery", which is in
+            # shared/jobs.py::_BILLED_FAILURE_CLASSES).
             #
             # probe_modal=False: we just polled Modal above and got a terminal
             # container timeout, so recovery's own Modal probe would re-raise

@@ -1622,7 +1622,7 @@ def test_a_running_standalone_job_is_not_read(monkeypatch):
     assert agg["standalone_jobs"] == 1, f"partial={agg['partial']!r}"
     assert _keys(agg) == ["d.pdb"]
     for query in _standalone_queries(client):
-        assert ("status", ["succeeded", "cancelled"]) in query._in
+        assert ("status", ["succeeded", "cancelled", "timeout"]) in query._in
 
 
 def test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target(monkeypatch):
@@ -1631,7 +1631,7 @@ def test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target(monkeypatch)
     contribute nothing.
 
     ``cancel_job`` stores the designs a cancelled run already finished as a
-    ``partial`` result (shared/jobs.py::_keep_cancelled_designs), and a
+    ``partial`` result (shared/jobs.py::_keep_streamed_designs), and a
     rebuild that finds nothing writes no result at all, which is the
     ``result: None`` row here.
     """

@@ -788,10 +788,15 @@ class ToolJob:
 # supabase/migrations/0029_tool_jobs_failure_class.sql.
 #
 # Refund policy by class:
-#   succeeded, completed_no_yield, user_cancelled, safety_kill
+#   succeeded, completed_no_yield, user_cancelled, safety_kill,
+#   timeout_with_delivery
 #       -> charge actual GPU consumed (settle_hold)
 #   infra_crash, tool_error, preflight_miss, no_progress_timeout, unclassified
 #       -> full refund (release_hold)
+#
+# The two timeout classes are one event split by what reached the user
+# (Leo 2026-11-04): timeout_with_delivery bills a run that handed over
+# real designs, no_progress_timeout refunds one that delivered nothing.
 #
 # The unclassified bucket is the deliberate judgment-case fallback per
 # the tier-collapse spec: ambiguous failures default to refund so the
@@ -804,6 +809,12 @@ _BILLED_FAILURE_CLASSES: frozenset[str] = frozenset({
     "completed_no_yield",
     "user_cancelled",
     "safety_kill",
+    # A timeout that delivered designs. Written only by the second CAS in
+    # ``_keep_streamed_designs``, once the designs are actually on the row;
+    # ``mark_timeout`` writes ``no_progress_timeout`` first. Needs
+    # supabase/migrations/0047_timeout_with_delivery_failure_class.sql
+    # applied, or that CAS fails the CHECK and the row stays refunded.
+    "timeout_with_delivery",
 })
 
 # Failure classes that refund the full hold (no charge to the user).
@@ -881,6 +892,19 @@ def classify_terminal_state(
         return "user_cancelled"
 
     if status == "timeout":
+        # Leo 2026-11-04: a timeout that handed the user real designs is
+        # billed; one that delivered nothing stays refunded. Split on the
+        # delivered candidates, the inverse of the ``completed_no_yield``
+        # test above, so this pure function stays the only place a class is
+        # decided. ``mark_timeout`` calls it with no result and so writes
+        # the refunded class; the billed one is reached from
+        # ``_keep_streamed_designs``, which calls this again with the result
+        # it just wrote.
+        candidates = None
+        if isinstance(result, dict):
+            candidates = result.get("candidates")
+        if is_candidate_array(candidates) and len(candidates) > 0:
+            return "timeout_with_delivery"
         return "no_progress_timeout"
 
     if status == "failed":
@@ -967,6 +991,12 @@ _FAILURE_CLASS_PLAIN_WORDS: dict[str, str] = {
     "preflight_miss":      "A check on the GPU machine stopped the run "
                            "before it began.",
     "no_progress_timeout": "The run hit its time limit before it finished.",
+    # Same event as no_progress_timeout, so the same cause sentence: only
+    # the money differs, and the money sentence is not from this table --
+    # the page reads it off the ledger (blueprints/jobs.py::_failure_money).
+    # The designs it kept are named by shared/run_notices.py::kept_line.
+    "timeout_with_delivery":
+                           "The run hit its time limit before it finished.",
     "unclassified":        "The run stopped for a reason we could not identify.",
     "user_cancelled":      "You cancelled this run.",
     "safety_kill":         "We stopped the run for exceeding its safety limit.",
@@ -1780,8 +1810,14 @@ def mark_timeout(
 ) -> bool:
     """CAS-style timeout transition. Returns True iff the row actually moved.
 
-    Timeouts classify as ``no_progress_timeout`` (infra-side stall),
-    which routes to a full refund.
+    Writes no ``result``, so ``classify_terminal_state`` sees no delivered
+    candidates and this write always lands the refunded class
+    ``no_progress_timeout`` (infra-side stall). The designs the run had
+    already streamed are attached afterwards by ``_keep_streamed_designs``,
+    which re-classifies off the result it wrote and upgrades the class to
+    the billed ``timeout_with_delivery`` in a second CAS when there were
+    any (tests/test_timeout_keeps_designs.py::
+    test_a_timeout_that_kept_designs_is_billed).
     """
     return _cas_update(
         job_id,
@@ -1808,7 +1844,13 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     as ``succeeded`` through the SAME ``complete_job`` terminal/settle path the
     webhook uses, so billing settles against actual GPU consumed instead of
     full-refunding a run that really executed. Only when nothing is recoverable
-    do we time the job out (full refund) as before.
+    do we time the job out. That is a full refund unless the run had already
+    streamed designs to the user AND Modal gave us no reason to think it
+    crashed or is still alive, in which case the GPU it consumed is BILLED
+    (Leo 2026-11-04; delivery is necessary but not sufficient — the gate
+    below withholds the billed class on the ``"failed"``,
+    ``"failed_unconfirmed"`` and ``"still_running"`` verdicts, and
+    ``classify_terminal_state``'s timeout arm is what reads the delivery).
 
     Returns one of:
 
@@ -1832,8 +1874,11 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     # Recovery gate: finalize as succeeded when the work provably survived.
     from shared.job_recovery import recover_stuck_job_result  # noqa: PLC0415
 
+    verdict: dict = {}
     try:
-        recovered = recover_stuck_job_result(job, probe_modal=probe_modal)
+        recovered = recover_stuck_job_result(
+            job, probe_modal=probe_modal, verdict_out=verdict,
+        )
     except Exception:
         logger.warning(
             "timeout_stuck_job: recovery probe raised for job %s; "
@@ -1874,11 +1919,55 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         )
         return ""
 
-    # Nothing recoverable — genuine stall. Time it out and settle (refund).
+    # Not recoverable. Two different reasons reach here and they differ in
+    # money. A failure Modal itself reported must NOT be billed off designs
+    # rebuilt from Storage -- either a nonzero pipeline exit
+    # ("failed", the "Ground-truth veto" at
+    # shared/job_recovery.py::recover_stuck_job_result step 2) or a failed
+    # or errored poll it could not pin to an exit code
+    # ("failed_unconfirmed", shared/job_recovery.py::_probe_modal). Two
+    # reasons: the webhook and the inline poll classify the same crash to a
+    # refunded class, so keeping and billing it here would make the bill
+    # depend on which path happened to notice the crash; and status="error"
+    # also covers our own ModalCallTimeout on a wedged poll channel
+    # (gpu/modal_client.py::ModalClient.poll), which is a stall on our side
+    # and must never become a bill. Skip the keep for both and settle
+    # exactly as before
+    # (tests/test_sweep_stuck_recovery.py::
+    # TestGenuinelyDeadJobStillTimesOut::
+    # test_crashed_pipeline_with_partial_designs_is_not_billed,
+    # ::test_an_unconfirmed_modal_failure_is_not_billed).
+    #
+    # Otherwise it is a stall with no reported failure: keep whatever designs
+    # the run had already streamed, and settle LAST, because the keep is
+    # what decides between the two timeout classes and the settle routes on
+    # the class it reads off the object handed to it (``job.failure_class``
+    # at shared/jobs.py::_settle_wallet_hold_for_completed_job, the ``if
+    # job.failure_class is not None`` branch). So the keep must run first
+    # for a delivered timeout to be billed, and a stall that kept nothing
+    # settles exactly as it did before
+    # (tests/test_timeout_keeps_designs.py::
+    # test_a_timeout_that_kept_nothing_is_still_refunded).
+    #
+    # And one verdict splits the two halves apart. ``"still_running"`` is
+    # Modal saying the call had not finished (shared/job_recovery.py::
+    # _probe_modal), so the sweeper is killing a live run on age alone
+    # (cron/sweep_stuck_jobs.py's ``running_cutoff``) — our stall, which
+    # Leo refused to bill when he rejected option B. The designs still stay,
+    # because they still reached the user; only the class upgrade is withheld,
+    # which leaves the refund ``mark_timeout`` already wrote
+    # (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
+    # ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
     if not mark_timeout(job_id):
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
+        exit_verdict = verdict.get("exit_verdict")
+        if exit_verdict not in ("failed", "failed_unconfirmed"):
+            fresh = _keep_streamed_designs(
+                fresh, status="timeout",
+                reclassify=exit_verdict != "still_running",
+            )
         _settle_wallet_hold_for_completed_job(fresh)
     return "timed_out"
 
@@ -2076,7 +2165,7 @@ def cancel_job(
          zero-consumption ``release_hold`` path in
          ``_settle_wallet_hold_for_completed_job``.
       5. If the Modal cancel in step 2 succeeded, attach the designs that
-         already finished (``_keep_cancelled_designs``). The row stays
+         already finished (``_keep_streamed_designs``). The row stays
          ``cancelled``.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
@@ -2144,29 +2233,66 @@ def cancel_job(
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
         if modal_cancelled:
-            fresh = _keep_cancelled_designs(fresh)
+            fresh = _keep_streamed_designs(fresh, status="cancelled")
         if fresh.campaign_id:
             _drive_campaign_after_terminal(fresh)
     return fresh, None
 
 
-def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
-    """Attach the designs a cancelled run already finished as a partial result.
+def _keep_streamed_designs(
+    job: "ToolJob", *, status: str, reclassify: bool = True,
+) -> "ToolJob":
+    """Attach the designs a run already streamed, and re-classify off them.
+
+    Called by the two paths that end a run before its terminal webhook:
+    ``cancel_job`` (``status="cancelled"``) and the timeout writers
+    ``timeout_stuck_job`` / ``complete_job`` (``status="timeout"``). Leo
+    2026-11-04: a run that times out keeps the designs it already streamed,
+    the same way a cancelled one does, and is then billed for them.
 
     The rebuild is ``meter_live_runs``'s (``job_recovery.reconstruct``).
-    ``cancel_job`` calls this after the settle, so the settle reads the row
-    as it did before this step existed
+    Two writes, each its own ``_cas_update`` constrained to ``status``, so a
+    row a concurrent writer has already moved elsewhere is left alone:
+
+    1. ``{"result": ...}`` -- the designs. A rebuild that raises or finds
+       nothing writes nothing at all
+       (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels,
+       tests/test_timeout_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_times_out).
+    2. ``{"failure_class": ...}`` -- skipped entirely when
+       ``reclassify=False``, which is how ``timeout_stuck_job`` keeps the
+       designs of a run Modal still reported as running without billing it
+       (see that function's comment); otherwise only when re-running
+       ``classify_terminal_state`` over the result just written disagrees
+       with the class already on the row. Today that is the timeout split
+       and nothing else: for a cancel the classifier returns
+       ``"user_cancelled"`` from an unconditional arm whatever the result
+       holds, which is the class ``mark_cancelled`` already wrote, so no
+       second write is made
+       (tests/test_timeout_keeps_designs.py::test_a_cancel_never_reclassifies).
+
+    Split rather than one combined write because ``_cas_update`` fails
+    whole (it swallows the exception and returns False, shared/jobs.py::
+    _cas_update): until migration 0047 is applied the class value fails the
+    CHECK constraint, and a combined write would lose the designs with it.
+    Split, the designs land either way and only the bill is forgone.
+
+    The caller settles AFTER this on the timeout paths, because the settle
+    routes on the ``failure_class`` of the object it is handed and this
+    returns that object. ``cancel_job`` still settles first: its class is
+    billed whether or not anything was kept, and the kept ``result`` carries
+    no ``gpu_class``/``gpu_sku`` key, which is the only thing the settle
+    reads out of ``job.result``
     (tests/test_cancel_keeps_designs.py::test_keeping_designs_does_not_change_the_settle).
-    The write is ``{"result": ...}`` through ``_cas_update`` on status
-    ``cancelled``. A rebuild that raises or finds nothing writes nothing
-    (tests/test_cancel_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_cancels).
     """
     from shared.job_recovery import reconstruct  # noqa: PLC0415
 
     try:
         candidates = reconstruct(job)
     except Exception:
-        logger.warning("cancel_job: reconstruct raised for job %s", job.id, exc_info=True)
+        logger.warning(
+            "_keep_streamed_designs: reconstruct raised for %s job %s",
+            status, job.id, exc_info=True,
+        )
         return job
     if not candidates:
         return job
@@ -2175,9 +2301,26 @@ def _keep_cancelled_designs(job: "ToolJob") -> "ToolJob":
         "candidate_count": len(candidates),
         "partial": True,
     })
-    if not _cas_update(job.id, {"result": result}, allowed_current=("cancelled",)):
+    if not _cas_update(job.id, {"result": result}, allowed_current=(status,)):
         return job
-    return replace(job, result=result)
+    job = replace(job, result=result)
+
+    if not reclassify:
+        return job
+    reclassified = classify_terminal_state(status=status, result=result)
+    if reclassified is None or reclassified == job.failure_class:
+        return job
+    if not _cas_update(
+        job.id, {"failure_class": reclassified}, allowed_current=(status,),
+    ):
+        logger.warning(
+            "_keep_streamed_designs: kept %d designs for %s job %s but could "
+            "not write failure_class=%s; leaving %s. Is migration 0047 "
+            "applied?",
+            len(candidates), status, job.id, reclassified, job.failure_class,
+        )
+        return job
+    return replace(job, failure_class=reclassified)
 
 
 # ---------------------------------------------------------------------------
@@ -2354,6 +2497,16 @@ def complete_job(
         return fresh
 
     _charge_workspace_for_completed_job(fresh)
+    if fresh.status == "timeout":
+        # Keep what the run streamed BEFORE the settle, for the reason
+        # ``timeout_stuck_job`` gives at its own call: the keep picks the
+        # timeout's failure_class and the settle routes on it. No non-test
+        # caller passes terminal_status="timeout" today -- the inline poll
+        # and the sweeper both route through timeout_stuck_job
+        # (blueprints/jobs.py::job_status, cron/sweep_stuck_jobs.py) -- so
+        # this makes both the keep and the bill a property of the status,
+        # not of one writer.
+        fresh = _keep_streamed_designs(fresh, status="timeout")
     _settle_wallet_hold_for_completed_job(fresh)
     if fresh.campaign_id:
         # Compute-campaign sub-job: suppress the per-child completion email
@@ -2497,7 +2650,8 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
     the tools-hub route handler) and routes by ``job.failure_class``:
 
     * **Billed classes** (succeeded, completed_no_yield, user_cancelled,
-      safety_kill) -> ``settle_hold`` with actual GPU consumed. The SQL
+      safety_kill, timeout_with_delivery) -> ``settle_hold`` with actual
+      GPU consumed. The SQL
       function releases surplus, charges variance up to the parameter
       scaled hard cap, or records absorbed_variance if the wallet has
       no slack to cover the deficit.
@@ -2607,7 +2761,8 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
             # Zero consumption user cancel: route to release_hold for the
             # richer audit row (typed reason vs settle_hold's notes string).
             # Other BILLED classes (succeeded, completed_no_yield,
-            # safety_kill) with zero gpu_seconds fall through to
+            # safety_kill, timeout_with_delivery) with zero gpu_seconds
+            # fall through to
             # settle_hold(0, ...) so the row records an authoritative zero
             # settlement instead of a refund. A succeeded webhook payload
             # arriving without runtime fields must not silently refund.

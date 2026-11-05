@@ -147,8 +147,8 @@
      the table on this page", `none` says "try the button again" and `noname`
      says "reopen the form" -- and the table, the button and the modal are all
      inside the one `candidate_table` macro, which the results container below
-     includes only for a succeeded job, or a cancelled one that kept designs
-     (shared/run_notices.py::cancelled_with_designs), with a `job.result`. So all
+     includes only for a succeeded job, or a cancelled or timed-out one that
+     kept designs (shared/run_notices.py::kept_designs), with a `job.result`. So all
      three vanish together, and in any other state those banners name controls
      that are not on the page. Register item A95 is the same class on
      templates/unavailable.html and names the same three, filed and not fixed;
@@ -256,7 +256,11 @@
           </p>
         {% elif job.status == 'timeout' %}
           <p class="subtitle" style="color: var(--warning, #fbbf24);">
-            Job timed out before producing a result.
+            {# "before producing a result" is false for a run that kept the
+               designs it had already streamed
+               (shared/jobs.py::_keep_streamed_designs); the `kept_designs`
+               notice below says how many and where they are. #}
+            {% if kept_designs %}Job timed out before it finished.{% else %}Job timed out before producing a result.{% endif %}
           </p>
         {% elif job.status == 'cancelled' %}
           {% if job.gpu_seconds_used and job.gpu_seconds_used > 0 %}
@@ -309,14 +313,23 @@
       {% endif %}
 
       <div id="results-container">
-        {% if (job.status == 'succeeded' or cancelled_with_designs) and job.result %}
+        {% if (job.status == 'succeeded' or kept_designs) and job.result %}
           {% include tool_results_partial %}
-        {% elif job.status in ('failed', 'timeout') %}
+        {% endif %}
+        {# Not an `elif`: a timed-out run that kept designs shows BOTH, so it
+           does not lose the money sentence `failure_money` renders below
+           (tests/test_timeout_keeps_designs.py::test_the_page_keeps_the_money_sentence).
+           Every other state reaches at most one of the two blocks, so the
+           split changes nothing for them. #}
+        {% if job.status in ('failed', 'timeout') %}
           {# Plain-words cause, what to change, the ledger's refund sentence
              and a retry link FIRST, raw error detail underneath for support. The gate covers 'timeout' as well as
-             'failed': a timed-out run is refunded the same way
-             (no_progress_timeout is in _REFUNDED_FAILURE_CLASSES) and used to
-             be told nothing here. Rendered even when job.error is empty,
+             'failed': a timed-out run used to be told nothing here. Its money
+             sentence is whichever one the ledger supports -- a timeout that
+             kept designs is billed and a timeout that kept none is refunded
+             (shared/jobs.py::classify_terminal_state's timeout arm), and
+             `failure_money` reads the ledger rather than the class
+             (blueprints/jobs.py::_failure_money). Rendered even when job.error is empty,
              which is the usual shape of a timeout row. #}
           {% set _advice = failure_advice(job) %}
           <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-top: 1rem;">

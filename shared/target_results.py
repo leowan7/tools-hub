@@ -113,7 +113,8 @@ logger = logging.getLogger(__name__)
 _STANDALONE_COLUMNS = "id,tool,preset,status,inputs,result"
 
 # Columns the campaign child read projects, overriding
-# ``iter_succeeded_children``'s default of "id,chunk_index,attempt,result".
+# ``iter_succeeded_children``'s default of
+# "id,chunk_index,attempt,status,result".
 #
 # ``user_id`` is the addition, and it is not projected to be displayed. The
 # child read carries no tenancy predicate of its own: it filters on
@@ -361,14 +362,16 @@ def _read_standalone_jobs(
         sub-job, so without this filter every campaign child comes back a
         second time here and the table doubles. It is server-side because the
         client-side equivalent would transfer every campaign result JSON twice.
-    ``.in_("status", ["succeeded", "cancelled"])``
+    ``.in_("status", ["succeeded", "cancelled", "timeout"])``
         ``mark_succeeded`` writes a succeeded run's result, and
-        ``shared/jobs.py::_keep_cancelled_designs`` writes the designs a
-        cancelled run already finished as a ``partial`` result.
-        ``mark_timeout`` and ``mark_failed`` write no result, so those
-        statuses are not read. A cancelled job that kept nothing is skipped by
-        the caller
-        (tests/test_aggregate_target.py::test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target).
+        ``shared/jobs.py::_keep_streamed_designs`` writes the designs a
+        cancelled or timed-out run had already streamed as a ``partial``
+        result. ``mark_failed`` writes no result, so ``failed`` is not read;
+        neither does ``mark_timeout``, which is why a timed-out row reaches
+        this table only through that second write. A cancelled or timed-out
+        job that kept nothing is skipped by the caller
+        (tests/test_aggregate_target.py::test_a_cancelled_standalone_jobs_kept_designs_are_on_the_target,
+        tests/test_timeout_keeps_designs.py::test_the_target_page_shows_a_timed_out_runs_designs).
         ``tool_jobs_target_status_idx`` is keyed ``(target_id, status)``
         (supabase/migrations/0039_design_targets.sql:184-186), so both
         predicates fall on its columns.
@@ -386,7 +389,7 @@ def _read_standalone_jobs(
                 .select(_STANDALONE_COLUMNS)
                 .eq("target_id", target_id)
                 .eq("user_id", user_id)
-                .in_("status", ["succeeded", "cancelled"])
+                .in_("status", ["succeeded", "cancelled", "timeout"])
                 .is_("campaign_id", "null")
                 .order("id")
                 .range(start, start + _STANDALONE_PAGE_SIZE - 1)
@@ -696,10 +699,12 @@ def aggregate_target_candidates(
         partial = True
 
     for job in standalone_rows:
-        # A cancelled job that kept no design is not a run that "finished
-        # without returning a design", which is what standalone_jobs feeds on
-        # the page (templates/targets/detail.html).
-        if job.get("status") == "cancelled" and not candidate_records(job.get("result")):
+        # A cancelled or timed-out job that kept no design is not a run that
+        # "finished without returning a design", which is what standalone_jobs
+        # feeds on the page (templates/targets/detail.html).
+        if job.get("status") in ("cancelled", "timeout") and not candidate_records(
+            job.get("result")
+        ):
             continue
         # A refold is not a design, it is a RE-MEASUREMENT of a design that is
         # already a row in this table. Ranking it double-counts the molecule
