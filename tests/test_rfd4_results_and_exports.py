@@ -164,36 +164,61 @@ def test_a_recovered_run_still_says_which_chain_is_the_binder(
     html = _render_with_inputs(
         flask_app, rfd4_registered,
         result=_recovered_result(2),
-        inputs={"target_chain": "A", "num_designs": 8,
+        inputs={"target_chain": "A", "nsamples": 8,
                 "_progress": {"designs_completed": 2, "designs_total": 8}})
     text = _page_text(html)
     assert "Target chain A" in text
     assert "the chain that is not A" in text
 
 
-def test_a_lossy_run_says_how_many_designs_are_missing(tools_app, rfd4_registered):
-    """``requested_designs`` returns None for rfd4 (no entry in
-    _DESIGN_PARAM_KEY), so the total has to come from the result root, or from
-    the heartbeat snapshot when the result has no root keys left.
+def _inputs(**extra) -> dict:
+    """A job's inputs in the shape the adapter stores them.
 
-    Mutation-proven 2026-11-04: with the partial's expression reverted to
-    ``requested=requested_designs(job)``, this test FAILS on both assertions;
-    restored, it passes.
+    ``nsamples`` is tools/rfd4/__init__.py:200 and ``parameters.n_designs_total``
+    is :209 — both the accepted design count, the latter the key the wallet
+    scales the charge on. There is no ``num_designs`` key in inputs: :176 is
+    the FORM field, read once and not kept under that name.
+    """
+    return {"target_chain": "A", "nsamples": 8,
+            "parameters": {"n_designs_total": 8}} | extra
+
+
+def test_a_lossy_run_says_how_many_designs_are_missing(tools_app, rfd4_registered):
+    """M is the submitted count, so a shortfall shows however the designs were
+    lost — including a generation shortfall, where the result root's
+    ``designs_total`` is itself only ``len(design_cifs)``
+    (tools/rfd4/run_pipeline.py:1290) and would render "6 / 6".
+
+    ``requested_designs`` cannot supply it either: no _DESIGN_PARAM_KEY entry
+    for rfd4, so it returns None and results_shell.html:49 drops the line.
+
+    Mutation-proven 2026-11-05, this test failing on each revert and passing
+    when restored: ``requested=requested_designs(job)`` fails at the first
+    assertion (None drops the line outright), and dropping the ``submitted``
+    term from the total fails at the second, rendering "6 / 6".
     """
     flask_app, _ = tools_app
 
+    # Lost between CIF and delivery: eight generated, five uploaded.
     full = _example() | {"designs": _example()["designs"][:5]}
     html = _render_with_inputs(
-        flask_app, rfd4_registered, result=full,
-        inputs={"target_chain": "A", "num_designs": 8})
-    assert "5 / 8" in _page_text(html), "root designs_total was dropped"
+        flask_app, rfd4_registered, result=full, inputs=_inputs())
+    assert "5 / 8" in _page_text(html)
 
+    # Generation shortfall: six CIFs written, all six delivered, billed for 8.
+    short = _example() | {"designs": _example()["designs"][:6],
+                          "designs_total": 6, "designs_completed": 6}
+    html = _render_with_inputs(
+        flask_app, rfd4_registered, result=short, inputs=_inputs())
+    text = _page_text(html)
+    assert "6 / 8" in text and "6 / 6" not in text, text[:400]
+
+    # No root keys left at all.
     html = _render_with_inputs(
         flask_app, rfd4_registered,
         result=_recovered_result(2),
-        inputs={"target_chain": "A", "num_designs": 8,
-                "_progress": {"designs_completed": 2, "designs_total": 8}})
-    assert "2 / 8" in _page_text(html), "the heartbeat snapshot was dropped"
+        inputs=_inputs(_progress={"designs_completed": 2, "designs_total": 8}))
+    assert "2 / 8" in _page_text(html)
 
 
 def _page_text(html: str) -> str:

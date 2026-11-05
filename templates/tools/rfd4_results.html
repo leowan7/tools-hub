@@ -39,15 +39,23 @@
    `designs_total` below fall back to the run's own inputs, as iggm's partial
    does (iggm_results.html:20, :29).
 
-   NOT `requested_designs(job)` for the "Returned N / M" total: it resolves the
-   form field through shared/compute_campaigns.py::_DESIGN_PARAM_KEY (:93-104),
-   which has no rfd4 entry, so it returns None for every rfd4 job and
-   components/results_shell.html:49 drops the line. The run's own
-   `designs_total` is the authority (run_pipeline.py:1290), with the heartbeat
-   snapshot behind it for a result that carries no root keys
-   (run_pipeline.py:1188 sends `num_designs` at the preparing stage, which
-   webhooks/modal.py:590 writes to inputs._progress, which
-   shared/jobs.py::recovered_total reads).
+   THE "Returned N / M" TOTAL IS THE SUBMITTED COUNT, NOT A MEASURED ONE.
+   components/results_shell.html:45-46 says M is "what the run was asked for",
+   and the only authority for that is the run's own inputs: the adapter stamps
+   the accepted count twice, as `nsamples` (tools/rfd4/__init__.py:200) and as
+   `parameters.n_designs_total` (:209), the latter being the key the wallet
+   scales the charge on. The result root's `designs_total` is NOT that number —
+   run_pipeline.py:1290 writes it as `len(design_cifs)`, the count the
+   generator actually produced, and the heartbeat snapshot behind it ends the
+   run holding the same measured figure (run_pipeline.py:1064,
+   `planned_total if mid_run else len(paths)`). Using either would render
+   "6 / 6" for a run billed for eight that generated six, so they sit BEHIND
+   the inputs here and only cover a job whose inputs predate those stamps.
+
+   NOT `requested_designs(job)` either: it resolves the form field through
+   shared/compute_campaigns.py::_DESIGN_PARAM_KEY (:93-104), which has no rfd4
+   entry, so it returns None for every rfd4 job and
+   components/results_shell.html:49 drops the line.
 
    The inputs fallback names the SAME chain the container designed against, or
    the run failed: tools/rfd4/__init__.py:148-158 refuses an empty or
@@ -75,7 +83,8 @@
 
 {% set target_chain     = output.get('target_chain') or job_inputs.get('target_chain') %}
 {% set target_length    = output.get('target_length') %}
-{% set designs_total    = output.get('designs_total') or (recovered_total(job, recovered) if recovered else none) %}
+{% set submitted        = (job_inputs.get('parameters') or {}).get('n_designs_total') or job_inputs.get('nsamples') %}
+{% set designs_total    = submitted or output.get('designs_total') or (recovered_total(job, recovered) if recovered else none) %}
 {% set designs_returned = (recovered or candidates) | length %}
 {% if target_chain %}
   <p class="subtitle" style="margin-top:1rem;">
