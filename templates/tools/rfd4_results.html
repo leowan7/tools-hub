@@ -34,7 +34,7 @@
 {% set recovered   = display_rows(output.get('candidates')) %}
 {# A recovered, wallet-stopped or cancel-kept result replaces the whole result
    dict and carries NO root keys of this tool's own — only `candidates`,
-   `candidate_count` and a flag (shared/job_recovery.py:482-487;
+   `candidate_count` and a flag (shared/job_recovery.py:480-484;
    shared/jobs.py:2093-2100 and :2299-2303). So `target_chain` and
    `designs_total` below fall back to the run's own inputs, as iggm's partial
    does (iggm_results.html:20, :29).
@@ -52,8 +52,9 @@
    The inputs fallback names the SAME chain the container designed against, or
    the run failed: tools/rfd4/__init__.py:148-158 refuses an empty or
    multi-chain request, so `inputs.target_chain` is always one concrete id, and
-   run_pipeline.py:658-666 `_fail`s a non-empty request that is not a polymer
-   chain of the upload or that leaves other polymer chains standing. There is
+   run_pipeline.py:657-674 `_fail`s a request that is not a polymer chain of
+   the upload (:661-666) or that leaves other polymer chains standing
+   (:667-674). There is
    no path on which it returns a chain other than the one requested. #}
 {% set job_inputs  = job.inputs or {} %}
 {% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
@@ -107,7 +108,7 @@
     requested=designs_total,
     returned=designs_returned) %}
   <p class="subtitle">
-    This run returned no designs. Contact us with this job's id and we can tell
-    you why — the run's full output tree is kept on our side.
+    This run returned no designs. Contact us with this job's id and we can
+    look into why.
   </p>
 {% endcall %}

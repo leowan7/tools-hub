@@ -137,7 +137,7 @@ def _recovered_result(rows: int) -> dict:
     """What a recovered / wallet-stopped / cancel-kept rfd4 run stores.
 
     Every one of those writers replaces the result wholesale and keeps no root
-    key of this tool's own: shared/job_recovery.py:482-487,
+    key of this tool's own: shared/job_recovery.py:480-484,
     shared/jobs.py:2093-2100 and shared/jobs.py:2299-2303.
     """
     designs = _example()["designs"][:rows]
@@ -155,7 +155,11 @@ def test_a_recovered_run_still_says_which_chain_is_the_binder(
     """The chain line is the page's ONLY statement of which chain to keep, and
     test_the_designed_chain_is_not_the_longest_chain proves length cannot
     substitute for it. A recovered result carries no ``target_chain``, so it
-    comes from the run's inputs instead."""
+    comes from the run's inputs instead.
+
+    Mutation-proven 2026-11-04: with the partial's expression reverted to
+    ``output.get('target_chain')`` alone, this test FAILS; restored, it passes.
+    """
     flask_app, _ = tools_app
     html = _render_with_inputs(
         flask_app, rfd4_registered,
@@ -170,7 +174,12 @@ def test_a_recovered_run_still_says_which_chain_is_the_binder(
 def test_a_lossy_run_says_how_many_designs_are_missing(tools_app, rfd4_registered):
     """``requested_designs`` returns None for rfd4 (no entry in
     _DESIGN_PARAM_KEY), so the total has to come from the result root, or from
-    the heartbeat snapshot when the result has no root keys left."""
+    the heartbeat snapshot when the result has no root keys left.
+
+    Mutation-proven 2026-11-04: with the partial's expression reverted to
+    ``requested=requested_designs(job)``, this test FAILS on both assertions;
+    restored, it passes.
+    """
     flask_app, _ = tools_app
 
     full = _example() | {"designs": _example()["designs"][:5]}
