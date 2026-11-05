@@ -376,8 +376,85 @@ class TestGenuinelyDeadJobStillTimesOut:
         stored = store.rows[row["id"]]
         assert stored["status"] == "timeout"
         # The crash verdict vetoes the keep, so nothing is resurrected and
-        # the class stays the refunded one (the ``exit_verdict != "failed"``
-        # gate in shared/jobs.py::timeout_stuck_job).
+        # the class stays the refunded one (the ``exit_verdict not in
+        # ("failed", "failed_unconfirmed")`` gate in
+        # shared/jobs.py::timeout_stuck_job).
+        assert stored["failure_class"] == "no_progress_timeout"
+        release.assert_called_once()
+        settle.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "poll",
+        [
+            pytest.param(
+                {
+                    "status": "error",
+                    "result": None,
+                    "error": "CUDA out of memory",
+                },
+                id="modal-reported-error",
+            ),
+            pytest.param(
+                {
+                    "status": "failed",
+                    "result": None,
+                    "exit_code": None,
+                    "error": "exit code not reported",
+                },
+                id="failed-without-exit-code",
+            ),
+        ],
+    )
+    def test_an_unconfirmed_modal_failure_is_not_billed(
+        self, patched_service_client, store, poll
+    ):
+        # The two failure shapes the test above does NOT cover. A nonzero
+        # exit code is the only one ``_probe_modal`` calls a crash; these
+        # two are failures Modal reported that it could not pin to an exit
+        # code, and billing them off rebuilt Storage designs would be as
+        # wrong as billing the crash:
+        #
+        #   * status="error" is what ``ModalClient.poll`` returns when
+        #     ``FunctionCall.get`` raised -- which includes the pipeline
+        #     function raising after it had already streamed designs, AND
+        #     our own ``ModalCallTimeout`` on a wedged poll channel, which
+        #     that method re-raises into its outer ``except Exception``
+        #     (gpu/modal_client.py::ModalClient.poll). The second is a
+        #     stall on our side, which must never become a bill.
+        #   * status="failed" with no integer exit code is a reported
+        #     failure with the evidence missing, not an absence of failure.
+        #
+        # Both must land where the confirmed crash lands: timed out,
+        # refunded, nothing resurrected.
+        partials = [
+            {"rank": 1, "pdb_key": "design_001.cif", "iptm": 0.7},
+            {"rank": 2, "pdb_key": "design_002.cif", "iptm": 0.6},
+        ]
+        row = _row(
+            status="running",
+            gpu_seconds_used=3000,
+            modal_function_call_id="fc-real-unconfirmed",
+            inputs={
+                "_wallet": {"hold_tx_id": "hold-1", "gpu_class": "a100-40gb"},
+                "_partial_candidates": partials,
+                "_progress": {"designs_completed": 2, "designs_total": 50},
+            },
+        )
+        store.rows[row["id"]] = row
+
+        with patch(
+            "gpu.modal_client.ModalClient.poll", return_value=poll
+        ), patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=["design_001.cif", "design_002.cif"],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
+            outcome = timeout_stuck_job(row["id"])
+
+        assert outcome == "timed_out"
+        stored = store.rows[row["id"]]
+        assert stored["status"] == "timeout"
         assert stored["failure_class"] == "no_progress_timeout"
         release.assert_called_once()
         settle.assert_not_called()

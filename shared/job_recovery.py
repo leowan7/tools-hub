@@ -259,9 +259,20 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
       - ``"failed"``      — the pipeline process exited NONZERO: a genuine
         crash. Partial designs left in Storage must NOT be resurrected as a
         success.
+      - ``"failed_unconfirmed"`` — Modal answered and reported this call as
+        failed or errored, but gave no nonzero exit code to confirm that the
+        pipeline itself crashed. ``ModalClient.poll`` returns
+        ``status="error"`` both when ``FunctionCall.get`` re-raised the
+        remote function's own exception and when our ``ModalCallTimeout``
+        fired on a wedged channel, which it re-raises into its outer
+        ``except Exception`` (gpu/modal_client.py::ModalClient.poll), so this
+        value covers both "the run died" and "we could not get a straight
+        answer". Every branch below treats it exactly as ``"unknown"``; only
+        the money differs, on the safe side — see
+        ``recover_stuck_job_result``'s docstring.
       - ``"unknown"``     — Modal is unreachable, the call is still running,
-        the id is an offline stub, or the exit code was not reported. No
-        ground truth; the caller must find completion evidence elsewhere.
+        or the id is an offline stub. No ground truth; the caller must find
+        completion evidence elsewhere.
     """
     fc_id = getattr(job, "modal_function_call_id", None)
     if not fc_id or str(fc_id).startswith("fc-stub-"):
@@ -300,10 +311,19 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
             return None, "clean_exit"
         if isinstance(exit_code, int) and exit_code != 0:
             return None, "failed"
-        # Failed poll with no exit code (older payload) — inconclusive.
-        return None, "unknown"
+        # Failed poll with no exit code (older payload): a reported failure
+        # with its evidence missing, which is not the same as no failure.
+        return None, "failed_unconfirmed"
 
-    # running / timeout / error / anything else — no ground truth.
+    if status == "error":
+        # ``poll`` could not get a result out of the call at all. See the
+        # "failed_unconfirmed" bullet above for why that is not "unknown".
+        return None, "failed_unconfirmed"
+
+    # running / timeout / anything else — no ground truth. A container that
+    # hit its OWN timeout lands here (status="timeout",
+    # gpu/modal_client.py::ModalClient.poll) and is the one shape that is
+    # unambiguously a time-out rather than a failure.
     return None, "unknown"
 
 
@@ -344,12 +364,14 @@ def recover_stuck_job_result(
     2026-11-04 decision a timed-out run that delivered designs is billed
     (``timeout_with_delivery`` in shared/jobs.py::_BILLED_FAILURE_CLASSES).
     The two reasons for ``None`` below therefore need different money, and
-    only step 2 can tell them apart. Pass a dict as ``verdict_out`` to
-    receive that ground truth under ``"exit_verdict"``: ``"failed"`` is a
-    genuine crash, which must not be billed off designs rebuilt from
-    Storage, and ``timeout_stuck_job`` skips the keep for it
+    only the Modal probe can tell them apart. Pass a dict as ``verdict_out``
+    to receive that ground truth under ``"exit_verdict"``: ``"failed"`` and
+    ``"failed_unconfirmed"`` are both failures Modal reported, which must not
+    be billed off designs rebuilt from Storage, and ``timeout_stuck_job``
+    skips the keep for both
     (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut::
-    test_crashed_pipeline_with_partial_designs_is_not_billed).
+    test_crashed_pipeline_with_partial_designs_is_not_billed and
+    ::test_an_unconfirmed_modal_failure_is_not_billed).
 
     Recovery only fires on positive evidence the run genuinely finished, so a
     run that streamed a few designs and then FAILED (whose FAILED webhook was

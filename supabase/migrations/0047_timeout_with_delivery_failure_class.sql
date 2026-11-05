@@ -9,23 +9,34 @@
 -- settle router branches purely on failure_class
 -- (shared/jobs.py::_settle_wallet_hold_for_completed_job) and the page's
 -- refund flag is set from membership of _REFUNDED_FAILURE_CLASSES
--- (shared/jobs.py::failure_notice, the `refunded =` assignment), so a
+-- (shared/jobs.py::failure_notice, the `refunded =` assignment -- which
+-- also flags a run that recorded no GPU seconds, whatever its class), so a
 -- billed class has to be a class that set does not hold. Hence the billed
 -- case gets its own class rather than a billed row claiming
 -- 'no_progress_timeout'.
 --
 --   timeout_with_delivery -> charge actual GPU consumed (settle_hold /
---                            settle_live_run without refund), exactly as
---                            user_cancelled does. The run hit its time
---                            limit but handed the user real designs; it
---                            is a partial delivery, never a complete one
---                            misfiled, because a run whose work provably
---                            finished is finalised as 'succeeded' first
+--                            settle_live_run without refund): the same
+--                            billed arm user_cancelled takes, though the
+--                            two diverge at zero GPU seconds, where
+--                            user_cancelled has a release_hold fast path
+--                            and this class settles a zero charge instead
+--                            (same money, different ledger row). The run
+--                            hit its time limit but handed the user real
+--                            designs; it is a partial delivery, never a
+--                            complete one misfiled, because a run whose
+--                            work provably finished is finalised as
+--                            'succeeded' first
 --                            (shared/job_recovery.py::recover_stuck_job_result).
 --
 --   no_progress_timeout   -> unchanged: full refund. Still the class for
---                            every timeout that delivered nothing,
---                            including a stall on our own side.
+--                            every timeout that delivered nothing, and
+--                            also for one that delivered something but
+--                            that Modal reported as failed or errored at
+--                            all -- a crash, or a stall on our own side,
+--                            is never billed off designs its own run left
+--                            behind (the exit_verdict gate in
+--                            shared/jobs.py::timeout_stuck_job).
 --
 -- Status stays 'timeout' for both. Only the money differs.
 --

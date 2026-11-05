@@ -1914,18 +1914,25 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         return ""
 
     # Not recoverable. Two different reasons reach here and they differ in
-    # money. A genuine crash -- nonzero pipeline exit, the "Ground-truth
-    # veto" at shared/job_recovery.py::recover_stuck_job_result step 2 --
-    # must NOT be billed off designs rebuilt from Storage: the webhook and
-    # the inline poll classify that same crash to a refunded class, so
-    # keeping and billing it here would make the bill depend on which path
-    # happened to notice the crash. Skip the keep for it and settle exactly
-    # as before
+    # money. A failure Modal itself reported must NOT be billed off designs
+    # rebuilt from Storage -- either a nonzero pipeline exit
+    # ("failed", the "Ground-truth veto" at
+    # shared/job_recovery.py::recover_stuck_job_result step 2) or a failed
+    # or errored poll it could not pin to an exit code
+    # ("failed_unconfirmed", shared/job_recovery.py::_probe_modal). Two
+    # reasons: the webhook and the inline poll classify the same crash to a
+    # refunded class, so keeping and billing it here would make the bill
+    # depend on which path happened to notice the crash; and status="error"
+    # also covers our own ModalCallTimeout on a wedged poll channel
+    # (gpu/modal_client.py::ModalClient.poll), which is a stall on our side
+    # and must never become a bill. Skip the keep for both and settle
+    # exactly as before
     # (tests/test_sweep_stuck_recovery.py::
     # TestGenuinelyDeadJobStillTimesOut::
-    # test_crashed_pipeline_with_partial_designs_is_not_billed).
+    # test_crashed_pipeline_with_partial_designs_is_not_billed,
+    # ::test_an_unconfirmed_modal_failure_is_not_billed).
     #
-    # Otherwise it is a stall with no crash verdict: keep whatever designs
+    # Otherwise it is a stall with no reported failure: keep whatever designs
     # the run had already streamed, and settle LAST, because the keep is
     # what decides between the two timeout classes and the settle routes on
     # the class it reads off the object handed to it (``job.failure_class``
@@ -1939,7 +1946,7 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
-        if verdict.get("exit_verdict") != "failed":
+        if verdict.get("exit_verdict") not in ("failed", "failed_unconfirmed"):
             fresh = _keep_streamed_designs(fresh, status="timeout")
         _settle_wallet_hold_for_completed_job(fresh)
     return "timed_out"
