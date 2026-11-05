@@ -256,6 +256,20 @@
             <input type="number" name="num_designs" id="num_designs" min="1" max="200" {{ pre_value(pre_fill, "num_designs", "8") }}
                    {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            {# The wallet panel scales rfd4 on ``n_designs_total``
+               (shared/wallet_estimates.py TOOL_SPECS["rfd4"]) and builds its
+               estimate request from ``new FormData(form)``
+               (templates/wallet/_partials.html), so a form that posts only
+               ``num_designs`` gives the panel no count and
+               ``_effective_scaling_value`` falls back to the 8-design
+               baseline -- a 200-design run would preview at the price and cap
+               of eight. The hidden field below carries the same number under
+               the name the panel reads, mirrored by the script at the bottom
+               of this form; the empty string is mirrored too, so the panel's
+               own "Enter a number." guard still fires on a cleared box. Same
+               arrangement as templates/tools/af2_form.html and the other
+               n_designs_total-scaled forms. #}
+            <input type="hidden" name="n_designs_total" id="n_designs_total" value="{{ pre_fill.get('num_designs') if pre_fill and pre_fill.get('num_designs') is not none else 8 }}">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
               How many binders to generate. Each is an independent sample and
               comes back as one structure file holding your target chain plus
@@ -350,6 +364,21 @@
         chainPrefixed: false,
       });
     });
+  </script>
+  <script>
+    // Mirror the visible design count onto the hidden ``n_designs_total``
+    // the wallet panel reads. ``input`` rather than ``change`` so the cost
+    // preview tracks typing, and the empty string is copied as-is so the
+    // panel's empty-count guard behaves as it does on every other form.
+    (function () {
+      var visible = document.getElementById('num_designs');
+      var hidden = document.getElementById('n_designs_total');
+      if (!visible || !hidden) return;
+      var sync = function () { hidden.value = visible.value; };
+      visible.addEventListener('input', sync);
+      visible.addEventListener('change', sync);
+      sync();
+    })();
   </script>
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}

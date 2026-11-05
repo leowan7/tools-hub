@@ -43,8 +43,13 @@ PICKER_FORM_TEMPLATES = [
     # registry (registration is step 7A of
     # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8). This list is
     # read off disk by path, so it reaches the template without a registry or
-    # a rendered request -- which is the only guard on the new form until that
-    # step arms the rendered-page ones.
+    # a rendered request. It is not the only such guard -- several modules
+    # rglob the templates tree and so reach this file too
+    # (tests/test_template_endpoints.py, test_no_prerun_numbers_logged_in.py,
+    # test_min_topup_single_source.py, test_hotspot_picker_runtime.py,
+    # test_derived_verdicts.py) -- but it is the only one that asserts
+    # anything about the picker block specifically. The rendered-page guards
+    # arm at 7A.
     REPO_ROOT / "templates" / "tools" / "rfd4_form.html",
 ]
 

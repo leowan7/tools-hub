@@ -29,9 +29,12 @@ suite red WHILE the slug is unregistered and green only once it is.
 rfd4 has no shared/result_columns.py entry and no score-legend row by
 design: nothing in a run of it measures how well a binder holds.
 Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
-that row complete, so registering ahead of them turns the suite red -- 49
-failing test ids when measured on this base, enumerated in the step table of
-the scope document.
+that row complete, so registering ahead of them turns the suite red. The
+scope document's step table records 66 failing ids, measured on step 3's
+branch; re-running the same experiment on this base on 2026-11-05 gave 49,
+because steps 5 and 7 have since landed the two templates that accounted for
+most of the difference. Neither figure is a bound on 7A's own work -- both
+were measured with nothing but the registration applied.
 
 So the slug is unreachable for two independent reasons:
 ``blueprints/tools.py::_require_tool`` 404s a slug ``tools.base.get`` does
@@ -277,9 +280,9 @@ adapter = ToolAdapter(
     # step 5 and templates/tools/rfd4_form.html with step 7 -- but nothing
     # renders either while the adapter is out of the registry, so neither is
     # exercised by a request yet. The form is covered unregistered by the
-    # template-source guards it shares with its siblings
-    # (tests/test_hotspot_picker.py reads it off disk); the rendered-page
-    # guards arm at 7A.
+    # template-source guards that read the templates tree off disk, named in
+    # the comment above rfd4's entry in tests/test_hotspot_picker.py's
+    # PICKER_FORM_TEMPLATES; the rendered-page guards arm at 7A.
     form_template="tools/rfd4_form.html",
     results_partial="tools/rfd4_results.html",
 )

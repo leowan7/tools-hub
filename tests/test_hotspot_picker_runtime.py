@@ -83,6 +83,16 @@ _SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
 # (test_prep_page.py::test_handoff_refuses_hotspot_outside_trim).
 CHAIN_PREFIXED_FORMS = ("rfdiffusion", "pxdesign", "boltzgen", "proteina", "prep")
 BARE_INT_FORMS = ("rfantibody", "bindcraft")
+# Templates that construct a picker but whose slug no route renders, because
+# the adapter is not in the registry yet. Everything below drives a form
+# through its real URL (``_form_page``), so these cannot join the two lists
+# above -- /tools/rfd4 404s at ``blueprints/tools.py::_require_tool`` while
+# the slug is unregistered, which is step 7A of
+# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8. They ARE counted
+# by the completeness scan below, so a new unrendered form is still a
+# decision about ``chainPrefixed`` rather than an accident.
+# rfd4 passes chainPrefixed: false, so it moves into BARE_INT_FORMS at 7A.
+UNREGISTERED_PICKER_FORMS = ("rfd4",)
 ALL_PICKER_FORMS = CHAIN_PREFIXED_FORMS + BARE_INT_FORMS
 
 needs_node = pytest.mark.skipif(
@@ -183,10 +193,12 @@ def test_every_picker_call_site_is_covered_by_this_file():
         for p in templates.rglob("*.html")
         if "initHotspotPicker(" in p.read_text(encoding="utf-8")
     }
-    assert call_sites == set(ALL_PICKER_FORMS), (
+    listed = set(ALL_PICKER_FORMS) | set(UNREGISTERED_PICKER_FORMS)
+    assert call_sites == listed, (
         f"picker call sites {sorted(call_sites)} do not match the forms this "
-        f"file drives {sorted(ALL_PICKER_FORMS)} — a new form must be added to "
-        f"CHAIN_PREFIXED_FORMS or BARE_INT_FORMS with a reason"
+        f"file lists {sorted(listed)} — a new form must be added to "
+        f"CHAIN_PREFIXED_FORMS, BARE_INT_FORMS or UNREGISTERED_PICKER_FORMS "
+        f"with a reason"
     )
 
 

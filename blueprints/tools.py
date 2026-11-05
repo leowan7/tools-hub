@@ -742,6 +742,14 @@ def _related_tool_cards(slug: str) -> list[dict]:
 # (stored key, form field, label shown when the stored key is absent).
 # iggm: tools/iggm/__init__.py:334-337 vs templates/tools/iggm_form.html:93,116,122.
 _CLONE_RENAMES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    # rfd4's validate() stores the design count as ``nsamples`` -- the key
+    # run_pipeline.parse_num_designs reads (tools/rfd4/__init__.py:208) --
+    # while templates/tools/rfd4_form.html asks for it as ``num_designs``.
+    # Without this row a clone of a 2-design pilot run refills the box with
+    # the form's hard-coded 8 and _clone_missing reports nothing.
+    "rfd4": (
+        ("nsamples", "num_designs", "Number of designs"),
+    ),
     "iggm": (
         ("antibody_fasta", "fasta", "Antibody FASTA"),
         ("antigen_chain", "target_chain", "Antigen chain"),
