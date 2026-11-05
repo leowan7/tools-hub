@@ -259,19 +259,27 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
       - ``"failed"``      — the pipeline process exited NONZERO: a genuine
         crash. Partial designs left in Storage must NOT be resurrected as a
         success.
-      - ``"failed_unconfirmed"`` — Modal answered and reported this call as
-        failed or errored, but gave no nonzero exit code to confirm that the
-        pipeline itself crashed. ``ModalClient.poll`` returns
-        ``status="error"`` both when ``FunctionCall.get`` re-raised the
-        remote function's own exception and when our ``ModalCallTimeout``
-        fired on a wedged channel, which it re-raises into its outer
-        ``except Exception`` (gpu/modal_client.py::ModalClient.poll), so this
-        value covers both "the run died" and "we could not get a straight
-        answer". Every branch below treats it exactly as ``"unknown"``; only
-        the money differs, on the safe side — see
+      - ``"failed_unconfirmed"`` — ``poll`` returned a dict but no usable
+        answer for this call, and gave no nonzero exit code to confirm that
+        the pipeline itself crashed. Two shapes reach it: ``status="failed"``
+        with no integer exit code, and ``status="error"``, which
+        ``ModalClient.poll`` returns from its outer ``except Exception``
+        (gpu/modal_client.py::ModalClient.poll) both when
+        ``FunctionCall.get`` re-raised the remote function's own exception
+        AND when our own ``ModalCallTimeout`` fired on a wedged channel,
+        which that method deliberately re-raises into the same handler. So
+        this value covers "the run died", "Modal reported a failure it could
+        not pin down" and "our poll channel wedged" alike — it does NOT mean
+        Modal necessarily answered. Every branch below treats it exactly as
+        ``"unknown"``; only the money differs, on the safe side — see
         ``recover_stuck_job_result``'s docstring.
-      - ``"unknown"``     — Modal is unreachable, the call is still running,
-        or the id is an offline stub. No ground truth; the caller must find
+      - ``"unknown"``     — no answer was even attempted or parsed: the id is
+        an offline stub, the ``poll`` call itself raised, the payload was not
+        a dict, the call is still running, or the container hit its OWN
+        timeout (``status="timeout"``). Note that an unreachable Modal splits
+        across both values — it lands here when ``poll`` raises, and in
+        ``"failed_unconfirmed"`` when ``poll`` swallows the fault and reports
+        ``status="error"``. No ground truth either way; the caller must find
         completion evidence elsewhere.
     """
     fc_id = getattr(job, "modal_function_call_id", None)
