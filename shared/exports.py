@@ -672,6 +672,10 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
         # is present but will not decode passes here and spends a slot on a
         # call that then makes no request; its note, "structure unavailable",
         # is true either way.
+        # No fetcher: the stored chains above are the only source, and every
+        # note below describes a read this call will not make.
+        if fetch_bytes is None:
+            continue
         if not _would_read(cand, key, default_job_id):
             row[_SEQ_NOTE] = ("structure unavailable" if key["pdb_key"]
                               else "no structure stored")
@@ -707,6 +711,14 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
             row[f"{_SEQ_CHAIN_PREFIX}{cid.strip()}"] = seq
 
 
+def row_chain_sequences(row) -> list[dict]:
+    """``[{"id": chain_id, "seq": sequence}, ...]`` for the chain columns
+    :func:`candidate_table` wrote on ``row``, in column order. For a reader
+    that renders one row at a time rather than a CSV header."""
+    return [{"id": k[len(_SEQ_CHAIN_PREFIX):], "seq": row[k]}
+            for k in sorted(row) if k.startswith(_SEQ_CHAIN_PREFIX)]
+
+
 def sequence_columns(rows: list[dict]) -> list[str]:
     """The sequence column names for ``rows``, in the order the CSV writes
     them: the stored ``sequence`` when any row has one, then one column per
@@ -728,14 +740,19 @@ def candidate_table(
     given, each carrying a ``sequence`` key (``""`` when it stores none). Also
     read by ``blueprints.admin._shortlist_tables`` for the lab-project page.
 
+    A row that stores no sequence but carries :data:`STORED_CHAINS` gets one
+    ``sequence_chain<ID>`` key per stored chain whether or not
+    ``fetch_bytes`` is given, because those chains are on the row already
+    and cost no read (:func:`_add_chain_columns`).
+
     ``fetch_bytes`` (with ``default_job_id``) additionally reads the structure
-    of a row that stores no sequence and writes one ``sequence_chain<ID>``
-    key per chain the extractor returns. Not every such row is read: one that
+    of a row that has neither, and writes the same keys from what the
+    extractor returns. Not every such row is read: one that
     references no structure is settled without a read, and one past
     ``_MAX_STRUCTURE_READS`` is noted instead of read. A row left with no
-    chain columns, read or not, carries a ``sequence_note`` saying why
-    (:func:`_add_chain_columns`). Omitted, no structure is read and no such
-    key is written, which is what the admin caller relies on."""
+    chain columns, read or not, carries a ``sequence_note`` saying why.
+    Omitted, no structure is read and a row with no stored chains keeps an
+    empty ``sequence`` and no note."""
     cands = _dict_candidates(candidates)
     keys, leading = _export_keys(cands)
     # "sequence" passed as a leading name so a ``scores["sequence"]`` cannot
@@ -786,8 +803,7 @@ def candidate_table(
             row[col] = scaled if scaled is None else round(scaled, 2)
         row["sequence"] = _candidate_sequence(cand)
         rows.append(row)
-    if fetch_bytes is not None:
-        _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id)
+    _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id)
     return leading, all_score_keys, rows
 
 
@@ -800,9 +816,10 @@ def candidates_to_csv(
 
     Sequences last so the columns before them keep their positions.
 
-    Without ``fetch_bytes`` the stored ``sequence`` field is the only source,
-    so a row whose sequence lives in its structure file gets an empty cell.
-    That is what the admin lab-project PAGE passes
+    Without ``fetch_bytes`` the sources are the stored ``sequence`` field and
+    the row's own :data:`STORED_CHAINS`, so a row that has neither -- its
+    sequence only in a structure file this call will not read -- gets an
+    empty cell. That is what the admin lab-project PAGE passes
     (``admin._shortlist_tables``).
 
     The job, campaign and target CSV routes pass a fetcher

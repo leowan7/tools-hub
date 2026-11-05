@@ -305,7 +305,9 @@ def _shortlist_tables(by_job: dict, get_job) -> list:  # noqa: ANN001
     customer's page, which can differ when the page re-sorts.
     """
     from collections.abc import Mapping  # noqa: PLC0415
-    from shared.exports import _basename, candidate_table  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        _basename, candidate_table, row_chain_sequences,
+    )
     from shared.jobs import candidate_records, page_ordered_records  # noqa: PLC0415
 
     tables = []
@@ -332,6 +334,9 @@ def _shortlist_tables(by_job: dict, get_job) -> list:  # noqa: ANN001
                 else _basename(row["pdb_key"], f"design_{n + 1}"),
                 "cells": [row.get(m) for m in metrics],
                 "sequence": row["sequence"],
+                # The chains the row itself stores, which cost no structure
+                # read; empty for a row whose sequence is only in its file.
+                "chains": row_chain_sequences(row),
                 "stored_index": stored_index.get(id(page[n])),
                 "has_structure": bool(row["pdb_key"] or raw.get("pdb_content_b64")),
             }
