@@ -405,10 +405,11 @@ def admin_source_export_csv(campaign_id: str, job_id: str):
             candidates,
             fetch_bytes=_storage_fetcher(job.user_id, "admin_source_export_csv"),
             default_job_id=job_id,
-            # The same argument the user's own CSV route passes, or the two
-            # copies of "the same CSV" diverge -- pinned by
-            # tests/test_admin_shortlisted_designs.py,
-            # test_the_staff_copy_of_a_job_csv_carries_the_same_sequences.
+            # The same argument the user's own CSV route passes, so the two
+            # copies of "the same CSV" do not diverge. UNTESTED: no test calls
+            # this route with a job of an allow-listed tool, so deleting this
+            # line fails nothing -- the test named in the docstring above runs
+            # a boltzgen job, for which target_chain_for_export returns None.
             target_chain=target_chain_for_export(
                 job.tool, job.result or {}, job.inputs or {}),
         )

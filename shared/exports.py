@@ -512,6 +512,19 @@ def target_chain_for_export(
     (``shared/job_recovery.py:480-484``, ``shared/jobs.py:2093-2100``,
     ``:2299-2303``), hence the inputs fallback -- the same two sources, in the
     same order, as ``templates/tools/rfd4_results.html``.
+
+    THE AUTHOR CHAIN ID, NOT THE LABEL ASYM ID. The result root carries both
+    (``target_chain`` = author, ``target_asym_id`` = label,
+    ``run_pipeline.py:1295-1296``) and the contig handed upstream is built from
+    the LABEL one (``build_contig``, ``:922-924``), so the two are easy to
+    confuse; but Biopython's ``MMCIFParser`` keys chains by ``auth_asym_id``,
+    so the author id is what :func:`structure_chain_sequences` reads back off
+    the delivered file and therefore the only one the comparisons in
+    :func:`_add_chain_columns` and :func:`_chain_records` can match.
+    ``tests/test_rfd4_results_and_exports.py``,
+    ``test_the_matching_key_is_the_author_chain_id_not_the_label_asym_id``
+    measures this on a probe CIF whose two ids differ; in an unmodified rfd4
+    design they agree, which is why no other test here can tell them apart.
     """
     if tool not in _TARGET_CHAIN_TOOLS:
         return None
@@ -676,13 +689,17 @@ def _add_chain_columns(
     stripped id differs from it is a designed chain, and when there is exactly
     one such chain its sequence gets the :data:`_DEV_COLUMNS` pair. Exactly
     one, because the pair describes A chain: a row with two designed chains
-    would need a column each, which is the per-chain widening across every
-    tool that was rejected in favour of this argument
-    (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:997). The caller resolves
-    it through :func:`target_chain_for_export`, which is an allow-list of one
-    tool; omitted, no row gets either column and this function behaves exactly
-    as it did before (tests/test_rfd4_results_and_exports.py,
-    ``test_no_target_chain_means_no_developability_columns``).
+    would need a column each, widening every tool's CSV, and this argument is
+    what avoids that. No document in this repository records that decision --
+    it came through the session that commissioned this change, so this
+    sentence is the reason for the shape, not a cite for it. The caller
+    resolves it through :func:`target_chain_for_export`, which is an
+    allow-list of one tool; omitted, the loop writes neither column
+    (``if not target_chain: continue``, below), which
+    tests/test_rfd4_results_and_exports.py,
+    ``test_no_target_chain_means_no_developability_columns`` asserts for an
+    rfd4 CSV -- absence of the two columns, not byte-identity with the
+    pre-change file, which no test here compares against.
 
     A LENGTH RULE WOULD NOT DO INSTEAD. In the committed rung-4 rfd4 run
     (docs/scoping/rung4-probe/gpu_result_20261103T114437.json) design 4's
@@ -1151,15 +1168,17 @@ def candidates_to_fasta(
     ``target_chain``, from :func:`target_chain_for_export`, says WHICH of those
     chains the operator uploaded, and each chain record then carries
     ``[target chain]`` or ``[designed chain]`` in its description. Without it
-    the records are unmarked, which is every tool's behaviour today and the
-    open half of #412 -- the caller has to know the run, and only an
-    allow-listed tool's ``target_chain`` names exactly one chain of the
-    delivered structure (see :func:`target_chain_for_export`). Marked per
-    record, not by the CSV's exactly-one-designed-chain rule
-    (:func:`_add_chain_columns`): a record describes ONE chain, so a structure
-    with two designed chains labels both
-    (tests/test_rfd4_results_and_exports.py,
-    ``test_the_fasta_marks_the_binder_chain``).
+    the records are unmarked, which is every tool's behaviour today -- the
+    caller has to know the run, and only an allow-listed tool's
+    ``target_chain`` names exactly one chain of the delivered structure (see
+    :func:`target_chain_for_export`). Marked per record, not by the CSV's
+    exactly-one-designed-chain rule (:func:`_add_chain_columns`), because a
+    record describes ONE chain; so a structure with two designed chains would
+    label both, which is the shape of :func:`_chain_records` and not something
+    any test here exercises -- the probe rfd4 run has one designed chain per
+    structure. The marked and unmarked forms of that run are both pinned by
+    tests/test_rfd4_results_and_exports.py,
+    ``test_the_fasta_marks_the_binder_chain``.
 
     WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
     ``candidates[0]`` of the list the route hands over -- page order, via

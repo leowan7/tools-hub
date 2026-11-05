@@ -325,8 +325,10 @@ def _chain_seqs(text: str):
 
 def test_no_target_chain_means_no_developability_columns():
     """Cited by shared/exports.py::_add_chain_columns. Every other tool's
-    export passes no target chain, so its CSV must be byte-identical to what
-    it was before the pair existed -- here, the same call minus the argument."""
+    export passes no target chain, so the pair must not appear without it.
+    What this asserts is the two columns' ABSENCE and the chain columns'
+    equality across the two calls, not byte-identity with the pre-change
+    file: nothing here holds a copy of that file to compare against."""
     without = _csv_of()
     assert without, "no rows, so the comparison below proves nothing"
     for row in without:
@@ -377,3 +379,75 @@ def test_the_fasta_marks_the_binder_chain():
     # Same records, same order, same sequences -- only the markers differ.
     assert [ln for ln in plain.splitlines() if not ln.startswith(">")] == \
            [ln for ln in marked.splitlines() if not ln.startswith(">")]
+def _auth_relabelled_cifs() -> dict[str, str]:
+    """The probe CIFs with ``auth_asym_id`` A/B rewritten to H/L and
+    ``label_asym_id`` left alone, so the two ids DIFFER.
+
+    What the real probe cannot show: in it the two ids agree (target A, binder
+    B both ways), the degenerate case. RCSB and most cropping tools reassign
+    label_asym_id from A while keeping the author letters, so a CIF upload can
+    reach rfd4 with auth != label; the pipeline stores both
+    (``target_chain`` = author, ``target_asym_id`` = label,
+    tools/rfd4/run_pipeline.py:1295-1296) and the export has to match on the
+    one the delivered file reads back as.
+    """
+    out = {}
+    for stem, text in _probe_cifs().items():
+        head = [ln.strip() for ln in text.splitlines()
+                if ln.strip().startswith("_atom_site.")]
+        ia, il = (head.index("_atom_site.auth_asym_id"),
+                  head.index("_atom_site.label_asym_id"))
+        assert ia != il, stem
+        lines = []
+        for line in text.splitlines():
+            if line.startswith(("ATOM ", "HETATM")):
+                fields = line.split()
+                fields[ia] = {"A": "H", "B": "L"}.get(fields[ia], fields[ia])
+                line = " ".join(fields)
+            lines.append(line)
+        out[stem] = "\n".join(lines) + "\n"
+    return out
+
+
+def test_the_matching_key_is_the_author_chain_id_not_the_label_asym_id():
+    """``target_chain`` is the AUTHOR id, and that is the id this export must
+    match on, because Biopython's MMCIFParser keys chains by ``auth_asym_id``
+    (measured here, not assumed: the relabelled file reads back as H/L while
+    its label_asym_id is still A/B).
+
+    Pins the choice against the plausible-looking swap to ``target_asym_id``
+    (the label id, also on the result root): under that swap the author letter
+    would match no delivered chain, two chains would look designed, and the
+    CSV would silently lose the pair -- the ``len(designed) != 1`` branch of
+    shared/exports.py::_add_chain_columns. The other developability tests here
+    pass ``target_chain="A"`` against a probe whose two ids agree, so they
+    cannot tell the two apart and this one is the only check that can.
+    """
+    from shared.exports import candidates_to_csv, structure_chain_sequences
+    from shared.jobs import page_ordered_records
+
+    cifs = _auth_relabelled_cifs()
+    read_back = {stem: dict(structure_chain_sequences(t.encode("utf-8")) or [])
+                 for stem, t in cifs.items()}
+    assert all(set(c) == {"H", "L"} for c in read_back.values()), read_back
+
+    def fetch(job_id: str, key: str) -> bytes | None:
+        text = cifs.get(Path(key).stem.split("_", 1)[1])
+        return text.encode("utf-8") if text else None
+
+    def rows_for(target_chain: str) -> list[dict]:
+        body = candidates_to_csv(
+            page_ordered_records("rfd4", _example()), fetch_bytes=fetch,
+            default_job_id=JOB_ID, target_chain=target_chain)
+        return list(csv.DictReader(io.StringIO(body)))
+
+    author = rows_for("H")
+    assert len(author) == 8
+    for row in author:
+        stem = Path(row["pdb_key"]).stem.split("_", 1)[1]
+        want = _protparam(read_back[stem]["L"])
+        assert (float(row["gravy"]), float(row["instability_index"])) == want, stem
+
+    # The label id names no chain of the delivered file, so nothing is scored.
+    for row in rows_for("A"):
+        assert "gravy" not in row and "instability_index" not in row, row
