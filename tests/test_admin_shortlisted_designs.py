@@ -236,6 +236,47 @@ def test_the_staff_copy_of_a_job_csv_carries_the_same_sequences(client, monkeypa
         ("MKWMKW", "MKC"), ("MKWMKW", "WCA")]
     assert seen == [("u-1", _JID, "d0.pdb"), ("u-1", _JID, "d1.pdb")]
 
+def _boltzgen_stored_result() -> dict:
+    """The shipped boltzgen example result as a terminal write stores it.
+
+    ``shared.jobs._slim_result_for_persist`` is the write path
+    (``complete_job``); it reads the chains of the one row carrying an inline
+    structure onto that row (shared/jobs.py:2388). So the first candidate is a
+    REAL stored row whose chain sequences are on the row; the rest reference a
+    ``designs/*.cif`` the panel does not read."""
+    import json
+    from pathlib import Path
+    from shared.jobs import _slim_result_for_persist
+    raw = json.loads(
+        (Path(__file__).resolve().parents[1]
+         / "tools" / "boltzgen" / "example" / "result.json").read_text(
+            encoding="utf-8"))
+    return _slim_result_for_persist(raw)
+
+
+def test_a_design_whose_chains_are_stored_on_the_row_shows_them(client):
+    """The panel reads no structures, but a row that already carries its
+    chains needs no read. Blank before: shared.exports.candidate_table only
+    consulted them when it was given a fetcher, which this caller does not
+    pass (blueprints/admin.py _shortlist_tables)."""
+    from shared.exports import stored_chains
+    result = _boltzgen_stored_result()
+    stored = stored_chains(result["candidates"][0])
+    assert stored, "fixture no longer stores chains on its first row"
+    job = SimpleNamespace(id=_JID, tool="boltzgen", user_id="u-1",
+                          result=result)
+    html = _get(client, _campaign(candidate_indices=[0, 1]),
+                {_JID: job}).get_data(as_text=True)
+    picked, _others = _tables(html)
+    row = _row(html, picked[0])
+    for cid, seq in stored:
+        assert seq in row, (cid, row)
+    assert "in the structure file" not in row
+    # The sibling row stores no chains, and its sequence is in a file this
+    # page does not read, so it still says where that is.
+    assert "in the structure file" in _row(html, picked[1])
+
+
 def test_a_structure_only_design_points_at_its_structure_not_a_dash(client):
     """The panel reads no structures (blueprints/admin.py _shortlist_tables),
     so a design whose sequence is only in its file says where it is. Not the
