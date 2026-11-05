@@ -324,9 +324,10 @@ Neither was run. Both need Leo's per-job approval.
 ## 9. Also found, not fixed here — closed later by #457
 
 **RESOLVED 2026-10-24 by `2826fddf`, "state the size limits preflight really
-enforces on chooser cards" (#457). The two paragraphs below describe the gap as
-it stood on 2026-09-30 and are kept as the record of it; they are no longer a
-description of the shipped code.**
+enforces on chooser cards" (#457). The first paragraph below ("As found")
+describes the gap as it stood on 2026-09-30 and is kept as the record of it;
+it is no longer a description of the shipped code. The second paragraph
+("What closed it") describes the code as shipped.**
 
 As found: `shared/tool_chooser.py` had no target-size dimension at all — it
 recommended by task. `recommend(have, shape, chemistry)`
