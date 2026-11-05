@@ -803,7 +803,7 @@ def _add_chain_columns(
         # call that then makes no request; its note, "structure unavailable",
         # is true either way.
         # No fetcher: the stored chains above are the only source, and the
-        # three notes this skips each describe a read this call will not make.
+        # three notes this skips are each decided only on the read path.
         if fetch_bytes is None:
             continue
         if not _would_read(cand, key, default_job_id):
