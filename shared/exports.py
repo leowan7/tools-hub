@@ -503,9 +503,13 @@ def target_chain_for_export(
     :func:`_add_chain_columns`). So this is an allow-list of one.
 
     For rfd4 the key is a single concrete chain id of the delivered structure
-    or the run has no result at all: the adapter refuses an empty or
-    multi-chain request and stores one id (``tools/rfd4/__init__.py:148-158``,
-    ``:189``), and ``run_pipeline.py::resolve_target_chain`` (:643) either
+    or the run has no result at all: the adapter refuses a multi-chain request
+    and defaults a blank field to ``"A"``, so it stores exactly one id
+    (``tools/rfd4/__init__.py:148-158``, ``:189``; :148 is
+    ``parse_target_chains(form.get("target_chain") or "A")``, so the
+    "Target chain is required" refusal at :149-150 fires only on a field that
+    parses to nothing, such as separators alone), and
+    ``run_pipeline.py::resolve_target_chain`` (:643) either
     returns exactly that chain or ``_fail``s the run (:657-674). The pipeline
     copies it to the result root (``run_pipeline.py:1286-1303``); a recovered,
     wallet-stopped or cancel-kept result keeps no root key of the tool's own
@@ -515,7 +519,7 @@ def target_chain_for_export(
 
     THE AUTHOR CHAIN ID, NOT THE LABEL ASYM ID. The result root carries both
     (``target_chain`` = author, ``target_asym_id`` = label,
-    ``run_pipeline.py:1295-1296``) and the contig handed upstream is built from
+    ``run_pipeline.py:1294-1296``) and the contig handed upstream is built from
     the LABEL one (``build_contig``, ``:922-924``), so the two are easy to
     confuse; but Biopython's ``MMCIFParser`` keys chains by ``auth_asym_id``,
     so the author id is what :func:`structure_chain_sequences` reads back off

@@ -388,7 +388,7 @@ def _auth_relabelled_cifs() -> dict[str, str]:
     label_asym_id from A while keeping the author letters, so a CIF upload can
     reach rfd4 with auth != label; the pipeline stores both
     (``target_chain`` = author, ``target_asym_id`` = label,
-    tools/rfd4/run_pipeline.py:1295-1296) and the export has to match on the
+    tools/rfd4/run_pipeline.py:1294-1296) and the export has to match on the
     one the delivered file reads back as.
     """
     out = {}

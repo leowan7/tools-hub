@@ -410,6 +410,8 @@ def admin_source_export_csv(campaign_id: str, job_id: str):
             # this route with a job of an allow-listed tool, so deleting this
             # line fails nothing -- the test named in the docstring above runs
             # a boltzgen job, for which target_chain_for_export returns None.
+            # Mutation-proven, not assumed: with these two lines deleted,
+            # tests/test_admin_shortlisted_designs.py is 14 passed.
             target_chain=target_chain_for_export(
                 job.tool, job.result or {}, job.inputs or {}),
         )

@@ -58,8 +58,9 @@
    components/results_shell.html:49 drops the line.
 
    The inputs fallback names the SAME chain the container designed against, or
-   the run failed: tools/rfd4/__init__.py:148-158 refuses an empty or
-   multi-chain request, so `inputs.target_chain` is always one concrete id, and
+   the run failed: tools/rfd4/__init__.py:148-158 refuses a multi-chain
+   request and defaults a blank field to "A" (:148), so
+   `inputs.target_chain` is always one concrete id, and
    run_pipeline.py:657-674 `_fail`s a request that is not a polymer chain of
    the upload (:661-666) or that leaves other polymer chains standing
    (:667-674). There is
