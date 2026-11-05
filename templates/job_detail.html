@@ -185,7 +185,9 @@
       <div id="status-progress" style="margin-bottom: 1rem;">
         {% if job.status in ('pending', 'running') %}
           <p class="subtitle">
-            <span id="stage-text">Waiting for pipeline to start...</span>
+            {# The first poll lands ~5 s after render, so this placeholder is
+               what a reload of a RUNNING job shows until then. #}
+            <span id="stage-text">{% if job.status == 'running' %}Running...{% else %}Waiting for pipeline to start...{% endif %}</span>
             <span id="progress-text" style="margin-left: 1rem;"></span>
           </p>
           <div style="background: var(--bg-elevated); border-radius: var(--radius-sm); height: 6px; overflow: hidden; max-width: 420px;">
@@ -269,7 +271,7 @@
             </p>
           {% else %}
             <p class="subtitle" style="color: var(--text-secondary);">
-              Cancelled before the first heartbeat. Full hold returned to your wallet.
+              Cancelled with no GPU time recorded. Full hold returned to your wallet.
             </p>
           {% endif %}
         {% endif %}

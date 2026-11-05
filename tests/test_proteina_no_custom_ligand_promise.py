@@ -117,12 +117,16 @@ _REVIEWED = {
         "variant; the ligand and motif variants run curated tasks "
         "(their tasks resolve from separate upstream registries)."
     ),
+    # Reviewed again 2026-11-05: ", force-field energy where applicable" was
+    # dropped from this surface because it negated the sentence's own last
+    # clause. No shard uses a force field -- tools/proteina/meta.py:157-162
+    # records that, citing Dockerfile.modal:229-231. The molecule vocabulary
+    # this test matches on ("ligand") is unchanged by the edit.
     (
-        "Ranked designs with reward scores (AF2 pLDDT / ipTM for "
-        "protein, RF3 score for ligand / motif, force-field energy "
-        "where applicable), a self-consistency re-fold RMSD, and "
-        "downloadable structures. The ligand and motif variants "
-        "score on RF3 only."
+        "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
+        "RF3 score for ligand / motif), a self-consistency re-fold RMSD, "
+        "and downloadable structures. The "
+        "ligand and motif variants score on RF3 only."
     ),
     (
         "RoseTTAFold3 via RosettaCommons foundry (BSD) — ligand + "

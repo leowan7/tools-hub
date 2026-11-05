@@ -61,9 +61,7 @@ about: dict = {
         "result binds your target. The same machinery does two jobs — "
         "small de novo binders, and a paired heavy + light scFv (a "
         "single-chain antibody fragment) with all six binding loops "
-        "designed together, which no other tool here does. Designs from "
-        "this method have been taken to the bench against PDGFRB, EGFR, "
-        "PD-L1, CD45 and CTLA4, reaching nanomolar affinity. "
+        "designed together, which no other tool here does. "
         "ESMFold2 design, Candido et al., bioRxiv 2026, built on "
         "the ESMC protein language model."
     ),
