@@ -32,6 +32,30 @@
    under `candidates`, not this tool's native `designs` — the af2 partial's note
    gives the full reason. Those rows are already candidate-shaped. #}
 {% set recovered   = display_rows(output.get('candidates')) %}
+{# A recovered, wallet-stopped or cancel-kept result replaces the whole result
+   dict and carries NO root keys of this tool's own — only `candidates`,
+   `candidate_count` and a flag (shared/job_recovery.py:482-487;
+   shared/jobs.py:2093-2100 and :2299-2303). So `target_chain` and
+   `designs_total` below fall back to the run's own inputs, as iggm's partial
+   does (iggm_results.html:20, :29).
+
+   NOT `requested_designs(job)` for the "Returned N / M" total: it resolves the
+   form field through shared/compute_campaigns.py::_DESIGN_PARAM_KEY (:93-104),
+   which has no rfd4 entry, so it returns None for every rfd4 job and
+   components/results_shell.html:49 drops the line. The run's own
+   `designs_total` is the authority (run_pipeline.py:1290), with the heartbeat
+   snapshot behind it for a result that carries no root keys
+   (run_pipeline.py:1188 sends `num_designs` at the preparing stage, which
+   webhooks/modal.py:590 writes to inputs._progress, which
+   shared/jobs.py::recovered_total reads).
+
+   The inputs fallback names the SAME chain the container designed against, or
+   the run failed: tools/rfd4/__init__.py:148-158 refuses an empty or
+   multi-chain request, so `inputs.target_chain` is always one concrete id, and
+   run_pipeline.py:658-666 `_fail`s a non-empty request that is not a polymer
+   chain of the upload or that leaves other polymer chains standing. There is
+   no path on which it returns a chain other than the one requested. #}
+{% set job_inputs  = job.inputs or {} %}
 {% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
 {% set is_example  = (job.id == 'example') %}
 
@@ -48,11 +72,14 @@
 {% set candidates = recovered or candidates %}
 {% set columns = recovered_columns(recovered) if recovered else [] %}
 
-{% set target_chain = output.get('target_chain') %}
+{% set target_chain     = output.get('target_chain') or job_inputs.get('target_chain') %}
+{% set target_length    = output.get('target_length') %}
+{% set designs_total    = output.get('designs_total') or (recovered_total(job, recovered) if recovered else none) %}
+{% set designs_returned = (recovered or candidates) | length %}
 {% if target_chain %}
   <p class="subtitle" style="margin-top:1rem;">
-    <strong>Target chain {{ target_chain }}</strong>{% if output.get('target_length') %}
-    ({{ output.get('target_length') }} aa){% endif %} — each downloaded structure
+    <strong>Target chain {{ target_chain }}</strong>{% if target_length %}
+    ({{ target_length }} aa){% endif %} — each downloaded structure
     holds your target plus one de-novo binder chain, and the binder is the chain
     that is not {{ target_chain }}. Do not pick it by length; it can be longer
     than the target.
@@ -77,7 +104,8 @@
     gpu_seconds=output.get('gpu_seconds'),
     send_target_tools=send_target_tools,
     ranked=false,
-    requested=requested_designs(job)) %}
+    requested=designs_total,
+    returned=designs_returned) %}
   <p class="subtitle">
     This run returned no designs. Contact us with this job's id and we can tell
     you why — the run's full output tree is kept on our side.

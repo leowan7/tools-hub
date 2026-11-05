@@ -25,6 +25,7 @@ import json
 import math
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -112,6 +113,84 @@ def test_the_page_offers_the_cif_extension_not_pdb(tools_app, rfd4_registered):
     labels = set(re.findall(
         r'class="btn-secondary cand-pdb-download"[^>]*>\.(\w+)<', html))
     assert labels == {"cif"}, labels
+
+
+def _render_with_inputs(flask_app, adapter, *, result: dict, inputs: dict) -> str:
+    """``_render_partial`` with the job's ``inputs`` filled in.
+
+    The shared helper stubs ``inputs`` as ``{}`` (tests/test_worked_examples.py:133)
+    and takes no override, and the two assertions below are precisely about the
+    inputs fallbacks, so the stub is rebuilt here rather than widening a helper
+    eleven other tools share. An object, not a dict, because
+    shared/jobs.py::recovered_total reads ``job.inputs`` as an ATTRIBUTE and
+    swallows the AttributeError a dict raises — the stub's shape decides
+    whether this file tests the fallback or a silent zero.
+    """
+    job = SimpleNamespace(id=JOB_ID, status="succeeded", tool="rfd4",
+                          inputs=inputs, result=result)
+    with flask_app.test_request_context("/tools/rfd4"):
+        return flask_app.jinja_env.get_template(adapter.results_partial).render(
+            job=job, example=False, send_target_tools=[])
+
+
+def _recovered_result(rows: int) -> dict:
+    """What a recovered / wallet-stopped / cancel-kept rfd4 run stores.
+
+    Every one of those writers replaces the result wholesale and keeps no root
+    key of this tool's own: shared/job_recovery.py:482-487,
+    shared/jobs.py:2093-2100 and shared/jobs.py:2299-2303.
+    """
+    designs = _example()["designs"][:rows]
+    return {
+        "candidates": [
+            {"rank": d["rank"], "pdb_key": d["pdb_key"], "scores": {}} for d in designs
+        ],
+        "candidate_count": rows,
+        "partial": True,
+    }
+
+
+def test_a_recovered_run_still_says_which_chain_is_the_binder(
+        tools_app, rfd4_registered):
+    """The chain line is the page's ONLY statement of which chain to keep, and
+    test_the_designed_chain_is_not_the_longest_chain proves length cannot
+    substitute for it. A recovered result carries no ``target_chain``, so it
+    comes from the run's inputs instead."""
+    flask_app, _ = tools_app
+    html = _render_with_inputs(
+        flask_app, rfd4_registered,
+        result=_recovered_result(2),
+        inputs={"target_chain": "A", "num_designs": 8,
+                "_progress": {"designs_completed": 2, "designs_total": 8}})
+    text = _page_text(html)
+    assert "Target chain A" in text
+    assert "the chain that is not A" in text
+
+
+def test_a_lossy_run_says_how_many_designs_are_missing(tools_app, rfd4_registered):
+    """``requested_designs`` returns None for rfd4 (no entry in
+    _DESIGN_PARAM_KEY), so the total has to come from the result root, or from
+    the heartbeat snapshot when the result has no root keys left."""
+    flask_app, _ = tools_app
+
+    full = _example() | {"designs": _example()["designs"][:5]}
+    html = _render_with_inputs(
+        flask_app, rfd4_registered, result=full,
+        inputs={"target_chain": "A", "num_designs": 8})
+    assert "5 / 8" in _page_text(html), "root designs_total was dropped"
+
+    html = _render_with_inputs(
+        flask_app, rfd4_registered,
+        result=_recovered_result(2),
+        inputs={"target_chain": "A", "num_designs": 8,
+                "_progress": {"designs_completed": 2, "designs_total": 8}})
+    assert "2 / 8" in _page_text(html), "the heartbeat snapshot was dropped"
+
+
+def _page_text(html: str) -> str:
+    """``html`` with tags and runs of whitespace collapsed, so an assertion on
+    "5 / 8" is not defeated by the markup inside the <strong>."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html))
 
 
 def test_the_cif_export_path_reads_both_chains(tools_app):
