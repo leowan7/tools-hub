@@ -5,7 +5,7 @@ unregistered on purpose — ``tools/rfd4/__init__.py`` builds its adapter and
 never calls ``register``, so ``tools.base.get("rfd4")`` is None and
 ``blueprints/tools.py::_require_tool`` 404s every rfd4 URL. The shared parity
 driver in ``tests/test_export_page_parity.py`` resolves a tool's partial through
-``tools.base.get`` (``tests/test_worked_examples.py:189``), so rfd4 cannot be
+``tools.base.get`` (``tests/test_worked_examples.py:190``), so rfd4 cannot be
 added to its ``TABLE_TOOLS`` tuple without registering the tool. This file
 instead injects the adapter into ``tools.base._REGISTRY`` for the duration of
 one test and reuses that driver's own helpers, so the page-vs-CSV assertion is

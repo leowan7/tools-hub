@@ -8,12 +8,15 @@
    no RMSD: the Boltz-2 scoring leg that would produce them is a separate job
    that does not exist yet (rfd4 has no entry in shared/refold.py::SOURCE_TOOLS).
    So the table is the structure list plus its viewers, and rfd4 is likewise
-   absent from shared/score_legends.py::GATE_COLUMNS (:1527) — with no metric to
-   judge, `judge_design` returns no verdict and the shell's shortfall banner
-   stays silent.
+   absent from shared/score_legends.py::GATE_COLUMNS (:1527): `judge` returns
+   ``Judgement("unjudged", (), ())`` when `gate_columns` is empty
+   (score_legends.py:2321-2323), and the shell's shortfall banner only counts
+   rows whose verdict is ``below`` (components/results_shell.html:88, :93), so
+   it stays silent.
 
-   `ranked=false` for the same reason. The pipeline's rank is completion order
-   within a sweep, not quality (run_pipeline.py:1054-1055).
+   `ranked=false`. The pipeline's ranks are "not quality ranks": they are
+   completion order to within a poll interval, path-sorted within one sweep
+   (run_pipeline.py:1053-1055).
 
    WHICH CHAIN IS THE BINDER. Each downloaded CIF holds two chains: the target
    chain the operator uploaded, named in `target_chain` at the result root, and
@@ -76,7 +79,7 @@
     ranked=false,
     requested=requested_designs(job)) %}
   <p class="subtitle">
-    This run returned no designs. Every sample upstream produced was either
-    incomplete or failed to upload — the run page's raw artifacts record which.
+    This run returned no designs. Contact us with this job's id and we can tell
+    you why — the run's full output tree is kept on our side.
   </p>
 {% endcall %}
