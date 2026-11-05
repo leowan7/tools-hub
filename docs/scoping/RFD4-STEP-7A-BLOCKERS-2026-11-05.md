@@ -198,7 +198,7 @@ change the price (§3).
    live branch at `:588-597`: it gates on `live_start_usd`, then calls
    `open_live_run(user_id, resolved_slug)`, which opens a **$0 anchor the meter
    debits as the run proceeds** (`shared/wallet.py:815`; the mechanism is described
-   at `shared/compute_campaigns.py:2019-2022`, citing
+   at `shared/compute_campaigns.py:2022-2025`, citing
    `supabase/migrations/0045_live_run_debits.sql`). What gets refunded on an
    `unclassified` row is therefore the debited seconds, via
    `settle_live_run(..., refund=True)` (`shared/jobs.py:2738`), not a reserved
