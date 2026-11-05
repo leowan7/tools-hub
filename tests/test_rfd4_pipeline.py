@@ -750,10 +750,11 @@ def test_the_adapter_stamps_the_key_the_wallet_scales_on():
     The test above proves the SPEC scales; it cannot prove anything reaches it,
     because the two shapes that feed it are built elsewhere -- the raw submit
     form (``_wallet_params_from_form`` in shared/wallet_guard.py) and the
-    stored job_spec an adapter writes. tools/rfd4/__init__.py does not exist
-    yet, so the body below is skipped; it starts enforcing the stamp the moment
-    that file lands, which is the point at which a missing one would otherwise
-    price every size as the default eight in silence.
+    stored job_spec an adapter writes. tools/rfd4/__init__.py landed in step
+    3, so the body below runs and reads the stamp out of that file's source;
+    the skip is kept for the case of the file being removed, not because it is
+    expected to fire. A missing stamp would price every size as the default
+    eight in silence.
 
     The six adapters that already stamp this key are listed beside
     ``scaling_param`` in the rfd4 spec.

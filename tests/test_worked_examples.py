@@ -1392,6 +1392,15 @@ class TestExampleNumbersComeFromThePayload:
         # why adding a whole worked example moved the suite count by
         # zero.
         "boltzgen": 4944.0,
+        # 217 s, read off the run artefact this example narrates --
+        # docs/scoping/rung4-probe/gpu_result_20261103T114437.json gives
+        # wall_s 217.4, and tools/rfd4/example/result.json carries it as
+        # runtime_seconds 217, the same key the four predictors above use.
+        # The loop below walks the slugs the registry hands the app, and
+        # rfd4 is not in it yet (registration is step 7A of the scope
+        # document), so this entry will start pinning the $0.38 on that
+        # branch rather than on this one.
+        "rfd4": 217.0,
     }
 
     def test_recorded_cost_is_what_this_tool_would_charge(self, tools_app):

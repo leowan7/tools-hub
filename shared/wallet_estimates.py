@@ -668,8 +668,8 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         gpu_class="A100-80GB",
         # The section-4.3 runtime fit evaluated at 8 designs -- the default
         # section 4.2 proposes, and what the pipeline falls back to
-        # (DEFAULT_NUM_DESIGNS in tools/rfd4/run_pipeline.py); no rfd4 form
-        # exists yet to call it a form default:
+        # (DEFAULT_NUM_DESIGNS in tools/rfd4/run_pipeline.py, and the value
+        # templates/tools/rfd4_form.html pre-fills the count field with):
         # 65 + 12.3 x 8 = 163.4 s
         # (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 4.3). The
         # fit is affine and this field is scaled purely proportionally

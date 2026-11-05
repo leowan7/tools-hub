@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/field_group.html" import field_campaign %}
+{% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script, campaign_submit_btn %}
+{% from "components/form_section.html" import form_section %}
+
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
+
+{% block content %}
+  {# RFD4-Proteina form. Same two-panel layout as the rfdiffusion and
+     rfantibody forms: inputs on the left, the shared About panel on the
+     right, which reads tools/rfd4/meta.py rather than copy kept here.
+     Scoped styles are prefixed .rfd4- so the shared stylesheet is
+     untouched.
+
+     EVERY BOUND BELOW IS THE ADAPTER'S OWN. tools/rfd4/__init__.py sets
+     _BINDER_LEN_MIN 20, _BINDER_LEN_MAX 300, _BINDER_LEN_DEFAULT (60, 120),
+     _DEFAULT_NUM_DESIGNS 8 and _MAX_NUM_DESIGNS 200, and refuses anything
+     outside them in validate(); the min/max attributes here only save the
+     reader a round trip.
+
+     NO CONFIDENCE FIGURE IS PROMISED ANYWHERE ON THIS PAGE, and that is
+     the shape of the tool rather than an omission in the copy: the
+     container writes rank, name and pdb_key per design and nothing else
+     (the header comment of templates/tools/rfd4_results.html carries the
+     citation), rfd4 has no entry in shared/result_columns.py, and the
+     results page says so in its own subtitle. #}
+  <style>
+    .rfd4-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .rfd4-layout { grid-template-columns: 1fr; }
+    }
+    .rfd4-binder-length {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      max-width: 320px;
+      margin-bottom: 0.35rem;
+    }
+    .rfd4-binder-length input[type="number"] {
+      width: 100px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+    }
+    .rfd4-binder-length .sep {
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+    }
+
+    /* Hotspot picker -- shared aesthetic with rfdiffusion / rfantibody /
+       boltzgen / bindcraft / pxdesign. */
+    .hotspot-picker {
+      margin-bottom: 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      overflow: hidden;
+    }
+    .hotspot-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .hotspot-picker-header .label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0;
+    }
+    .hotspot-picker-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+    }
+    .hotspot-picker-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-dim);
+    }
+    .hotspot-viewer {
+      width: 100%;
+      height: 320px;
+      background: var(--bg-deep);
+      position: relative;
+      display: none;
+    }
+    .hotspot-viewer-empty {
+      padding: 1.75rem 1rem;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 0.82rem;
+      font-family: var(--font-body);
+    }
+    .hotspot-viewer-empty code {
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .hotspot-viewer-error {
+      padding: 1rem;
+      color: #f87171;
+      font-size: 0.85rem;
+    }
+  </style>
+
+  {% include "tools/_form_hero.html" %}
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="rfd4-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tools.tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ csrf_input() }}
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+          {# One preset, posted as a hidden input. validate() in
+             tools/rfd4/__init__.py accepts "binder_design" and refuses
+             anything else, so there is nothing for the reader to choose
+             between and no select belongs here. #}
+          <input type="hidden" name="preset" value="binder_design">
+
+          <div id="pilot-fields">
+            {% call form_section("Target", "{target_pdb}, chain {target_chain}, {hotspot_residues#hotspot}", open=true) %}
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   {% if not pdb_source %}required{% endif %}
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the target structure as .pdb, .cif, or .mmcif.
+            </div>
+
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              One chain (<code>A</code>), and one only &mdash; name the chain
+              carrying the face you want gripped.
+              <code>A,B</code> is refused here rather than quietly designing
+              against half of it (tools/rfd4/__init__.py::validate).
+              For a target that only makes sense as two chains together, use
+              Proteina instead.
+            </div>
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   required
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+              Residues the binder should grip, in your file's own numbering.
+              At least one is required: this run conditions the model on the
+              patch you name, and there is nothing to design against without
+              it. Plain numbers, read against the chain you named above
+              (<code>54,56,115</code>). Up to 64.
+              Click residues in the 3D viewer below to toggle them in and out
+              of this list.
+            </div>
+            {% include "tools/_hotspot_scout_hint.html" %}
+
+            {# 3D hotspot picker -- same block as the rfdiffusion form.
+               Renders only after an upload; the typed field stays
+               authoritative and the picker only mutates it. #}
+            <div class="hotspot-picker" data-hotspot-picker>
+              <div class="hotspot-picker-header">
+                <span class="label">3D residue picker</span>
+                <div class="hotspot-picker-controls">
+                  <label>
+                    <input type="checkbox" id="hotspot-surface-toggle"> Surface
+                  </label>
+                  <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+                </div>
+              </div>
+              <div id="hotspot-empty" class="hotspot-viewer-empty">
+                Upload a target PDB above to enable click-to-pick. Typed
+                entry in the <code>Hotspot residues</code> field above also works.
+              </div>
+              <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+            </div>
+            {% endcall %}
+
+            {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues") %}
+            <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+            {# pre_value, not a bare value=: the adapter stores this NESTED
+               as binder_length={min,max}, the same shape rfdiffusion uses,
+               and blueprints/tools.py::_normalize_clone_pre_fill explodes
+               that key into the two names read here. Hard-coded attributes
+               would reset a cloned run's window in silence. #}
+            <div class="rfd4-binder-length">
+              <input type="number" name="binder_length_min" id="binder_length_min"
+                     min="20" max="300" {{ pre_value(pre_fill, "binder_length_min", "60") }} placeholder="min">
+              <span class="sep">to</span>
+              <input type="number" name="binder_length_max" id="binder_length_max"
+                     min="20" max="300" {{ pre_value(pre_fill, "binder_length_max", "120") }} placeholder="max">
+            </div>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              How long each new binder may be. Every design draws its own
+              length from this window, so the structures that come back are
+              not all the same size: a wide window buys variety, a narrow one
+              consistency. <strong>60 to 120</strong> is the default and a
+              reasonable first try. Narrow it towards the short end for a
+              compact single-domain binder on a flat patch, and widen it for
+              a broad face or a groove a short binder cannot reach across.
+              Longer binders are also harder to express and purify at the
+              bench. 20 to 300 allowed.
+            </div>
+
+            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+            {# pre_value so ?pilot=1 and ?clone_from= both land. PILOT in
+               tools/rfd4/meta.py pre-fills this field by this name, and
+               tests/test_pilot_recipes.py::
+               test_every_param_reaches_the_form fails if it stops reading
+               pre_fill. #}
+            <input type="number" name="num_designs" id="num_designs" min="1" max="200" {{ pre_value(pre_fill, "num_designs", "8") }}
+                   {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
+                   style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              How many binders to generate. Each is an independent sample and
+              comes back as one structure file holding your target chain plus
+              the binder. The table they land in carries no score column, so
+              the count buys you variety to choose from and not a ranking.
+            </div>
+            {% if single_container_ceiling %}
+            <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
+                 style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              More than {{ single_container_ceiling }} designs runs as a wallet-bounded full-size run, split into pieces that run on our GPUs and bill as they finish. You pay for compute delivered and unused funds are refunded. Use Start a full-size run below; upload a target file so it carries over.
+            </div>
+            {% endif %}
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              First time on this target? Start with 2 to 8 designs to confirm
+              the chain and hotspots you picked, then scale up once the small
+              batch looks sane. Larger jobs take longer wall-clock, and you
+              pay for the GPU time your run uses; cancellation does not
+              refund time already used.
+            </div>
+            {% endcall %}
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Runs against your own target. Upload a structure, mark the
+            residues to grip, set the binder length. Each design comes back
+            with its sequence and its all-atom structure out of the same
+            model, so there is no separate sequence-design step afterwards.
+            Results are emailed when the run completes (A100-80GB).
+          </div>
+
+          {{ field_campaign(prefilled=pre_fill) }}
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          {{ preflight_styles() }}
+          {% if preflight_verdict %}
+            {{ preflight_panel(preflight_verdict, tool_slug=adapter.slug) }}
+          {% else %}
+            <div id="preflight-panel"
+                 class="preflight-panel"
+                 data-tool="{{ adapter.slug }}"
+                 data-kind=""
+                 data-ok="1"></div>
+          {% endif %}
+
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall here.
+             POST .../submit and .../preflight stay @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary"
+                    id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+            {% include "components/_check_settings.html" %}
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
+          {{ campaign_submit_btn() }}
+        </form>
+      </div>
+    </div>
+
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
+     production. The picker JS degrades gracefully if NGL fails to load --
+     the typed hotspot field keeps working either way. #}
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/preflight.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (typeof window.initHotspotPicker !== 'function') return;
+      window.initHotspotPicker({
+        pdbInputId: 'target_pdb',
+        hotspotInputId: 'hotspot_residues',
+        chainInputId: 'target_chain',
+        viewerId: 'hotspot-viewer',
+        emptyMessageId: 'hotspot-empty',
+        surfaceToggleId: 'hotspot-surface-toggle',
+        clearBtnId: 'hotspot-clear-btn',
+        // Bare residue numbers, no chain prefix -- unlike the rfdiffusion
+        // form, which passes chainPrefixed: true for its multi-chain
+        // targets. This tool takes one target chain, so the adapter ships
+        // hotspots with the chain letter stripped ("hotspot_residues" in
+        // tools/rfd4/__init__.py::validate, which notes it is the single
+        // representation every paid gate reads). Prefixing them here would
+        // write a token the field's own parser then has to strip again.
+        chainPrefixed: false,
+      });
+    });
+  </script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+  {{ campaign_reroute_script() }}
+{% endblock %}

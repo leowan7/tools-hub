@@ -39,6 +39,13 @@ PICKER_FORM_TEMPLATES = [
     REPO_ROOT / "templates" / "tools" / "bindcraft_form.html",
     REPO_ROOT / "templates" / "tools" / "pxdesign_form.html",
     REPO_ROOT / "templates" / "tools" / "rfdiffusion_form.html",
+    # rfd4's form is listed here while the slug is still out of the adapter
+    # registry (registration is step 7A of
+    # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8). This list is
+    # read off disk by path, so it reaches the template without a registry or
+    # a rendered request -- which is the only guard on the new form until that
+    # step arms the rendered-page ones.
+    REPO_ROOT / "templates" / "tools" / "rfd4_form.html",
 ]
 
 
@@ -87,10 +94,10 @@ def test_boltzgen_form_loads_picker_assets():
     ids=lambda p: p.stem,
 )
 def test_all_binder_forms_ship_picker(template_path):
-    """Every binder-design form (boltzgen, rfantibody, bindcraft, pxdesign)
-    must ship the 3D hotspot picker block, vendored NGL, and the picker
-    JS so the pattern is consistent across tools. Regressions on any one
-    form should trip this test.
+    """Every binder-design form listed in ``PICKER_FORM_TEMPLATES`` must ship
+    the 3D hotspot picker block, vendored NGL, and the picker JS so the
+    pattern is consistent across tools. Regressions on any one form should
+    trip this test.
     """
     assert template_path.exists(), f"Missing template: {template_path}"
     html = template_path.read_text(encoding="utf-8")

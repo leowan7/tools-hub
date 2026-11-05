@@ -78,6 +78,12 @@ FIRST_AUTHOR: dict[str, str] = {
     # README lists separately as prior work.
     "proteina": "Didi",
     "pxdesign": "Bennett",
+    # Read off the upstream BibTeX entry, README lines 222-235 of
+    # RosettaCommons/RFD4-Proteina at
+    # aaccdd2ad0720c180468df5f9cf037a713d403e5: the author list begins
+    # "Corley, Nathaniel". Not an organisation stand-in -- the work has a
+    # named first author, so the clause above does not apply here.
+    "rfd4": "Corley",
     "rfantibody": "Bennett",
     "rfdiffusion": "Watson",
 }
@@ -145,6 +151,9 @@ PAPER_YEAR: dict[str, tuple[str, ...]] = {
     "opendde": ("2026",),
     "proteina": ("2026",),
     "pxdesign": ("2023",),
+    # The BibTeX entry reads year = {2026}, note = {Preprint}. No issue
+    # year can disagree with it: this work has no publisher.
+    "rfd4": ("2026",),
     "rfantibody": ("2026",),
     "rfdiffusion": ("2023",),
 }
@@ -243,6 +252,18 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     # file's docstring records twice. meta.py and the token moved together.
     "proteina": ("2603.27950", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
+    # THE ONLY PAPER TOKEN IN THIS MAP THAT IS A URL PATH RATHER THAN A
+    # PERSISTENT IDENTIFIER. Every other entry pins a DOI or a bioRxiv id,
+    # which keeps identifying the work after the publisher moves the file;
+    # this one pins a filename on the authors' own GitHub Pages site, so it
+    # stops matching the day upstream reshuffles that repository, and it
+    # names a location rather than a work. The preprint carries no DOI
+    # (README lines 222-235 of RosettaCommons/RFD4-Proteina at
+    # aaccdd2ad0720c180468df5f9cf037a713d403e5 give only this URL and
+    # note = {Preprint}), which is why the weaker token stands for now.
+    # Replace this token and tools/rfd4/meta.py::paper_url together with
+    # the DOI if the paper ever gets one.
+    "rfd4": ("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina"),
     # This and the bindcraft entry above were both bioRxiv DOIs, and both
     # preprints have since been published in Nature. Each token moved with
     # its own meta.py in ONE commit: a DOI pinned here while the field
