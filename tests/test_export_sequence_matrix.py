@@ -32,7 +32,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 TOOLS = (
     "af2", "bindcraft", "boltz2", "boltzgen", "colabfold", "esmfold",
     "esmfold2-design", "iggm", "opendde", "proteina", "pxdesign",
-    "rfantibody", "rfdiffusion",
+    "rfantibody", "rfd4", "rfdiffusion",
 )
 # Antibody tools put out heavy + light chains beside the antigen.
 _CHAINS = {"iggm": {"H": "MKWC", "L": "GCKM", "T": "KMKG"},

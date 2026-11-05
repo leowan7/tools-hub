@@ -11,7 +11,7 @@ that did not clear the path first reads the PREVIOUS job's file.
 dict's designs / sequences / candidates through as this job's result. The
 customer is handed another run's output under a ``succeeded`` job.
 
-HOW IT IS CHECKED: TEMPLATE MATCHING, NOT ANALYSIS. There are exactly nine
+HOW IT IS CHECKED: TEMPLATE MATCHING, NOT ANALYSIS. There are exactly ten
 ``tools/*/modal_app.py`` files, all in this repo, all written by us, and between
 them they use exactly TWO spellings of the clear. So this file does not reason
 about what a wrapper's code means. For each TOP-LEVEL statement of a reading
@@ -22,7 +22,7 @@ inferred, and nothing else counts. The previous version tried to be general
 instead — resolving module constants, tracking rebindings, walking reachability,
 peeling wrappers, allow-listing ancestors — and four review rounds each found a
 NEW way to slip an unsound ACCEPT through that machinery while its measured
-mutation kill rate FELL from 79% to 59% and it grew from 180 to 1987 lines. Nine
+mutation kill rate FELL from 79% to 59% and it grew from 180 to 1987 lines. Ten
 known files with two known shapes do not need an analyser; they need a list.
 
 ORDERING IS ON STATEMENT INDEX, NOT LINE NUMBER. Clear, spawn and read are each
@@ -35,7 +35,7 @@ cannot be written: the clear and the spawn are then the same statement.
 
 WHAT THIS DELIBERATELY NO LONGER ACCEPTS. Shrinking the accepted set is the
 point. Every spelling below was understood by the old analyser, is now a LOUD
-rejection, and is used by NONE of the nine wrappers: ``os.unlink``, ``from os
+rejection, and is used by NONE of the ten wrappers: ``os.unlink``, ``from os
 import remove``, ``Path(...).unlink()``, ``io.open`` / ``codecs.open`` /
 ``os.open`` readers, paths built with f-strings, ``+`` or ``os.path.join``, and
 module constants (``_SMOKE = "/tmp/..."`` then ``os.remove(_SMOKE)``). The trade
@@ -112,7 +112,7 @@ Four more, none of them rejectable by a matcher this size:
       with open('/tmp/smoke_results.json') as fh: ...    # 3
 
   Anchors clear@0 spawn@2 read@3, so it passes; measured as written above,
-  through the same ``_analyze`` the nine wrappers go through: ACCEPTED, zero
+  through the same ``_analyze`` the ten wrappers go through: ACCEPTED, zero
   failures. It reproduces the production bug in full — the read returns a file
   this job did not write, on a warm container and a cold one alike. Rejecting it
   would mean deciding which of the statements between the clear and the spawn
@@ -153,7 +153,7 @@ WHY SOURCE-LEVEL, AND WHY THE SYNTHETIC CASES. ``run_tool`` is wrapped in
 called in-process, and its body shells out to a GPU pipeline; the AST is the only
 honest way to reach it. And a pattern-matcher that stops matching fails OPEN — it
 reports green — so ``_analyze()`` is applied to the inline synthetic modules at
-the bottom of this file as well as to the nine real wrappers. Those cases are the
+the bottom of this file as well as to the ten real wrappers. Those cases are the
 only thing standing between a future "simplification" and a silent return to
 green.
 """
@@ -176,9 +176,9 @@ _RESULTS_PATH = "/tmp/smoke_results.json"
 # spelling survives normalisation into a position the templates read as the path.
 _ELIDED = "<elided>"
 
-# Pinned by hand. Every one of these nine spawns a pipeline subprocess and reads
+# Pinned by hand. Every one of these ten spawns a pipeline subprocess and reads
 # its verdict back. This is a FILE-SET pin, not a text search: see
-# ``test_the_wrapper_file_set_is_exactly_the_pinned_nine``.
+# ``test_the_wrapper_file_set_is_exactly_the_pinned_set``.
 _EXPECTED_TOOLS = frozenset(
     {
         "af2",
@@ -204,16 +204,16 @@ class _Canonicalise(ast.NodeTransformer):
     """The only three rewrites this file performs. Each is purely syntactic.
 
     1. An f-string becomes the placeholder. This does not merely narrow — it is
-       what makes the wrappers match AT ALL. All nine log their OSError arm with
+       what makes the wrappers match AT ALL. All ten log their OSError arm with
        an f-string, so collapsing it turns a NON-match into a match for every one
-       of them; measured, deleting this method leaves all nine with no recognised
-       clear and turns 22 tests red (22 failed, 82 passed, the whole file — the
-       22 being all nine wrappers on BOTH per-reader checks, plus the three
+       of them; measured, deleting this method leaves all ten with no recognised
+       clear and turns 24 tests red (24 failed, 82 passed, the whole file — the
+       24 being all ten wrappers on BOTH per-reader checks, plus the three
        template-shaped good cases and the template/spawn equivalence test,
        re-measured and re-counted by name). Either number moves whenever a test
        is added or removed — the pass count has, four times, most recently 80 to
        82 — and the
-       load-bearing half of the claim is the other one, that all nine stop
+       load-bearing half of the claim is the other one, that all ten stop
        matching, so re-measure rather than trusting the number. The direction
        that matters is
        therefore the opposite of narrowing, and the cost is that this rewrite
@@ -224,7 +224,7 @@ class _Canonicalise(ast.NodeTransformer):
     2. A string constant that is not EXACTLY the results path becomes the
        placeholder, so a log message's wording is not part of a template. The
        results path survives untouched — that is the whole of the "fold the path
-       expression to the literal" step, because these nine wrappers write the
+       expression to the literal" step, because these ten wrappers write the
        path as that literal everywhere it matters.
     3. A ``for`` whose iterable is a TUPLE OR LIST DISPLAY beginning with the
        results-path literal is truncated to that first element, because only
@@ -275,20 +275,20 @@ def _normalise(stmt: ast.stmt) -> str:
 # removal of the results path on every call. Attempt, not outcome: template A
 # swallows a non-FileNotFoundError OSError, so a path that exists and cannot be
 # deleted leaves the stale file in place and lets the job continue. That mirrors
-# what all nine wrappers ship and is deliberate; an undeletable /tmp is not the
+# what all ten wrappers ship and is deliberate; an undeletable /tmp is not the
 # failure this file exists to catch. They are literal strings rather than snippets fed back
-# through ``_normalise`` on purpose: if the normaliser drifts, the nine real
+# through ``_normalise`` on purpose: if the normaliser drifts, the ten real
 # wrappers stop matching and the suite goes red, instead of the templates
 # silently drifting along with it.
 #
 # ``ast.unparse`` formatting is part of the contract — 4-space indent, single
-# quotes. A Python upgrade that changes it breaks all nine at once, which is the
+# quotes. A Python upgrade that changes it breaks all ten at once, which is the
 # safe direction to fail in.
 # --------------------------------------------------------------------------- #
 
 _TEMPLATES: dict[str, str] = {
-    # af2, boltz2, esmfold, esmfold2_design, iggm, mpnn, opendde, proteina —
-    # eight of the nine, character for character after normalisation.
+    # af2, boltz2, esmfold, esmfold2_design, iggm, mpnn, opendde, proteina, rfd4 —
+    # nine of the ten, character for character after normalisation.
     "try/remove/except-FileNotFoundError/except-OSError-print": (
         "try:\n"
         "    os.remove('/tmp/smoke_results.json')\n"
@@ -311,7 +311,7 @@ _TEMPLATES: dict[str, str] = {
     ),
     # NOT taken from any wrapper: the first template with the diagnostic arm
     # removed. Listed because dropping a ``print`` is the most likely benign edit
-    # to the form eight wrappers use, and because it is unconditional by
+    # to the form nine wrappers use, and because it is unconditional by
     # inspection — the removal is still ATTEMPTED on every call and a missing
     # file is still swallowed. Verified by hand, not by machine.
     "try/remove/except-FileNotFoundError-only": (
@@ -392,7 +392,7 @@ _SPAWN_CALLS = frozenset(
         #
         # The trade was taken because the first case is the production bug and
         # the second needs an unrecognised start to exist in the first place.
-        # None of these names appears in any of the nine wrappers, so the whole
+        # None of these names appears in any of the ten wrappers, so the whole
         # cost is borne by hypothetical code either way. If you add another name,
         # you are making this trade again — MEASURE IT IN BOTH DIRECTIONS, write
         # the result here, and do not describe it as a tightening.
@@ -449,7 +449,7 @@ _SPAWN_CALLS = frozenset(
         # starts a process, in neither list — and ``_analyze`` already models
         # ``AsyncFunctionDef``, so the pinning case would work today. What is
         # missing is a reason to make the trade above a third time: NONE of the
-        # nine wrappers is async or so much as mentions asyncio (checked), and
+        # ten wrappers is async or so much as mentions asyncio (checked), and
         # the direction a new name OPENS needs a still-unrecognised start to
         # exist before it costs anything. So the trade would buy a hypothetical
         # and pay in a hypothetical. If a wrapper ever goes async, add both
@@ -462,7 +462,7 @@ _SPAWN_CALLS = frozenset(
 
 
 # The same names again, pinned BY HAND, exactly as ``_EXPECTED_TOOLS`` pins the
-# nine wrapper directories. It is duplication on purpose.
+# ten wrapper directories. It is duplication on purpose.
 #
 # WHY IT IS NOT DERIVED FROM ``_SPAWN_CALLS``. Deriving it was written first and
 # is VACUOUS, which was caught by running the mutation it exists to kill. The
@@ -515,7 +515,7 @@ def _dotted(node: ast.AST) -> str | None:
 def _is_read(node: ast.AST) -> bool:
     """``open('/tmp/smoke_results.json')`` — that literal, one arg, no keywords.
 
-    All nine wrappers spell the read exactly that way. A mode argument, an
+    All ten wrappers spell the read exactly that way. A mode argument, an
     ``encoding=`` keyword, ``io.open`` / ``codecs.open`` / ``os.open`` and
     ``Path(...).read_text()`` are all unrecognised — which is also why
     ``open(path, 'w')``, truncating instead of removing, is correctly not
@@ -695,7 +695,7 @@ def _names_assigned_the_path(tree: ast.Module) -> frozenset[str]:
     safe direction — the same argument that covers not tracking a later
     rebinding: an extra name here can only ever put a function ON the list that
     makes a test FAIL, which is loud and gets resolved by hand. Measured over the
-    nine real wrappers, the widening adds nothing at all — none of them binds the
+    ten real wrappers, the widening adds nothing at all — none of them binds the
     literal to a name in any spelling. Missing a name is the silent direction,
     and is the only direction this exists to move.
     """
@@ -785,7 +785,7 @@ def _blind_functions(
     """``tool:func`` for every path-naming function that is NOT a modelled reader.
 
     Factored out of ``test_every_wrapper_has_a_recognised_reader`` so a synthetic
-    module can be pushed through the same code the nine real wrappers are. Inline
+    module can be pushed through the same code the ten real wrappers are. Inline
     it had no executable claim at all: replacing it with ``[]``
     left the whole suite green, because no module the suite looked at has a
     second path-naming function. Same defect as the one round 7 fixed for
@@ -964,7 +964,7 @@ def _file_set_drift(found: set[str]) -> str | None:
     count" — that nothing enforced: rewriting it as
     ``len(found) >= len(_EXPECTED_TOOLS)`` left the suite green, and so did
     ``found >= set(_EXPECTED_TOOLS)``. Under the first, renaming ``tools/af2/``
-    to ``tools/af2_v2/`` still passed — nine wrappers before, nine after, and the
+    to ``tools/af2_v2/`` still passed — ten wrappers before, ten after, and the
     one that was being checked gone.
     ``test_the_file_set_pin_is_an_equality_not_a_minimum`` kills both.
     """
@@ -990,7 +990,7 @@ def _file_set_drift(found: set[str]) -> str | None:
     )
 
 
-def test_the_wrapper_file_set_is_exactly_the_pinned_nine():
+def test_the_wrapper_file_set_is_exactly_the_pinned_set():
     """Guard the guard: a new, moved or deleted wrapper must fail loudly.
 
     THE DEFECT THIS REPLACES. Discovery used to key on wrappers that MENTION the
@@ -1016,8 +1016,8 @@ def test_discovery_is_the_glob_and_not_a_text_search(tmp_path, monkeypatch):
     THE MUTATION THIS EXISTS TO KILL, which survives everything else here.
     Rewrite ``_wrapper_paths`` back to the text search it replaced — keep only
     files whose source mentions ``smoke_results.json`` — and the whole suite
-    stays green, because all nine real wrappers do mention it. The test above
-    compares the tools it FOUND against _EXPECTED_TOOLS and finds nine either
+    stays green, because all ten real wrappers do mention it. The test above
+    compares the tools it FOUND against _EXPECTED_TOOLS and finds ten either
     way, so it cannot see the difference. Nothing else can: every per-reader
     assertion is parametrised over discovery, and a wrapper that never enters
     discovery contributes zero tests, which reads as green.
@@ -1091,8 +1091,8 @@ def test_every_wrapper_has_a_recognised_reader():
     results-path literal must be one this file models.
 
     Latent as measured today, and the measurement is narrower than an earlier
-    revision of this docstring claimed. All nine wrappers have exactly ONE
-    path-naming function each, and in all nine that one function is a recognised
+    revision of this docstring claimed. All ten wrappers have exactly ONE
+    path-naming function each, and in all ten that one function is a recognised
     reader. So a wrapper with two path-touching functions is NOT "the normal
     shape here" — nothing in this repo has one. What ``esmfold2_design``
     establishes is only the weaker fact that the reader is not always called
@@ -1171,7 +1171,7 @@ def test_clear_precedes_the_pipeline_spawn(reader: _Reader):
 #
 # Everything above is one pattern-matcher, and a pattern-matcher that stops
 # matching fails OPEN. Each case below is a module the matcher must judge
-# correctly, run through the SAME ``_analyze()`` as the nine real wrappers.
+# correctly, run through the SAME ``_analyze()`` as the ten real wrappers.
 #
 # A case that does not itself define ``run_tool`` is the BODY of one: it is
 # wrapped in ``def run_tool(payload):`` and given ``_TAIL`` — a recognised spawn
@@ -1570,8 +1570,8 @@ def run_tool(payload):
 
 
 _GOOD_SHAPES: dict[str, str] = {
-    # The form eight of the nine wrappers use, verbatim.
-    "template_a_the_eight_wrapper_form": '''
+    # The form nine of the ten wrappers use, verbatim.
+    "template_a_the_common_wrapper_form": '''
     try:
         os.remove("/tmp/smoke_results.json")
     except FileNotFoundError:
@@ -1581,7 +1581,7 @@ _GOOD_SHAPES: dict[str, str] = {
 ''',
     # Same form, different log wording — esmfold2_design says "[_run_one_seed]"
     # where the rest say "[run_tool]". Pins that the message is normalised away
-    # and the eight really are ONE template.
+    # and the nine really are ONE template.
     "template_a_with_a_different_log_message": '''
     try:
         os.remove("/tmp/smoke_results.json")
@@ -1926,14 +1926,14 @@ def test_matcher_rejects_known_bad_shapes(case: str):
     failures = _guard_failures(_BAD_SHAPES[case])
     assert failures, (
         f"the synthetic wrapper `{case}` carries the stale-result bug and the "
-        f"matcher passed it. This file is failing open — the nine real wrappers "
+        f"matcher passed it. This file is failing open — the ten real wrappers "
         f"are no longer being checked for this shape.\n{_module(_BAD_SHAPES[case])}"
     )
 
 
 @pytest.mark.parametrize("case", sorted(_GOOD_SHAPES), ids=sorted(_GOOD_SHAPES))
 def test_matcher_accepts_known_good_shapes(case: str):
-    """The forms the nine wrappers use must not cost their authors a red suite."""
+    """The forms the ten wrappers use must not cost their authors a red suite."""
     failures = _guard_failures(_GOOD_SHAPES[case])
     assert not failures, (
         f"the synthetic wrapper `{case}` is CORRECT and the matcher rejected it:\n"
@@ -2391,7 +2391,7 @@ def test_the_disclosed_gaps_are_still_exactly_as_disclosed(case: str):
     happens between the clear and the read is worth pinning either way.
 
     The module docstring says of the first one "measured as written above,
-    through the same ``_analyze`` the nine wrappers go through: ACCEPTED, zero
+    through the same ``_analyze`` the ten wrappers go through: ACCEPTED, zero
     failures", and for several rounds nothing re-ran it. A prose claim ABOUT a
     measurement is the first thing to go stale, in either direction — the
     docstring has been wrong about a gap being open and wrong about one being
@@ -2414,8 +2414,8 @@ def test_the_file_set_pin_is_an_equality_not_a_minimum():
     to a minimum count, and until this test nothing enforced it. Measured on the
     pre-fix file: rewriting it as ``len(found) >= len(_EXPECTED_TOOLS)`` passed
     the whole file, and so did ``found >= set(_EXPECTED_TOOLS)``. Under the first,
-    renaming ``tools/af2/`` to ``tools/af2_v2/`` still passed — nine wrappers
-    before, nine after, and the one being checked gone.
+    renaming ``tools/af2/`` to ``tools/af2_v2/`` still passed — ten wrappers
+    before, ten after, and the one being checked gone.
 
     One case per relaxation, plus the direction the message itself calls worse.
     """
@@ -2442,7 +2442,7 @@ def test_the_file_set_pin_is_an_equality_not_a_minimum():
 def test_a_second_reading_function_is_modelled_and_not_shadowed_by_the_first():
     """Two readers in one module means two sets of anchors and two verdicts.
 
-    NOTHING PINNED THIS. All nine real wrappers have exactly one path-naming
+    NOTHING PINNED THIS. All ten real wrappers have exactly one path-naming
     function each, so no module the suite ever looked at had a second reading
     function at all, and three separate mutations rode through green: ``_analyze``
     returning ``out[:1]``, ``_functions_naming_the_path`` returning ``[]``, and
@@ -2451,7 +2451,7 @@ def test_a_second_reading_function_is_modelled_and_not_shadowed_by_the_first():
     the shape the per-function half of
     ``test_every_wrapper_has_a_recognised_reader`` was added for.
 
-    It runs through the SAME ``_analyze`` the nine wrappers do. A case that
+    It runs through the SAME ``_analyze`` the ten wrappers do. A case that
     checked the shape some other way would be pinning a second implementation.
     """
     source = _module(

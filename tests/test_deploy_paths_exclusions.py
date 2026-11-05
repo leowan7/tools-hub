@@ -365,9 +365,13 @@ _DOCKERFILES = sorted((_REPO / "tools").glob("*/Dockerfile.modal"))
 # Slugs that have a Dockerfile.modal but are NOT in the deploy matrix: a tool
 # whose image lands before its Modal app does. `rfd4` is one because
 # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §8 ships the image and the
-# weights seeder as step 1 and the modal_app.py only at step 2; its matrix entry
-# is step 6's. Until then no deploy builds that image and no customer can reach
-# it. Every check in this module still reads these files — only the
+# weights seeder as step 1 and the modal_app.py only at step 2. Adding its
+# matrix entry is NOT a test-side change: .github/workflows/deploy-modal.yml
+# lists itself among its own trigger paths (line 132 of that file), so the
+# commit that adds the entry redeploys the whole fleet on merge. That waits on
+# the scope's rollout order (seed volumes, deploy Modal, merge, flip the flag)
+# and on an explicit go-ahead, not on a guard-test step. Until then no deploy
+# builds that image and no customer can reach it. Every check in this module still reads these files — only the
 # app-to-Dockerfile relation below has to know they have no app yet.
 _UNDEPLOYED_DOCKERFILE_SLUGS = {"rfd4"}
 
