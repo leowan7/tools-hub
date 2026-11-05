@@ -81,9 +81,18 @@ ONE_CHAIN = _pdb("A")
 # its pipeline enforces (tests/test_runtime_ceiling.py). The chooser offers
 # boltzgen for a multi-chain site and this file asserts preflight then says
 # READY, so at the 120-residue default the assertion would be about target
-# size rather than about multi-chain support. That the chooser recommends boltzgen for targets its own
-# preflight refuses on size is real and is NOT fixed here -- it is filed in
-# docs/qa/RUNTIME-CEILING-2026-09-30.md.
+# size rather than about multi-chain support.
+#
+# The chooser no longer names a size preflight refuses:
+# ``shared/tool_chooser.py::target_size_ceiling_aa`` states the lower of
+# ``hard_cap_target_aa`` and ``largest_target_aa_within_ceiling``, the inverse
+# of that same timeout, and two tests below in this file drive the real
+# preflight at the number the card states and one residue past it --
+# test_the_size_clause_names_a_size_preflight_accepts and
+# test_the_runtime_ceiling_is_what_binds_boltzgen_not_its_size_cap. This comment
+# used to say that disagreement was unfixed, which stopped being true at
+# 2826fddf (#457); the gap as it was found is recorded in
+# docs/qa/RUNTIME-CEILING-2026-09-30.md section 9.
 TWO_CHAIN = _pdb("AB", residues=70)
 
 
