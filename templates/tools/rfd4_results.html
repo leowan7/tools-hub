@@ -34,8 +34,12 @@
 {% set recovered   = display_rows(output.get('candidates')) %}
 {# A recovered, wallet-stopped or cancel-kept result replaces the whole result
    dict and carries NO root keys of this tool's own — only `candidates`,
-   `candidate_count` and a flag (shared/job_recovery.py:480-484;
-   shared/jobs.py:2093-2100 and :2299-2303). So `target_chain` and
+   `candidate_count` and a flag, except the wallet stop, which carries two:
+   `backfilled` on a recovery (shared/job_recovery.py:480-484), `partial` on a
+   cancel-kept result (shared/jobs.py:2299-2303), and `partial` plus
+   `stop_reason` on the wallet stop (shared/jobs.py:2093-2100). The
+   no-tool-own-root-keys point is what matters below and holds for all three.
+   So `target_chain` and
    `designs_total` below fall back to the run's own inputs, reading them the
    way iggm's partial does (iggm_results.html:20). The `designs_total`
    fallback is NOT iggm's: iggm_results.html:29 falls back to
