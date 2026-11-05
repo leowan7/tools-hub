@@ -417,19 +417,30 @@ def requested_designs(job) -> Optional[int]:
 def recovered_columns(rows) -> list:
     """The score columns a list rebuilt by ``shared/job_recovery.py`` can fill.
 
-    ``_candidate_from_partial`` there writes ``ipTM``, ``pLDDT`` and
-    ``i_pae`` (plus proteina's own score names, which no template calling this
-    reads), so a results partial's own column list (``mean_pLDDT``,
-    ``epitope_contacts``, ``ranking_score``...) renders a recovered row as dashes.
-    Kept in that order, and only where some row carries the key.
+    A results partial's own column list (``epitope_contacts``, ``AA``,
+    ``chains``...) names end-of-run fields a rebuilt row does not carry, so it
+    renders a recovered row as dashes. This is the intersection instead: the
+    names ``_candidate_from_partial`` writes into ``scores`` that one of the
+    six partials calling this declares as a column, ordered so each tool's
+    primary metric comes first (``mean_pLDDT`` for af2/colabfold/esmfold,
+    ``ranking_score`` for opendde, ``ipTM`` for boltz2), and returned only
+    where some row carries the key.
+
+    NOT every key the rebuild writes: ``complex_plddt`` / ``complex_iplddt``
+    are in a kept boltz2 row's scores but no template declares either as a
+    column (boltz2 renders the native field under the name ``pLDDT``), and
+    proteina's score names are read by a partial that does not call this.
     tests/test_recovered_job_rendering.py::
-    test_a_recovered_run_shows_the_scores_it_kept holds it.
+    test_a_recovered_run_shows_the_scores_it_kept and
+    tests/test_streamed_scores_survive_the_gates.py hold the list.
     """
     present = {
         k for r in display_rows(rows)
         if isinstance(r.get("scores"), Mapping) for k in r["scores"]
     }
-    return [c for c in ("ipTM", "pLDDT", "i_pae") if c in present]
+    return [c for c in ("mean_pLDDT", "ranking_score", "ipTM",
+                        "pLDDT", "i_pae", "n_hotspot_contacts")
+            if c in present]
 
 
 def headline_candidate(
