@@ -1116,11 +1116,30 @@ def _chain_records(
     that does not know the run writes exactly what it wrote before
     (tests/test_rfd4_results_and_exports.py,
     ``test_the_fasta_marks_the_binder_chain``).
+
+    It is also empty when the named chain is not AMONG ``chains``, which is the
+    same fail-safe :func:`_add_chain_columns` gets from its
+    ``len(designed) != 1`` skip: without it "the target is not in this file"
+    reads as "every chain here is a design", and the operator's own uploaded
+    target would be delivered labelled ``[designed chain]``. That state is
+    reachable because a CIF upload goes to upstream verbatim
+    (``tools/rfd4/run_pipeline.py:599-601``) while only a PDB upload is
+    normalised through ``numbering.pdb_to_cif``, so the delivered chain ids
+    come from the operator's own file; whether upstream re-emits the target
+    under a different letter is NOT settled by any committed artefact, so this
+    is a guard against an unproven input, not a fix for a measured one.
+    Marking is otherwise per record, so a file with the target plus two
+    designed chains labels both of those -- that is the shape of this function
+    and no test here exercises it. Both the guard and the marked and unmarked
+    forms are pinned by tests/test_rfd4_results_and_exports.py,
+    ``test_the_fasta_marks_the_binder_chain`` and
+    ``test_the_fasta_marks_nothing_when_the_target_chain_is_absent``.
     """
+    present = any(cid.strip() == target_chain for cid, _ in chains)
     out = []
     for cid, seq in chains:
         marker = ""
-        if target_chain:
+        if target_chain and present:
             marker = (" [target chain]" if cid.strip() == target_chain
                       else " [designed chain]")
         out.append((f"_chain{cid}", marker, seq))

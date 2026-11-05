@@ -391,22 +391,26 @@ def _auth_relabelled_cifs() -> dict[str, str]:
     tools/rfd4/run_pipeline.py:1294-1296) and the export has to match on the
     one the delivered file reads back as.
     """
-    out = {}
-    for stem, text in _probe_cifs().items():
-        head = [ln.strip() for ln in text.splitlines()
-                if ln.strip().startswith("_atom_site.")]
-        ia, il = (head.index("_atom_site.auth_asym_id"),
-                  head.index("_atom_site.label_asym_id"))
-        assert ia != il, stem
-        lines = []
-        for line in text.splitlines():
-            if line.startswith(("ATOM ", "HETATM")):
-                fields = line.split()
-                fields[ia] = {"A": "H", "B": "L"}.get(fields[ia], fields[ia])
-                line = " ".join(fields)
-            lines.append(line)
-        out[stem] = "\n".join(lines) + "\n"
-    return out
+    return {stem: _relabel_auth(text, {"A": "H", "B": "L"})
+            for stem, text in _probe_cifs().items()}
+
+
+def _relabel_auth(text: str, mapping: dict[str, str]) -> str:
+    """One probe CIF with its ``auth_asym_id`` letters remapped and its
+    ``label_asym_id`` left alone, so the two ids differ."""
+    head = [ln.strip() for ln in text.splitlines()
+            if ln.strip().startswith("_atom_site.")]
+    ia, il = (head.index("_atom_site.auth_asym_id"),
+              head.index("_atom_site.label_asym_id"))
+    assert ia != il, head
+    lines = []
+    for line in text.splitlines():
+        if line.startswith(("ATOM ", "HETATM")):
+            fields = line.split()
+            fields[ia] = mapping.get(fields[ia], fields[ia])
+            line = " ".join(fields)
+        lines.append(line)
+    return "\n".join(lines) + "\n"
 
 
 def test_the_matching_key_is_the_author_chain_id_not_the_label_asym_id():
@@ -451,3 +455,62 @@ def test_the_matching_key_is_the_author_chain_id_not_the_label_asym_id():
     # The label id names no chain of the delivered file, so nothing is scored.
     for row in rows_for("A"):
         assert "gravy" not in row and "instability_index" not in row, row
+def test_the_fasta_marks_nothing_when_the_target_chain_is_absent():
+    """Cited by shared/exports.py::_chain_records.
+
+    The guard that keeps the FASTA from calling the operator's own upload a
+    design. With the run's target chain matching NO chain of the delivered
+    file, every chain would otherwise fall to the else branch and be stamped
+    "[designed chain]". The CSV already fails safe in this state through its
+    ``len(designed) != 1`` skip, and this asserts the two halves now agree:
+    no marker in the FASTA, no developability pair in the CSV.
+
+    Measured, not reasoned: the probe CIF is relabelled to C/D while the
+    target chain stays "A", so "A" is genuinely absent. Deleting the
+    ``present`` guard makes the two marker assertions below fail.
+    """
+    from shared.exports import candidates_to_csv, candidates_to_fasta
+    from shared.jobs import page_ordered_records
+
+    cifs = {stem: _relabel_auth(text, {"A": "C", "B": "D"})
+            for stem, text in _probe_cifs().items()}
+
+    def fetch(job_id: str, key: str) -> bytes | None:
+        text = cifs.get(Path(key).stem.split("_", 1)[1])
+        return text.encode("utf-8") if text else None
+
+    rows = page_ordered_records("rfd4", _example())
+    fasta = candidates_to_fasta(
+        rows, tool="rfd4", fetch_bytes=fetch, default_job_id=JOB_ID,
+        target_chain="A")
+    heads = [ln for ln in fasta.splitlines() if ln.startswith(">")]
+    assert len(heads) == 16, heads
+    assert "_chainC" in fasta and "_chainD" in fasta, heads
+    assert "[designed chain]" not in fasta, heads
+    assert "[target chain]" not in fasta, heads
+
+    body = candidates_to_csv(
+        rows, fetch_bytes=fetch, default_job_id=JOB_ID, target_chain="A")
+    for row in csv.DictReader(io.StringIO(body)):
+        assert "gravy" not in row and "instability_index" not in row, row
+
+
+def test_the_runtime_line_renders_the_key_this_pipeline_writes(
+        tools_app, rfd4_registered):
+    """Cited by templates/tools/rfd4_results.html, above the results_panel call.
+
+    components/results_shell.html:242 guards the runtime line on a truthy
+    ``gpu_seconds``, and rfd4's pipeline stores the figure under
+    ``runtime_seconds`` instead (tools/rfd4/run_pipeline.py:1300; the committed
+    example result carries runtime_seconds and no gpu_seconds). So reading
+    ``gpu_seconds`` in the partial dropped the line on every rfd4 job. The
+    example result's 217 below is the value that must appear. Mutation-proven,
+    not assumed: with the partial reading ``output.get('gpu_seconds')`` again,
+    this file is 1 failed, 13 passed, and this is the failure.
+    """
+    flask_app, _ = tools_app
+    result = _example()
+    assert "gpu_seconds" not in result, sorted(result)
+    html = _render_partial(
+        flask_app, "rfd4", job_id=JOB_ID, example=False, result=result)
+    assert f"GPU time: {result['runtime_seconds']} seconds." in html

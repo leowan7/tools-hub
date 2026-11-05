@@ -105,6 +105,13 @@
   into a predictor before choosing between them.
 </p>
 
+{# `gpu_seconds=` below is passed runtime_seconds, not gpu_seconds: that is the
+   key this pipeline writes (tools/rfd4/run_pipeline.py:1300), and
+   results_shell.html:242 drops the line on a falsy value, so reading
+   gpu_seconds hid it on every run. The four sibling tools that also store
+   runtime_seconds pass it the same way (boltz2_results.html:139,
+   iggm_results.html:102, opendde_results.html:120,
+   esmfold2_design_results.html:524). #}
 {% call results_panel(
     candidates=candidates,
     columns=columns,
@@ -112,7 +119,7 @@
     job_id=job.id,
     clone_url=('' if is_example else clone_url),
     tier=output.get('tier'),
-    gpu_seconds=output.get('gpu_seconds'),
+    gpu_seconds=output.get('runtime_seconds'),
     send_target_tools=send_target_tools,
     ranked=false,
     requested=designs_total,
