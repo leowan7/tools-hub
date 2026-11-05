@@ -1844,7 +1844,10 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     as ``succeeded`` through the SAME ``complete_job`` terminal/settle path the
     webhook uses, so billing settles against actual GPU consumed instead of
     full-refunding a run that really executed. Only when nothing is recoverable
-    do we time the job out (full refund) as before.
+    do we time the job out — fully refunded if it delivered nothing, but BILLED
+    for the GPU it consumed if designs had already reached the user (Leo's
+    option C; the gate is below, and ``classify_terminal_state``'s timeout arm
+    is what splits the two).
 
     Returns one of:
 

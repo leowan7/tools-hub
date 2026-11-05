@@ -261,16 +261,19 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         success.
       - ``"failed_unconfirmed"`` — ``poll`` returned a dict but no usable
         answer for this call, and gave no nonzero exit code to confirm that
-        the pipeline itself crashed. Two shapes reach it: ``status="failed"``
-        with no integer exit code, and ``status="error"``, which
-        ``ModalClient.poll`` returns from its outer ``except Exception``
-        (gpu/modal_client.py::ModalClient.poll) both when
-        ``FunctionCall.get`` re-raised the remote function's own exception
-        AND when our own ``ModalCallTimeout`` fired on a wedged channel,
-        which that method deliberately re-raises into the same handler. So
+        the pipeline itself crashed. Reached by ``status="failed"`` with no
+        integer exit code, and by ``status="error"``, which
+        ``gpu/modal_client.py`` returns from four places, not one: the
+        ``modal`` package missing, ``poll``'s own outer ``except Exception``,
+        a non-dict pipeline return, and an unrecognised
+        ``smoke_result.status``. The second of those is the broadest: it
+        fires both when ``FunctionCall.get`` re-raised the remote function's
+        own exception AND when our own ``ModalCallTimeout`` fired on a wedged
+        channel, which ``poll`` deliberately re-raises into that handler. So
         this value covers "the run died", "Modal reported a failure it could
-        not pin down" and "our poll channel wedged" alike — it does NOT mean
-        Modal necessarily answered. Every branch below treats it exactly as
+        not pin down", "our poll channel wedged" and "we could not even ask"
+        alike — it does NOT mean Modal necessarily answered. Every branch
+        below treats it exactly as
         ``"unknown"``; only the money differs, on the safe side — see
         ``recover_stuck_job_result``'s docstring.
       - ``"still_running"`` — ``status="running"``: Modal says this call
@@ -280,10 +283,13 @@ def _probe_modal(job) -> tuple[Optional[dict], str]:  # noqa: ANN001
         ``timeout_stuck_job`` reads it, to keep designs without billing
         (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
         ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
-      - ``"unknown"``     — no answer was even attempted or parsed: the id is
-        an offline stub, the ``poll`` call itself raised, the payload was not
-        a dict, or the container hit its OWN timeout
-        (``status="timeout"``). Note that an unreachable Modal splits
+      - ``"unknown"``     — no ground truth about how the run ended. Either
+        nothing was asked or parsed (the id is an offline stub, the ``poll``
+        call itself raised, the payload was not a dict) or Modal answered
+        with a status that settles nothing about the pipeline's own fate
+        — including ``status="timeout"``, the container hitting its OWN
+        limit, which is parsed and is the one shape that is unambiguously a
+        time-out rather than a failure. Note that an unreachable Modal splits
         across both values — it lands here when ``poll`` raises, and in
         ``"failed_unconfirmed"`` when ``poll`` swallows the fault and reports
         ``status="error"``. No ground truth either way; the caller must find
