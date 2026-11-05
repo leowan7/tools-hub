@@ -129,14 +129,28 @@ Two separate reads say the customer is not billed.
 
 `shared/wallet_guard.py:119` sets `RFD4_START_USD = Decimal("1.00")` (with the
 comment that Leo confirmed the figure flat on 2026-11-04). `live_start_usd` is
-defined at `:132` and returns `RFD4_START_USD` at `:270`. Its **only** consumer in the
-repo is `shared/wallet_guard.py:589`:
+defined at `:132` and returns `RFD4_START_USD` at `:270`.
 
-```python
-if 0 < pre.balance_usd < live_start_usd(resolved_slug, params)
-```
+It has **three** consumers outside tests
+(`grep -rn live_start_usd --include=*.py`), and none of them debits it:
 
-That is a comparison against the balance. Nothing debits it. Billing is wall-clock
+- `shared/wallet_guard.py:589`, the submit gate:
+  `if 0 < pre.balance_usd < live_start_usd(resolved_slug, params)` — a comparison
+  against the balance, which routes to the top-up gate.
+- `blueprints/wallet.py:538`,
+  `required = live_start_usd(tool_slug, params) if balance > 0 else estimate`. That
+  feeds `deficit = max(required - balance, 0)` at `:551`, which the template reads
+  only as the gate's show flag. Display.
+- `shared/compute_campaigns.py:2026`, `start_usd = live_start_usd(campaign.tool,
+  base_inputs)`, used at `:2027-2029` for `_wallet_balance_below(...)` and at
+  `:2033` as `hold_amount = max(start_usd, Decimal("0.0001"))` — whose own comment
+  (`:2031-2032`) says it is "what the refusal below is classified against".
+  Classification, not a charge. (rfd4 cannot reach this path anyway:
+  `LIVE_CAMPAIGN_TOOLS` is `frozenset({"proteina"})` at `shared/wallet_guard.py:111`.)
+
+So the figure gates and displays; nothing debits it.
+I had written that `:589` was its only consumer. It is not, and the wider grep is
+the correction — the conclusion survives, the count did not. Billing is wall-clock
 GPU seconds since `started_at`, which the first heartbeat stamps
 (`webhooks/modal.py`, the heartbeat handler: `mark_running(job.id, ...)` on `first_beat`, then
 `cumulative_secs = _elapsed_running_seconds(job)`; the request body's own
@@ -175,8 +189,18 @@ listed in §3's pricing.
    `gpu_seconds_used` (`:2554-2557`). The string `failure_class` does not appear
    anywhere in `:2539-2620`, so a fully refunded run still eats Workspace cap. This is the known defect recorded as memory item
    #345 (`refunded-run-debits-workspace-cap`); it is not new to rfd4.
-3. **The hold is placed and released**, so the balance dips between submit and
-   terminal state.
+3. **No cushioned hold is placed, so the balance does not dip by a reserved
+   amount.** `rfd4` is in `_LIVE_ALL_PRESETS` (`shared/wallet_guard.py:104`), so
+   `live_charging_enabled` (`:123-129`) is True on every preset and submit takes the
+   live branch at `:588-597`: it gates on `live_start_usd`, then calls
+   `open_live_run(user_id, resolved_slug)`, which opens a **$0 anchor the meter
+   debits as the run proceeds** (`shared/wallet.py:815`; the mechanism is described
+   at `shared/compute_campaigns.py:2019-2022`, citing
+   `supabase/migrations/0045_live_run_debits.sql`). What gets refunded on an
+   `unclassified` row is therefore the debited seconds, via
+   `settle_live_run(..., refund=True)` (`shared/jobs.py:2738`), not a reserved
+   lump sum. Correcting my own earlier framing: there is no hold to dip the
+   balance on this tool.
 4. **The customer's time**, and a failure message that tells them to crop and
    resubmit — which is correct advice, just late.
 
@@ -186,8 +210,9 @@ listed in §3's pricing.
 
 What the customer loses: a submit-to-failure round trip (container start plus
 download, order-of-seconds), a Workspace-cap debit that is not returned, and the
-wait. What we refund: the wallet hold in full, via `unclassified`, **if** the
-container's `"input"` bucket reaches the row; if it defaults to `"pipeline"`
+wait. What we refund: the metered seconds in full, via `unclassified` and
+`settle_live_run(..., refund=True)`, **if** the container's `"input"` bucket
+reaches the row; if it defaults to `"pipeline"`
 instead, `pipeline` maps into the billed set and the GPU seconds are **settled,
 not refunded** — still only seconds, but charged. That branch is UNVERIFIED and is
 the reason option C is not free.
@@ -588,7 +613,7 @@ is how a 24-failure dependency goes missing. Not created here, as instructed.
 |---|---|---|
 | Do `rfantibody`/`bindcraft` strand the customer? | **No.** rfantibody crops twice; bindcraft hands the chain selector to upstream. rfd4 is the odd one out. | §1 |
 | Is there a live money bug on the two paid tools? | **No.** | §1 |
-| Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit, released hold, seconds of GPU. | §2 |
+| Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit (no `failure_class` guard), and the metered seconds of container start, refunded. No cushioned hold: rfd4 is live-charging, so submit opens a $0 anchor. | §2 |
 | §9 item 11 recommendation | Crop in the container, on an idle fleet, in step 6's redeploy window. | §4.3 |
 | Does that redeploy the nine apps? | Crop-in-container: **yes, all nine, and not rfd4**. Refuse hub-side: **no**. | §4.1, §4.2 |
 | §9 item 10 recommendation | `("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina")`, guard shape unchanged, zero weakening for the other fourteen. | §5.4 |
