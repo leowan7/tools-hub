@@ -305,9 +305,12 @@ EXAMPLE: dict | None = {
     # 217 GPU-seconds on A100-80GB, the gpu_class in
     # shared/wallet_estimates.py TOOL_SPECS["rfd4"], is what
     # shared.wallet.compute_charge_usd settles at $0.38 for.
-    # tests/test_worked_examples.py::_EXAMPLE_GPU_SECONDS carries the 217
-    # and recomputes this, so it fails rather than going stale if the
-    # rate card or the tool's GPU class moves. It is the charge a
+    # tests/test_worked_examples.py::
+    # test_recorded_cost_is_what_this_tool_would_charge carries the 217 in
+    # its ``_EXAMPLE_GPU_SECONDS`` table and recomputes this, so it fails
+    # rather than going stale if the rate card or the tool's GPU class
+    # moves. That guard walks the slugs the registry hands the app, so it
+    # will start reading this entry at step 7A and not before. It is the charge a
     # customer would have paid, not what this validation run cost us.
     "cost_usd": "0.38",
     "runtime": "4 minutes",
