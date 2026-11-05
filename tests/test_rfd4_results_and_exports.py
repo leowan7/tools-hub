@@ -260,3 +260,120 @@ def test_the_designed_chain_is_not_the_longest_chain(tools_app):
     longest_is_target = [s for s, d in lengths.items() if d["A"] > d["B"]]
     assert len(longest_is_target) == 7, lengths
     assert lengths["pdl1_binder_4_generated"]["B"] > 115, lengths
+
+
+def _probe_fetcher():
+    """``fetch_bytes(job_id, pdb_key)`` serving the committed rung-4 CIFs.
+
+    The example result stores a ``pdb_key`` and no inline bytes (that is what
+    ``_upload_design`` writes), so every structure read in this file goes
+    through a fetcher. Keys are the upload's ``{rank:03d}_{stem}.cif``
+    (tools/rfd4/run_pipeline.py::_upload_design), so the stem is the key
+    without its rank prefix and extension.
+    """
+    cifs = _probe_cifs()
+
+    def fetch(job_id: str, key: str) -> bytes | None:
+        stem = Path(key).stem.split("_", 1)[1]
+        text = cifs.get(stem)
+        return text.encode("utf-8") if text else None
+
+    return fetch
+
+
+def _csv_of(**kwargs) -> list[dict]:
+    from shared.exports import candidates_to_csv
+    from shared.jobs import page_ordered_records
+
+    body = candidates_to_csv(
+        page_ordered_records("rfd4", _example()),
+        fetch_bytes=_probe_fetcher(), default_job_id=JOB_ID, **kwargs)
+    return list(csv.DictReader(io.StringIO(body)))
+
+
+def _protparam(seq: str) -> tuple[float, float]:
+    from Bio.SeqUtils.ProtParam import ProteinAnalysis
+
+    a = ProteinAnalysis(seq)
+    return round(a.gravy(), 3), round(a.instability_index(), 2)
+
+
+def test_the_developability_pair_is_the_designed_chain_not_the_target():
+    """The two sequence terms §7C.6 item 4 keeps for release 1, computed for
+    the binder only. Measured against Biopython directly on chain B of each
+    probe CIF, and asserted DIFFERENT from chain A's, so a regression that
+    scored the target instead would fail here rather than pass on a number
+    that merely exists."""
+    rows = _csv_of(target_chain="A")
+    assert len(rows) == 8
+    chains = {stem: dict(_chain_seqs(text))
+              for stem, text in _probe_cifs().items()}
+    for row in rows:
+        stem = Path(row["pdb_key"]).stem.split("_", 1)[1]
+        want = _protparam(chains[stem]["B"])
+        other = _protparam(chains[stem]["A"])
+        got = (float(row["gravy"]), float(row["instability_index"]))
+        assert got == want, (stem, got, want)
+        assert got != other, stem
+
+
+def _chain_seqs(text: str):
+    from shared.exports import structure_chain_sequences
+
+    return structure_chain_sequences(text.encode("utf-8")) or []
+
+
+def test_no_target_chain_means_no_developability_columns():
+    """Cited by shared/exports.py::_add_chain_columns. Every other tool's
+    export passes no target chain, so its CSV must be byte-identical to what
+    it was before the pair existed -- here, the same call minus the argument."""
+    without = _csv_of()
+    assert without, "no rows, so the comparison below proves nothing"
+    for row in without:
+        assert "gravy" not in row and "instability_index" not in row, row
+    # The chain columns themselves are untouched by the argument.
+    with_chain = _csv_of(target_chain="A")
+    for a, b in zip(without, with_chain):
+        assert a["sequence_chainA"] == b["sequence_chainA"]
+        assert a["sequence_chainB"] == b["sequence_chainB"]
+
+
+def test_the_developability_columns_are_not_a_pass_fail_bar():
+    """Cited by shared/exports.py::_DEV_COLUMNS. §7C.6 warns against selling
+    the two surviving sequence terms as "developability", and a name in
+    GATE_COLUMNS would make a verdict out of one."""
+    from shared import score_legends
+    from shared.exports import _DEV_COLUMNS, _is_reserved_seq_name
+
+    for tool, cols in score_legends.GATE_COLUMNS.items():
+        assert not (set(cols) & set(_DEV_COLUMNS)), tool
+    row = {"gravy": -0.9, "instability_index": 60.0}
+    assert score_legends.judge("rfd4", row).verdict == "unjudged"
+    # And no tool's own scores key can land in these columns.
+    assert all(_is_reserved_seq_name(c) for c in _DEV_COLUMNS)
+
+
+def test_the_fasta_marks_the_binder_chain():
+    """Cited by shared/exports.py::candidates_to_fasta and
+    :func:`_chain_records`. The page enables the FASTA button for rfd4 on
+    ``pdb_key`` alone (templates/components/candidate_table.html:455), so the
+    server derives both chains from the structure; unmarked, the file is two
+    sequences per design with nothing saying which to order."""
+    from shared.exports import candidates_to_fasta
+    from shared.jobs import page_ordered_records
+
+    rows = page_ordered_records("rfd4", _example())
+    marked = candidates_to_fasta(
+        rows, tool="rfd4", fetch_bytes=_probe_fetcher(),
+        default_job_id=JOB_ID, target_chain="A")
+    heads = [ln for ln in marked.splitlines() if ln.startswith(">")]
+    assert len(heads) == 16, heads
+    assert sum("_chainA [target chain]" in h for h in heads) == 8, heads
+    assert sum("_chainB [designed chain]" in h for h in heads) == 8, heads
+
+    plain = candidates_to_fasta(
+        rows, tool="rfd4", fetch_bytes=_probe_fetcher(), default_job_id=JOB_ID)
+    assert "[target chain]" not in plain and "[designed chain]" not in plain
+    # Same records, same order, same sequences -- only the markers differ.
+    assert [ln for ln in plain.splitlines() if not ln.startswith(">")] == \
+           [ln for ln in marked.splitlines() if not ln.startswith(">")]

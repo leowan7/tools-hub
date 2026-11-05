@@ -387,7 +387,9 @@ def admin_source_export_csv(campaign_id: str, job_id: str):
     whole column set."""
     from flask import Response  # noqa: PLC0415
     from blueprints.jobs import _storage_fetcher  # noqa: PLC0415
-    from shared.exports import candidates_to_csv, sequences_to_csv  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_csv, sequences_to_csv, target_chain_for_export,
+    )
     from shared.jobs import is_candidate_array, page_ordered_records  # noqa: PLC0415
     job = _staff_source_job(campaign_id, job_id)
     if job is None:
@@ -403,6 +405,12 @@ def admin_source_export_csv(campaign_id: str, job_id: str):
             candidates,
             fetch_bytes=_storage_fetcher(job.user_id, "admin_source_export_csv"),
             default_job_id=job_id,
+            # The same argument the user's own CSV route passes, or the two
+            # copies of "the same CSV" diverge -- pinned by
+            # tests/test_admin_shortlisted_designs.py,
+            # test_the_staff_copy_of_a_job_csv_carries_the_same_sequences.
+            target_chain=target_chain_for_export(
+                job.tool, job.result or {}, job.inputs or {}),
         )
     return Response(
         body,

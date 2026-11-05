@@ -453,11 +453,97 @@ def _candidate_sequence(cand: dict) -> str:
 _SEQ_CHAIN_PREFIX = "sequence_chain"
 # Why a row has no chain columns. One of five strings; see _add_chain_columns.
 _SEQ_NOTE = "sequence_note"
+# The two SEQUENCE developability terms, computed for the DESIGNED chain only
+# and only when the caller names the target chain (see
+# :func:`target_chain_for_export`). Upstream RFD4's own ``developability``
+# criterion thresholds four quantities; the other two (``sap_score``,
+# ``hydrophobic_exposure_sasa``) are Rosetta-side and deliberately out --
+# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:997 records that split and the
+# reason. Not pass/fail columns: neither name appears in
+# shared/score_legends.py::GATE_COLUMNS, so no verdict is derived from them
+# (tests/test_rfd4_results_and_exports.py,
+# ``test_the_developability_columns_are_not_a_pass_fail_bar``).
+_DEV_COLUMNS = ("gravy", "instability_index")
 
 
 def _is_reserved_seq_name(name: str) -> bool:
-    """A column name :func:`sequence_columns` owns, so no metric may use it."""
-    return name == _SEQ_NOTE or name.startswith(_SEQ_CHAIN_PREFIX)
+    """A column name :func:`sequence_columns` owns, so no metric may use it.
+
+    Covers :data:`_DEV_COLUMNS` for the reason :func:`candidate_table`'s own
+    comment gives for the chain names: a ``scores`` key of the same name would
+    otherwise be written into the row by ``row.update(scores)`` and printed in
+    the column this module computes. Nothing under ``tools/`` emits either name
+    today (no match for "gravy" or "instability" anywhere in the package), so
+    this guards a shape rather than an observed run, and the cost of the guard
+    is that a pipeline that starts scoring one loses the column instead of
+    corrupting this one."""
+    return (name == _SEQ_NOTE or name.startswith(_SEQ_CHAIN_PREFIX)
+            or name in _DEV_COLUMNS)
+
+
+# Tools whose ``target_chain`` names exactly one chain of the DELIVERED
+# structure. See :func:`target_chain_for_export` for why this is not every tool
+# that has the field.
+_TARGET_CHAIN_TOOLS = frozenset({"rfd4"})
+
+
+def target_chain_for_export(
+    tool: Optional[str], result, inputs,
+) -> Optional[str]:
+    """The chain an export may treat as the UPLOADED TARGET, or ``None``.
+
+    Only the designed chain gets the :data:`_DEV_COLUMNS` pair, so an export
+    has to be told which chain is not it. ``target_chain`` is a form field on
+    most PDB tools, and reading it for all of them would be wrong: it accepts
+    SEVERAL chains on tools whose adapter does not refuse a multi-chain request
+    (``tools/base.py::parse_target_chains``), and iggm's delivered PDB can carry
+    a relabelled antigen chain, which is why ``epitope_contacts`` matches that
+    chain on LENGTH instead (``relabel_colliding_antigen`` in
+    ``tools/iggm/run_pipeline.py``; the same caveat is recorded in
+    :func:`_add_chain_columns`). So this is an allow-list of one.
+
+    For rfd4 the key is a single concrete chain id of the delivered structure
+    or the run has no result at all: the adapter refuses an empty or
+    multi-chain request and stores one id (``tools/rfd4/__init__.py:148-158``,
+    ``:189``), and ``run_pipeline.py::resolve_target_chain`` (:643) either
+    returns exactly that chain or ``_fail``s the run (:657-674). The pipeline
+    copies it to the result root (``run_pipeline.py:1286-1303``); a recovered,
+    wallet-stopped or cancel-kept result keeps no root key of the tool's own
+    (``shared/job_recovery.py:480-484``, ``shared/jobs.py:2093-2100``,
+    ``:2299-2303``), hence the inputs fallback -- the same two sources, in the
+    same order, as ``templates/tools/rfd4_results.html``.
+    """
+    if tool not in _TARGET_CHAIN_TOOLS:
+        return None
+    for src in (result, inputs):
+        value = src.get("target_chain") if isinstance(src, Mapping) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _sequence_developability(seq: str) -> Optional[tuple[float, float]]:
+    """``(gravy, instability_index)`` for one chain, or ``None``.
+
+    Biopython's ``ProteinAnalysis`` rather than a ported formula: it is already
+    this module's structure parser (:func:`structure_chain_sequences`), and
+    both quantities are table lookups whose tables it ships -- Kyte-Doolittle
+    for GRAVY, Guruprasad's dipeptide weights for the instability index.
+
+    ``None`` when it raises, which it does on a residue letter outside the
+    twenty (``KeyError``) and on an empty sequence (``ZeroDivisionError``);
+    both probed at biopython 1.87. A caller gets no cells rather than a
+    partial pair, so a row never carries one of the two.
+    """
+    from Bio.SeqUtils.ProtParam import ProteinAnalysis  # noqa: PLC0415
+
+    try:
+        analysis = ProteinAnalysis(seq)
+        return round(analysis.gravy(), 3), round(analysis.instability_index(), 2)
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        # The type only: the message can quote the sequence.
+        logger.warning("developability not computed: %s", type(exc).__name__)
+        return None
 # Once this many structures have been read, the remaining rows that would need
 # one get a note instead of a read -- counted in reads, not rows. The web tier
 # kills a request at gunicorn's ``timeout`` (120s by default) under sync
@@ -559,7 +645,9 @@ def _read_chains(pairs, fetch_bytes, default_job_id) -> list:
         return list(pool.map(one, pairs))
 
 
-def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
+def _add_chain_columns(
+    cands, keys, rows, fetch_bytes, default_job_id, target_chain=None,
+) -> None:
     """Write each row's per-chain sequence columns, in place.
 
     Every chain :func:`structure_chain_sequences` returns, which is the whole
@@ -570,7 +658,7 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     FASTA either, both calling the same extractor
     (tests/test_export_page_parity.py,
     ``test_structure_chain_sequences_skips_placeholder_chains``). Nothing in a
-    stored row says which is which -- a boltzgen / proteina / rfantibody row
+    stored ROW says which is which -- a boltzgen / proteina / rfantibody row
     carries ``rank``, ``scores``, sometimes a ``name``, and no chain id at all
     (their ``tools/<pkg>/example/result.json``), and iggm's ``antigen_chain``
     is the id of the antigen chain in the delivered PDB, which is not
@@ -581,6 +669,27 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
     ``test_epitope_contacts_identifies_antigen_by_length``). So does
     :func:`candidates_to_fasta`, which writes a record per chain for the same
     reason.
+
+    ``target_chain`` IS THAT STATEMENT, AND IT COMES FROM THE RUN, NOT THE ROW
+    -- the sentence above is unchanged, and this is the whole reason the
+    argument exists rather than a per-row read. Given it, every chain whose
+    stripped id differs from it is a designed chain, and when there is exactly
+    one such chain its sequence gets the :data:`_DEV_COLUMNS` pair. Exactly
+    one, because the pair describes A chain: a row with two designed chains
+    would need a column each, which is the per-chain widening across every
+    tool that was rejected in favour of this argument
+    (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:997). The caller resolves
+    it through :func:`target_chain_for_export`, which is an allow-list of one
+    tool; omitted, no row gets either column and this function behaves exactly
+    as it did before (tests/test_rfd4_results_and_exports.py,
+    ``test_no_target_chain_means_no_developability_columns``).
+
+    A LENGTH RULE WOULD NOT DO INSTEAD. In the committed rung-4 rfd4 run
+    (docs/scoping/rung4-probe/gpu_result_20261103T114437.json) design 4's
+    binder is 116 residues against a 115-residue target, so the longest chain
+    is the binder in one of the eight and the target in the other seven
+    (tests/test_rfd4_results_and_exports.py,
+    ``test_the_designed_chain_is_not_the_longest_chain``).
 
     An earlier draft dropped a chain whose sequence repeated verbatim in
     every row, on the theory that only the target does that. It also drops a
@@ -705,23 +814,37 @@ def _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id) -> None:
             # mmCIF this repo has no example of. If one turns up, the fix is a
             # collision check here, not a second naming rule.
             row[f"{_SEQ_CHAIN_PREFIX}{cid.strip()}"] = seq
+        if not target_chain:
+            continue
+        designed = [s for cid, s in chains if cid.strip() != target_chain]
+        if len(designed) != 1:
+            continue
+        pair = _sequence_developability(designed[0])
+        if pair is not None:
+            row.update(zip(_DEV_COLUMNS, pair))
 
 
 def sequence_columns(rows: list[dict]) -> list[str]:
     """The sequence column names for ``rows``, in the order the CSV writes
     them: the stored ``sequence`` when any row has one, then one column per
-    chain in chain-id order, then ``sequence_note`` when any row has one."""
+    chain in chain-id order, then the two :data:`_DEV_COLUMNS` when any row
+    has them, then ``sequence_note`` when any row has one.
+
+    The developability pair sits beside the chains it was computed from, and
+    before the note, so the note stays the last column it has always been."""
     stored = ["sequence"] if any(r.get("sequence") for r in rows) else []
     chains = sorted(
         {k for r in rows for k in r if k.startswith(_SEQ_CHAIN_PREFIX)}
     )
+    # Both or neither: _add_chain_columns writes the pair in one update.
+    dev = [c for c in _DEV_COLUMNS if any(r.get(c) is not None for r in rows)]
     note = [_SEQ_NOTE] if any(r.get(_SEQ_NOTE) for r in rows) else []
-    return stored + chains + note
+    return stored + chains + dev + note
 
 
 def candidate_table(
     candidates, *, fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
-    default_job_id: Optional[str] = None,
+    default_job_id: Optional[str] = None, target_chain: Optional[str] = None,
 ) -> tuple[list[str], list[str], list[dict]]:
     """``(leading, metrics, rows)``: the cells :func:`candidates_to_csv`
     writes, before they are serialised. One row per candidate, in the order
@@ -735,7 +858,13 @@ def candidate_table(
     ``_MAX_STRUCTURE_READS`` is noted instead of read. A row left with no
     chain columns, read or not, carries a ``sequence_note`` saying why
     (:func:`_add_chain_columns`). Omitted, no structure is read and no such
-    key is written, which is what the admin caller relies on."""
+    key is written, which is what the admin caller relies on.
+
+    ``target_chain`` names the run's uploaded target chain, from
+    :func:`target_chain_for_export`. With it, and with ``fetch_bytes``, the row
+    additionally carries the ``gravy`` / ``instability_index`` pair for its one
+    designed chain (:func:`_add_chain_columns`). It is inert without
+    ``fetch_bytes``, because this function then knows no chains at all."""
     cands = _dict_candidates(candidates)
     keys, leading = _export_keys(cands)
     # "sequence" passed as a leading name so a ``scores["sequence"]`` cannot
@@ -787,13 +916,14 @@ def candidate_table(
         row["sequence"] = _candidate_sequence(cand)
         rows.append(row)
     if fetch_bytes is not None:
-        _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id)
+        _add_chain_columns(cands, keys, rows, fetch_bytes, default_job_id,
+                           target_chain)
     return leading, all_score_keys, rows
 
 
 def candidates_to_csv(
     candidates, *, fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
-    default_job_id: Optional[str] = None,
+    default_job_id: Optional[str] = None, target_chain: Optional[str] = None,
 ) -> str:
     """Provenance columns (:func:`export_key`) + every metric found, then the
     sequence columns (:func:`sequence_columns`).
@@ -810,9 +940,14 @@ def candidates_to_csv(
     staff copy of the job one, ``admin_source_export_csv``. Such a row is then read from the same bytes
     through the same extractor the FASTA fallback uses, one column per chain
     it returns, or a ``sequence_note`` saying why that row has none.
+
+    ``target_chain``, from :func:`target_chain_for_export`, additionally buys
+    the ``gravy`` / ``instability_index`` pair for the one chain that is not
+    the target (:func:`_add_chain_columns`). Inert without ``fetch_bytes``.
     """
     leading, metrics, rows = candidate_table(
         candidates, fetch_bytes=fetch_bytes, default_job_id=default_job_id,
+        target_chain=target_chain,
     )
     buf = io.StringIO()
     writer = csv.DictWriter(
@@ -951,11 +1086,32 @@ def _pdb_residue_names(text: str) -> dict[str, list[str]]:
     return {cid: list(res.values()) for cid, res in chains.items()}
 
 
+def _chain_records(
+    chains, target_chain: Optional[str],
+) -> list[tuple[str, str, str]]:
+    """``(id suffix, description marker, sequence)`` per chain of one row.
+
+    The marker is empty unless the caller named the target chain, so an export
+    that does not know the run writes exactly what it wrote before
+    (tests/test_rfd4_results_and_exports.py,
+    ``test_the_fasta_marks_the_binder_chain``).
+    """
+    out = []
+    for cid, seq in chains:
+        marker = ""
+        if target_chain:
+            marker = (" [target chain]" if cid.strip() == target_chain
+                      else " [designed chain]")
+        out.append((f"_chain{cid}", marker, seq))
+    return out
+
+
 def candidates_to_fasta(
     candidates, sequences=None, *, tool=None, preset=None,
     fetch_bytes: Optional[Callable[[str, str], Optional[bytes]]] = None,
     default_job_id: Optional[str] = None,
     max_reads: Optional[int] = None,
+    target_chain: Optional[str] = None,
 ) -> str:
     """FASTA body for a job/campaign/target. Binder-design tools carry a
     ``sequence`` / ``binder_sequence`` per candidate; MPNN's sequence-design
@@ -985,13 +1141,25 @@ def candidates_to_fasta(
     FALLBACK: a row carrying no sequence field and no :data:`STORED_CHAINS`
     is read from its structure --
     the same bytes :func:`candidates_to_zip` would archive -- and written as
-    one record per protein chain, id suffixed ``_chain<X>``. Every chain,
-    because this function is not told which chain is the design, so a complex's
-    target chain repeats once per design. A row with stored chains is
+    one record per protein chain, id suffixed ``_chain<X>``. Every chain, so a
+    complex's target chain repeats once per design. A row with stored chains is
     written from them the same way, with or without ``fetch_bytes``. Without
     ``fetch_bytes`` a row with neither is skipped. With ``max_reads``, reads past it are skipped too, counted in a
     leading ``#`` line; the campaign and target routes pass
     ``_MAX_STRUCTURE_READS``, the job route passes none.
+
+    ``target_chain``, from :func:`target_chain_for_export`, says WHICH of those
+    chains the operator uploaded, and each chain record then carries
+    ``[target chain]`` or ``[designed chain]`` in its description. Without it
+    the records are unmarked, which is every tool's behaviour today and the
+    open half of #412 -- the caller has to know the run, and only an
+    allow-listed tool's ``target_chain`` names exactly one chain of the
+    delivered structure (see :func:`target_chain_for_export`). Marked per
+    record, not by the CSV's exactly-one-designed-chain rule
+    (:func:`_add_chain_columns`): a record describes ONE chain, so a structure
+    with two designed chains labels both
+    (tests/test_rfd4_results_and_exports.py,
+    ``test_the_fasta_marks_the_binder_chain``).
 
     WHY A NOTE AND NOT A REORDER. ``rank1`` on a per-job export is
     ``candidates[0]`` of the list the route hands over -- page order, via
@@ -1046,13 +1214,13 @@ def candidates_to_fasta(
         key = keys[i]
         seq = _candidate_sequence(cand)
         if seq:
-            records = [("", seq)]
+            records = [("", "", seq)]
         elif i in stored:
-            records = [(f"_chain{cid}", chain_seq) for cid, chain_seq in stored[i]]
+            records = _chain_records(stored[i], target_chain)
         elif i in read:
             chains = read[i][1]
             unparsed += chains is None
-            records = [(f"_chain{cid}", chain_seq) for cid, chain_seq in chains or []]
+            records = _chain_records(chains or [], target_chain)
         else:
             records = []
         if not records:
@@ -1080,9 +1248,9 @@ def candidates_to_fasta(
                         f" [does not meet bar: {note}]"
                         if verdict.verdict == "below" else f" [{note}]"
                     )
-        # Chain suffix goes after the id, before any note.
-        for suffix, rec_seq in records:
-            lines.append(base_id + suffix + header[len(base_id):])
+        # Chain suffix goes after the id, its own marker next, then any note.
+        for suffix, marker, rec_seq in records:
+            lines.append(base_id + suffix + marker + header[len(base_id):])
             for start in range(0, len(rec_seq), 80):
                 lines.append(rec_seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):

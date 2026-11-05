@@ -81,7 +81,7 @@ def _job_26c1f866():
          "scores": {"ipTM": 0.412, "pI": 7.0, "plddt": 0.5}},
     ]
     return SimpleNamespace(id=_JID, tool="esmfold2-design", user_id="u-1",
-                           result={"candidates": cands})
+                           inputs={}, result={"candidates": cands})
 
 
 def _get(client, campaign, jobs, path=""):
@@ -132,7 +132,7 @@ def test_the_number_is_the_page_position_not_the_stored_index(client):
         {"name": "d2", "iptm": 0.7, "sequence": "DDDDDD"},
     ]
     job = SimpleNamespace(id=_JID, tool="boltz2", user_id="u-1",
-                          result={"designs": designs})
+                          inputs={}, result={"designs": designs})
     html = _get(client, _campaign(candidate_indices=[2, 0]),
                 {_JID: job}).get_data(as_text=True)
     picked, others = _tables(html)
@@ -210,7 +210,7 @@ def _two_chain_job():
         {"rank": 1, "name": "d1", "pdb_key": "d1.pdb", "scores": {"ipTM": 0.8}},
     ]
     job = SimpleNamespace(id=_JID, tool="boltzgen", user_id="u-1",
-                          result={"candidates": cands})
+                          inputs={}, result={"candidates": cands})
     return job, files
 
 
