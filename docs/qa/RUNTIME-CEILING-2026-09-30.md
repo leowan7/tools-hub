@@ -321,23 +321,34 @@ gate refuses on them.
 
 Neither was run. Both need Leo's per-job approval.
 
-## 9. Also found, not fixed
+## 9. Also found, not fixed here — closed later by #457
 
-`shared/tool_chooser.py` has no target-size dimension at all — it recommends by
-task. `recommend(have, shape, chemistry)` (`shared/tool_chooser.py:512`) takes no
-size argument, and no `.size.` field of `TOOL_RULES` is read anywhere in the
-file, so the chooser cannot see either cap. So it can recommend boltzgen for a 400 aa target that boltzgen's own
-preflight now refuses on runtime. The user gets a recommendation and then a
-refusal. Worth its own change; it needs a decision about whether the chooser
-should read `TOOL_RULES` size limits, which is more than a one-line fix.
+**RESOLVED 2026-10-24 by `2826fddf`, "state the size limits preflight really
+enforces on chooser cards" (#457). The first paragraph below ("As found")
+describes the gap as it stood on 2026-09-30 and is kept as the record of it;
+it is no longer a description of the shipped code. The second paragraph
+("What closed it") describes the code as shipped.**
 
-The gap is now pinned by a test rather than only described here:
-`tests/test_tool_chooser.py::test_the_chooser_is_not_size_aware_and_this_pins_where_that_shows`
-asserts that a 240 aa two-chain target IS refused by the boltzgen tool the
-chooser offers, so closing the gap fails that test and forces this note to be
-deleted with it. The multi-chain fixture in that file was dropped to 140 aa to
-keep its own assertion about multi-chain support rather than about size, which
-is what left the disagreement untested until this test was added.
+As found: `shared/tool_chooser.py` had no target-size dimension at all — it
+recommended by task. `recommend(have, shape, chemistry)`
+(`shared/tool_chooser.py:512` at the time) took no size argument, and no
+`.size.` field of `TOOL_RULES` was read anywhere in the file, so the chooser
+could not see either cap. So it could recommend boltzgen for a 400 aa target
+that boltzgen's own preflight refuses on runtime. The user got a recommendation
+and then a refusal. Worth its own change; it needed a decision about whether the
+chooser should read `TOOL_RULES` size limits, which was more than a one-line
+fix.
+
+What closed it: `shared/tool_chooser.py::target_size_ceiling_aa` states the
+lower of `hard_cap_target_aa` and the runtime-ceiling inverse
+`largest_target_aa_within_ceiling`, and
+`tests/test_tool_chooser.py::test_the_size_clause_names_a_size_preflight_accepts`
+drives the real preflight at the size the card names and one residue past it,
+for every tool the chooser lists that has preflight rules. The test this
+section used to name as its pin was
+removed by that same commit (`git log -S` over this file's test module reports
+it added by `0040ebc1` and removed by `2826fddf`), which is what this section
+said closing the gap would do.
 
 ### The campaign chunk size does not know the target size
 
