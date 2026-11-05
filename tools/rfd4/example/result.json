@@ -1,0 +1,65 @@
+{
+  "status": "COMPLETED",
+  "tier": "binder_design",
+  "designs_total": 8,
+  "designs_completed": 8,
+  "designs": [
+    {
+      "rank": 0,
+      "name": "000_pdl1_binder_0_generated",
+      "pdb_key": "000_pdl1_binder_0_generated.cif"
+    },
+    {
+      "rank": 1,
+      "name": "001_pdl1_binder_1_generated",
+      "pdb_key": "001_pdl1_binder_1_generated.cif"
+    },
+    {
+      "rank": 2,
+      "name": "002_pdl1_binder_2_generated",
+      "pdb_key": "002_pdl1_binder_2_generated.cif"
+    },
+    {
+      "rank": 3,
+      "name": "003_pdl1_binder_3_generated",
+      "pdb_key": "003_pdl1_binder_3_generated.cif"
+    },
+    {
+      "rank": 4,
+      "name": "004_pdl1_binder_4_generated",
+      "pdb_key": "004_pdl1_binder_4_generated.cif"
+    },
+    {
+      "rank": 5,
+      "name": "005_pdl1_binder_5_generated",
+      "pdb_key": "005_pdl1_binder_5_generated.cif"
+    },
+    {
+      "rank": 6,
+      "name": "006_pdl1_binder_6_generated",
+      "pdb_key": "006_pdl1_binder_6_generated.cif"
+    },
+    {
+      "rank": 7,
+      "name": "007_pdl1_binder_7_generated",
+      "pdb_key": "007_pdl1_binder_7_generated.cif"
+    }
+  ],
+  "artifact_keys": [
+    "artifacts/per_example_metrics.csv",
+    "artifacts/aggregated_metrics.csv"
+  ],
+  "target_chain": "A",
+  "target_length": 115,
+  "target_asym_id": "A",
+  "contig": "60-120, /0, A1-115",
+  "binder_length": [
+    60,
+    120
+  ],
+  "hotspot_selections": [
+    "sel('A/*/56/[CG,OH]')"
+  ],
+  "runtime_seconds": 217,
+  "provider_job_id": ""
+}

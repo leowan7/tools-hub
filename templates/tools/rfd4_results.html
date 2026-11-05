@@ -1,0 +1,82 @@
+{# RFD4-Proteina results partial — included by job_detail.html on status=succeeded
+   or a cancelled run that kept designs.
+
+   NO SCORE COLUMNS, AND THAT IS THE SHAPE, NOT AN OMISSION. Every delivered
+   design carries exactly three keys — rank, name, pdb_key — written by
+   tools/rfd4/run_pipeline.py::_upload_design (`return {"rank": rank, "name":
+   uniq, "pdb_key": cif_key}`). The pipeline writes no confidence, no ipTM and
+   no RMSD: the Boltz-2 scoring leg that would produce them is a separate job
+   that does not exist yet (rfd4 has no entry in shared/refold.py::SOURCE_TOOLS).
+   So the table is the structure list plus its viewers, and rfd4 is likewise
+   absent from shared/score_legends.py::GATE_COLUMNS (:1527) — with no metric to
+   judge, `judge_design` returns no verdict and the shell's shortfall banner
+   stays silent.
+
+   `ranked=false` for the same reason. The pipeline's rank is completion order
+   within a sweep, not quality (run_pipeline.py:1054-1055).
+
+   WHICH CHAIN IS THE BINDER. Each downloaded CIF holds two chains: the target
+   chain the operator uploaded, named in `target_chain` at the result root, and
+   the de-novo binder. The binder is NOT identifiable by length — in the
+   committed rung-4 run (docs/scoping/rung4-probe/gpu_result_20261103T114437.json)
+   design 4 is a 116-residue binder against a 115-residue target, so the line
+   below names the target and lets the reader take the other one. #}
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output      = job.result or {} %}
+{% set raw_designs = display_rows(output.get('designs')) %}
+{# A run rebuilt by shared/job_recovery.recover_stuck_job_result stores its rows
+   under `candidates`, not this tool's native `designs` — the af2 partial's note
+   gives the full reason. Those rows are already candidate-shaped. #}
+{% set recovered   = display_rows(output.get('candidates')) %}
+{% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
+{% set is_example  = (job.id == 'example') %}
+
+{% set candidates = [] %}
+{% for d in raw_designs %}
+  {% set _ = candidates.append({
+      '_source_index': loop.index0,
+      'rank': d.get('rank'),
+      'name': d.get('name'),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {},
+  }) %}
+{% endfor %}
+{% set candidates = recovered or candidates %}
+{% set columns = recovered_columns(recovered) if recovered else [] %}
+
+{% set target_chain = output.get('target_chain') %}
+{% if target_chain %}
+  <p class="subtitle" style="margin-top:1rem;">
+    <strong>Target chain {{ target_chain }}</strong>{% if output.get('target_length') %}
+    ({{ output.get('target_length') }} aa){% endif %} — each downloaded structure
+    holds your target plus one de-novo binder chain, and the binder is the chain
+    that is not {{ target_chain }}. Do not pick it by length; it can be longer
+    than the target.
+    {% if output.get('contig') %}
+      Contig <code>{{ output.get('contig') }}</code>.
+    {% endif %}
+  </p>
+{% endif %}
+<p class="subtitle">
+  These designs carry no confidence score. RFD4 generates backbones and
+  sequences; scoring the complex is a separate fold run, so take the structures
+  into a predictor before choosing between them.
+</p>
+
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='rfd4',
+    job_id=job.id,
+    clone_url=('' if is_example else clone_url),
+    tier=output.get('tier'),
+    gpu_seconds=output.get('gpu_seconds'),
+    send_target_tools=send_target_tools,
+    ranked=false,
+    requested=requested_designs(job)) %}
+  <p class="subtitle">
+    This run returned no designs. Every sample upstream produced was either
+    incomplete or failed to upload — the run page's raw artifacts record which.
+  </p>
+{% endcall %}
