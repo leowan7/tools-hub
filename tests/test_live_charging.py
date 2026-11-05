@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 LIVE = {"af2", "colabfold", "esmfold", "boltz2"}
 LIVE_ALL_PRESETS = {"bindcraft", "boltz2", "esmfold2-design", "iggm", "proteina",
-                    "pxdesign", "rfantibody", "rfdiffusion"}
+                    "pxdesign", "rfantibody", "rfd4", "rfdiffusion"}
 # 936.78 s, _RFDIFFUSION's one-design run at the 120-aa pivot, at the A100-40GB rate.
 RFD_START = Decimal("1.1371")
 # A flat $2.00 to start an rfantibody run, the figure Leo picked 2026-10-20.
@@ -48,11 +48,14 @@ ESMFOLD2_START = Decimal("15.00")
 # next round figure above a one-design pxdesign run's live cost. See
 # shared/wallet_guard.py::live_start_usd.
 PXDESIGN_START = Decimal("2.00")
+# A flat $1.00 to start an rfd4 run. Proposed in scope §9 item 6, confirmed
+# by Leo on 2026-11-04. See shared/wallet_guard.py::live_start_usd.
+RFD4_START = Decimal("1.00")
 # The live tools that refuse a balance below a start minimum.
 STARTS = {"rfdiffusion": RFD_START, "rfantibody": RFA_START,
           "bindcraft": BC_START, "iggm": IGGM_START,
           "proteina": PROTEINA_START, "esmfold2-design": ESMFOLD2_START,
-          "pxdesign": PXDESIGN_START}
+          "pxdesign": PXDESIGN_START, "rfd4": RFD4_START}
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,19 @@ def test_iggm_uploads_and_beats_once_per_design():
     """
     assert _upload_sites("iggm", "upload_one") == [(("sweep_designs",), True)]
     assert (("sweep_designs",), True) in _upload_sites("iggm", "send_heartbeat")
+
+
+def test_rfd4_uploads_and_beats_once_per_design():
+    """rfd4 streams through one sweep too, the same shape as iggm's.
+
+    Listed apart for the same reason: the uploader is injected
+    (``upload_one`` is the closure over ``_upload_design`` that ``main``
+    passes in), so there is no ``upload_pdb`` call to find. Only the
+    per-design beat is asserted here; the file's four others are all outside
+    any loop (run_pipeline.py:1102, :1113, :1188, :1312).
+    """
+    assert _upload_sites("rfd4", "upload_one") == [(("sweep_designs",), True)]
+    assert (("sweep_designs",), True) in _upload_sites("rfd4", "send_heartbeat")
 
 
 # Live tools whose container is not in this repo, so the heartbeat check
@@ -362,6 +378,62 @@ def test_pxdesign_at_its_start_minimum_opens_an_anchor():
     r = _post("pxdesign", {}, balance=PXDESIGN_START)
     assert r.body == "RAN"
     r.open.assert_called_once_with("u-1", "pxdesign")
+
+
+def test_rfd4_starts_at_one_dollar():
+    """The three figures scope §9 item 6's $1.00 was proposed against.
+
+    Measured, not derived: §5.8 timed the production configuration on an
+    8-design run. Leo confirmed the figure on 2026-11-04, so this test is
+    what makes a later change to it visible.
+    """
+    from shared.wallet import MIN_TOPUP_USD
+    from shared.wallet_guard import live_due_usd
+
+    gpu = gpu_class_for_job("rfd4")
+    for params in ({}, {"nsamples": 1}, {"nsamples": 8}, {"nsamples": 200}):
+        assert live_start_usd("rfd4", params) == RFD4_START
+    # 128.2 s to the first design; 217.4 s for the whole 8-design run.
+    assert live_due_usd("rfd4", 128.2, gpu, {}) == Decimal("0.2240")
+    assert live_due_usd("rfd4", 217.4, gpu, {}) == Decimal("0.3799")
+    assert RFD4_START < MIN_TOPUP_USD
+
+
+def test_the_rfd4_cap_mirrors_its_spec():
+    """$25.00 in both maps, and above one container's physical maximum.
+
+    The container is one A100-80GB run per job with no fan-out, killed at
+    ``_MAX_SESSION_S`` (tools/rfd4/modal_app.py), so the full session below
+    IS the physical ceiling on a single rfd4 charge.
+    """
+    from shared.wallet import PER_JOB_HARD_CAP_USD, compute_charge_usd
+
+    spec = TOOL_SPECS["rfd4"]
+    assert PER_JOB_HARD_CAP_USD["rfd4"] == spec.absolute_cap_usd == Decimal("25.00")
+    full_session = compute_charge_usd(spec.worst_case_gpu_seconds, spec.gpu_class)
+    assert full_session == Decimal("4.7185")
+    assert full_session < spec.absolute_cap_usd
+    # The scaled cap saturates at the absolute one, and $2.00 x (100/8) hits
+    # it exactly, so it is flat from 100 designs to the adapter's 200 ceiling.
+    assert compute_hard_cap("rfd4", {"n_designs_total": 100}) == Decimal("25.0000")
+    assert compute_hard_cap("rfd4", {"n_designs_total": 200}) == Decimal("25.0000")
+
+
+def test_the_rfd4_scoring_fold_is_covered_by_boltz2s_existing_cap():
+    """§7C.1's scoring leg is a separate boltz2 job, and its cap already fits.
+
+    §7C.4 measured the batched 8-design fold at $0.21-$0.31, with $0.69 as
+    the per-design ceiling for the same shape. boltz2's scaled cap at 8
+    designs is the headroom over that. The leg's $0 start minimum is
+    deliberate and closes at the spawn, not here -- see
+    shared/wallet_guard.py::live_start_usd.
+    """
+    import shared.refold as refold
+
+    assert compute_hard_cap("boltz2", {"n_designs_total": 8}) == Decimal("3.20")
+    assert live_start_usd("boltz2", {}) == 0
+    # Nothing spawns the chained fold yet, so there is nothing to gate.
+    assert "rfd4" not in refold.SOURCE_TOOLS
 
 
 def test_proteina_below_its_start_minimum_is_refused():

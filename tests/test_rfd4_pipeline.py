@@ -17,7 +17,6 @@ GPU run has consumed a spec this repo generates. That is §8 step 2's gate
 
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -135,45 +134,12 @@ def test_num_replicates_is_the_only_count_passed():
     assert len([a for a in ours if a.startswith("num_replicates=")]) == 1
 
 
-# ===========================================================================
-# _start_beat
-# ===========================================================================
-
-
-def _start_beat(tool: str):
-    tree = ast.parse((REPO / "tools" / tool / "modal_app.py").read_text(encoding="utf-8"))
-    return tree, next(
-        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_start_beat"
-    )
-
-
-def test_start_beat_is_identical_to_af2s():
-    """Byte-for-byte via the AST, docstring included.
-
-    ``tests/test_live_charging.py::test_start_beat_is_the_same_in_every_app``
-    runs this over ``LIVE | LIVE_ALL_PRESETS`` only
-    (tests/test_live_charging.py:32-33, :1160), and ``rfd4`` is in neither set,
-    so until §8 step 4 adds the slug this file is what covers it.
-    """
-    assert ast.dump(_start_beat("rfd4")[1]) == ast.dump(_start_beat("af2")[1])
-
-
-def test_the_start_beat_is_sent_before_any_work():
-    tree, _ = _start_beat("rfd4")
-    fns = [
-        f for f in ast.walk(tree)
-        if isinstance(f, ast.FunctionDef)
-        and f.name != "_start_beat"
-        and any(
-            isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_merged_environment"
-            for c in ast.walk(f)
-        )
-    ]
-    assert fns
-    for fn in fns:
-        stmts = [ast.unparse(s) for s in fn.body]
-        at = stmts.index("env = _merged_environment(payload)")
-        assert stmts[at + 1] == "_start_beat(env)", fn.name
+# rfd4's _start_beat is covered by the generic pair in
+# tests/test_live_charging.py (::test_start_beat_is_the_same_in_every_app and
+# ::test_gpu_function_sends_the_start_beat_before_its_work), which parametrize
+# over START_BEAT_APPS; that set now includes rfd4 because step 4 added the
+# slug to _LIVE_ALL_PRESETS. The two copies that used to sit here were deleted
+# rather than kept, as the generic ones assert the same two properties.
 
 
 # ===========================================================================
