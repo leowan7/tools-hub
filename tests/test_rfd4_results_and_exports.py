@@ -495,6 +495,87 @@ def test_the_fasta_marks_nothing_when_the_target_chain_is_absent():
         assert "gravy" not in row and "instability_index" not in row, row
 
 
+def _only_chain(text: str, keep: str, as_id: str) -> str:
+    """One probe CIF reduced to the atoms of author chain ``keep``, relabelled
+    ``as_id``, so it reads back as exactly one chain under a different id."""
+    head = [ln.strip() for ln in text.splitlines()
+            if ln.strip().startswith("_atom_site.")]
+    ia = head.index("_atom_site.auth_asym_id")
+    lines = []
+    for line in text.splitlines():
+        if line.startswith(("ATOM ", "HETATM")):
+            fields = line.split()
+            if fields[ia] != keep:
+                continue
+            fields[ia] = as_id
+            line = " ".join(fields)
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def test_a_lone_relabelled_target_is_not_scored_as_the_design():
+    """Cited by shared/exports.py::_add_chain_columns, above its ``present``
+    test.
+
+    The hole the two-chain case above cannot reach. With the target absent,
+    ``len(designed) != 1`` fails safe only because TWO chains read back and
+    neither matched; a file reading back as exactly ONE chain under a
+    different id leaves exactly one "designed" chain, and the pair is then
+    computed from it. Here that one chain IS the operator's uploaded target
+    (chain A alone, relabelled "C", with the run's ``target_chain`` still
+    "A"), so without the guard the CSV prints the target's gravy and
+    instability index under the design's name -- numbers a customer orders
+    wet-lab work against.
+
+    Measured, not reasoned. The three assertions below are what make this
+    test non-vacuous rather than an absence that any bug could also produce:
+    the structure really reads back as one chain, that chain really carries
+    the target's sequence, and the pair really is computable from it -- so
+    the empty columns are the guard's work and nothing else's. Deleting the
+    ``present`` test in _add_chain_columns makes the last assertion fail.
+
+    How a run reaches it is NOT settled by any committed artefact: it needs
+    upstream to re-emit the target under a different letter AND to deliver a
+    design file holding one chain, and the probe run
+    (docs/scoping/rung4-probe/gpu_result_20261103T114437.json) does neither
+    -- its eight files all read back as two chains, A and B. So this is a
+    guard against a constructed input, pinned at the function's own level,
+    not a fix for an observed run.
+    """
+    from shared.exports import (
+        _sequence_developability, candidates_to_csv, structure_chain_sequences)
+    from shared.jobs import page_ordered_records
+
+    cifs = {stem: _only_chain(text, "A", "C")
+            for stem, text in _probe_cifs().items()}
+    assert cifs, "no probe CIFs, so nothing below proves anything"
+
+    def fetch(job_id: str, key: str) -> bytes | None:
+        text = cifs.get(Path(key).stem.split("_", 1)[1])
+        return text.encode("utf-8") if text else None
+
+    # The constructed file is one chain, it is the target's sequence, and the
+    # pair is computable from it: all three hold, so the absence asserted
+    # last is the guard and not a reduced file that scores nothing anyway.
+    originals = {stem: dict(_chain_seqs(text))
+                 for stem, text in _probe_cifs().items()}
+    for stem, text in cifs.items():
+        read_back = structure_chain_sequences(text.encode("utf-8"))
+        assert [cid for cid, _ in read_back] == ["C"], (stem, read_back)
+        assert read_back[0][1] == originals[stem]["A"], stem
+        assert _sequence_developability(read_back[0][1]) is not None, stem
+
+    body = candidates_to_csv(
+        page_ordered_records("rfd4", _example()), fetch_bytes=fetch,
+        default_job_id=JOB_ID, target_chain="A")
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert len(rows) == 8, len(rows)
+    for row in rows:
+        assert "gravy" not in row and "instability_index" not in row, row
+        # The chain itself is still delivered, unmarked and unscored.
+        assert row["sequence_chainC"], row
+
+
 def test_the_runtime_line_renders_the_key_this_pipeline_writes(
         tools_app, rfd4_registered):
     """Cited by templates/tools/rfd4_results.html, above the results_panel call.

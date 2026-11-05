@@ -837,6 +837,15 @@ def _add_chain_columns(
             row[f"{_SEQ_CHAIN_PREFIX}{cid.strip()}"] = seq
         if not target_chain:
             continue
+        # The same present test :func:`_chain_records` uses, and the docstring
+        # there claimed the skip below already was. It is not: with the named
+        # chain absent, a file reading back as exactly one chain leaves one
+        # "designed" chain and gets the pair, so a relabelled target delivered
+        # alone would print the operator's own target under the design's name
+        # (tests/test_rfd4_results_and_exports.py,
+        # test_a_lone_relabelled_target_is_not_scored_as_the_design).
+        if not any(cid.strip() == target_chain for cid, _ in chains):
+            continue
         designed = [s for cid, s in chains if cid.strip() != target_chain]
         if len(designed) != 1:
             continue
@@ -1117,9 +1126,12 @@ def _chain_records(
     (tests/test_rfd4_results_and_exports.py,
     ``test_the_fasta_marks_the_binder_chain``).
 
-    It is also empty when the named chain is not AMONG ``chains``, which is the
-    same fail-safe :func:`_add_chain_columns` gets from its
-    ``len(designed) != 1`` skip: without it "the target is not in this file"
+    It is also empty when the named chain is not AMONG ``chains``, the same
+    test :func:`_add_chain_columns` now makes before it scores a chain. An
+    earlier draft of this sentence credited that function's
+    ``len(designed) != 1`` skip with the fail-safe instead, which was false
+    for a file reading back as exactly one chain: without it "the target is
+    not in this file"
     reads as "every chain here is a design", and the operator's own uploaded
     target would be delivered labelled ``[designed chain]``. That state is
     reachable because a CIF upload goes to upstream verbatim
