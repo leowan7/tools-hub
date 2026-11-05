@@ -332,13 +332,24 @@ def _completion_signal(job) -> str:  # noqa: ANN001
 
 
 def recover_stuck_job_result(
-    job, *, probe_modal: bool = True
+    job, *, probe_modal: bool = True, verdict_out: Optional[dict] = None
 ) -> Optional[dict]:  # noqa: ANN001
     """Return a finalizable ``succeeded`` result for a stuck job, or None.
 
     ``None`` means the work is not recoverable and the caller should time the
-    job out (full refund) as before. A non-None return is a result dict ready
-    to hand to ``complete_job(terminal_status="succeeded", ...)``.
+    job out. A non-None return is a result dict ready to hand to
+    ``complete_job(terminal_status="succeeded", ...)``.
+
+    ``None`` on its own no longer implies a full refund: since Leo's
+    2026-11-04 decision a timed-out run that delivered designs is billed
+    (``timeout_with_delivery`` in shared/jobs.py::_BILLED_FAILURE_CLASSES).
+    The two reasons for ``None`` below therefore need different money, and
+    only step 2 can tell them apart. Pass a dict as ``verdict_out`` to
+    receive that ground truth under ``"exit_verdict"``: ``"failed"`` is a
+    genuine crash, which must not be billed off designs rebuilt from
+    Storage, and ``timeout_stuck_job`` skips the keep for it
+    (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut::
+    test_crashed_pipeline_with_partial_designs_is_not_billed).
 
     Recovery only fires on positive evidence the run genuinely finished, so a
     run that streamed a few designs and then FAILED (whose FAILED webhook was
@@ -370,6 +381,11 @@ def recover_stuck_job_result(
         # on the heartbeat + Storage evidence below, which is the only thing
         # that could have recovered this job anyway.
         inline, exit_verdict = None, "unknown"
+
+    if verdict_out is not None:
+        # The caller needs step 2's ground truth even when we return None,
+        # because the two None reasons differ in money (see the docstring).
+        verdict_out["exit_verdict"] = exit_verdict
 
     # 1. Inline result already in hand (atomic tools / payload-returning runs).
     if inline is not None:

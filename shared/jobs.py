@@ -1868,8 +1868,11 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     # Recovery gate: finalize as succeeded when the work provably survived.
     from shared.job_recovery import recover_stuck_job_result  # noqa: PLC0415
 
+    verdict: dict = {}
     try:
-        recovered = recover_stuck_job_result(job, probe_modal=probe_modal)
+        recovered = recover_stuck_job_result(
+            job, probe_modal=probe_modal, verdict_out=verdict,
+        )
     except Exception:
         logger.warning(
             "timeout_stuck_job: recovery probe raised for job %s; "
@@ -1910,22 +1913,34 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         )
         return ""
 
-    # Nothing recoverable — genuine stall. Time it out, keep whatever
-    # designs the run had already streamed, and settle last: the keep is
-    # what decides between the two timeout classes, and the settle routes
-    # on the class it reads off the object handed to it
-    # (``job.failure_class`` at shared/jobs.py::
-    # _settle_wallet_hold_for_completed_job, the ``if job.failure_class is
-    # not None`` branch). So the keep must run first for a delivered
-    # timeout to be billed, and a stall that kept nothing settles exactly
-    # as it did before
+    # Not recoverable. Two different reasons reach here and they differ in
+    # money. A genuine crash -- nonzero pipeline exit, the "Ground-truth
+    # veto" at shared/job_recovery.py::recover_stuck_job_result step 2 --
+    # must NOT be billed off designs rebuilt from Storage: the webhook and
+    # the inline poll classify that same crash to a refunded class, so
+    # keeping and billing it here would make the bill depend on which path
+    # happened to notice the crash. Skip the keep for it and settle exactly
+    # as before
+    # (tests/test_sweep_stuck_recovery.py::
+    # TestGenuinelyDeadJobStillTimesOut::
+    # test_crashed_pipeline_with_partial_designs_is_not_billed).
+    #
+    # Otherwise it is a stall with no crash verdict: keep whatever designs
+    # the run had already streamed, and settle LAST, because the keep is
+    # what decides between the two timeout classes and the settle routes on
+    # the class it reads off the object handed to it (``job.failure_class``
+    # at shared/jobs.py::_settle_wallet_hold_for_completed_job, the ``if
+    # job.failure_class is not None`` branch). So the keep must run first
+    # for a delivered timeout to be billed, and a stall that kept nothing
+    # settles exactly as it did before
     # (tests/test_timeout_keeps_designs.py::
     # test_a_timeout_that_kept_nothing_is_still_refunded).
     if not mark_timeout(job_id):
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
-        fresh = _keep_streamed_designs(fresh, status="timeout")
+        if verdict.get("exit_verdict") != "failed":
+            fresh = _keep_streamed_designs(fresh, status="timeout")
         _settle_wallet_hold_for_completed_job(fresh)
     return "timed_out"
 

@@ -373,7 +373,12 @@ class TestGenuinelyDeadJobStillTimesOut:
             outcome = timeout_stuck_job(row["id"])
 
         assert outcome == "timed_out"
-        assert store.rows[row["id"]]["status"] == "timeout"
+        stored = store.rows[row["id"]]
+        assert stored["status"] == "timeout"
+        # The crash verdict vetoes the keep, so nothing is resurrected and
+        # the class stays the refunded one (the ``exit_verdict != "failed"``
+        # gate in shared/jobs.py::timeout_stuck_job).
+        assert stored["failure_class"] == "no_progress_timeout"
         release.assert_called_once()
         settle.assert_not_called()
 
@@ -381,8 +386,13 @@ class TestGenuinelyDeadJobStillTimesOut:
         self, patched_service_client, store
     ):
         # Modal unreachable (offline stub) and heartbeats show the run never
-        # finished all designs. Without positive completion evidence we must
-        # NOT resurrect the partial Storage designs -> timeout + refund.
+        # finished all designs, so there is no positive evidence it
+        # completed and it is not recovered as succeeded. But one design did
+        # reach the user, and Leo 2026-11-04 decided a timed-out run keeps
+        # the designs it streamed and is billed for them. There is no crash
+        # verdict here to veto that (contrast the test above, where a
+        # nonzero pipeline exit keeps the refund), so this times out BILLED.
+        # Before that decision the expectation was refund + no designs.
         partials = [{"rank": 1, "pdb_key": "design_001.cif", "iptm": 0.7}]
         row = _row(
             status="running",
@@ -404,9 +414,12 @@ class TestGenuinelyDeadJobStillTimesOut:
             outcome = timeout_stuck_job(row["id"])
 
         assert outcome == "timed_out"
-        assert store.rows[row["id"]]["status"] == "timeout"
-        release.assert_called_once()
-        settle.assert_not_called()
+        stored = store.rows[row["id"]]
+        assert stored["status"] == "timeout"
+        assert stored["failure_class"] == "timeout_with_delivery"
+        assert stored["result"]["candidates"]
+        settle.assert_called_once()
+        release.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

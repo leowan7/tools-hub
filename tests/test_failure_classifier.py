@@ -24,9 +24,9 @@ from shared.jobs import (
 )
 
 
-# Mirror of the CHECK constraint in migration 0029. Updating one
-# without the other lets a classifier value through Python that the
-# DB will reject -- this test catches that drift.
+# Mirror of the CHECK constraint: migration 0029's list as re-added by
+# 0047. Updating one without the other lets a classifier value through
+# Python that the DB will reject -- this test catches that drift.
 _DB_ENUM_VALUES = frozenset({
     "succeeded",
     "user_cancelled",
@@ -36,6 +36,7 @@ _DB_ENUM_VALUES = frozenset({
     "tool_error",
     "preflight_miss",
     "no_progress_timeout",
+    "timeout_with_delivery",
     "unclassified",
 })
 
