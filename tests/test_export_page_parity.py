@@ -659,6 +659,41 @@ def test_a_row_with_no_structure_at_all_says_so_too(client, monkeypatch):
     assert rows[1]["sequence_note"] == "no structure stored"
 
 
+def test_stored_chains_feed_the_designed_chain_guard_with_no_fetcher():
+    """The two halves of this merge meet here. A row's stored chains are now
+    read with no fetcher (shared/exports.py, the ``fetch_bytes is None``
+    continue), and the developability pair is written only when
+    ``target_chain`` is among the chains in hand and exactly one other chain
+    remains. Both apply to a stored-chain row: no read, and the guard still
+    decides. Before the merge this combination could not arise --
+    ``_add_chain_columns`` ran only with a fetcher."""
+    from shared.exports import STORED_CHAINS, _DEV_COLUMNS, candidate_table
+
+    def table(target):
+        cand = {"rank": 1, STORED_CHAINS: [["A", "MKWMKWMKW"],
+                                           ["B", "GEGEGEGEG"]]}
+        return candidate_table([cand], target_chain=target)[2][0]
+
+    row = table("B")
+    assert row["sequence_chainA"] == "MKWMKWMKW"
+    assert all(row.get(c) is not None for c in _DEV_COLUMNS), row
+    # The target named by the run is not among the stored chains, so nothing
+    # here is the designed chain and neither column is written.
+    absent = table("Z")
+    assert absent["sequence_chainA"] == "MKWMKWMKW"
+    assert all(c not in absent for c in _DEV_COLUMNS), absent
+
+
+def test_an_empty_stored_chain_list_with_no_fetcher_says_no_sequence():
+    """``stored_chains`` returns ``[]``, not ``None``, for a row whose stored
+    list is empty, so it is settled rather than skipped and keeps its note
+    even though this call reads nothing."""
+    from shared.exports import STORED_CHAINS, _SEQ_NOTE, candidate_table
+
+    row = candidate_table([{"rank": 1, STORED_CHAINS: []}])[2][0]
+    assert row[_SEQ_NOTE] == "no sequence in structure"
+
+
 def test_a_job_past_the_cap_reads_up_to_it_and_notes_the_rest(client, monkeypatch):
     """One download and one parse per sequence-less row, in series, inside the
     request. Nothing upstream bounds the row count, and gunicorn kills a

@@ -124,6 +124,17 @@ def _candidate_from_partial(part: dict) -> dict:
     for key in _PROTEINA_SCORE_KEYS + _STREAMED_SCORE_KEYS:
         if part.get(key) is not None:
             scores[key] = part[key]
+    # NO ``name`` KEY, DELIBERATELY. ``_sanitize_candidate`` allowlists one
+    # (webhooks/modal.py:529), so a recovered row drops a name the heartbeat
+    # carried — but the readers fall back to the pdb_key rather than to nothing:
+    # blueprints/admin.py:331-332 to its BASENAME, templates/jobs_compare.html:292
+    # to the whole key (so a recovered row prints ``designs/<file>``, which is
+    # uglier, not wrong). ``name`` is not an export column either (it is in
+    # ``_NON_METRIC_ROOT_KEYS``, shared/exports.py:350-354). Other readers were
+    # not enumerated. For rfd4 the two are the same string anyway: its
+    # pipeline sets ``name = pdb_key`` minus the ``.cif``
+    # (tools/rfd4/run_pipeline.py::_upload_design). Carrying it would be
+    # harmless; not carrying it costs nothing that has been found.
     candidate = {
         "rank": part.get("rank"),
         "pdb_key": f"designs/{basename}",
