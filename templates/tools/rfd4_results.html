@@ -36,8 +36,11 @@
    dict and carries NO root keys of this tool's own — only `candidates`,
    `candidate_count` and a flag (shared/job_recovery.py:480-484;
    shared/jobs.py:2093-2100 and :2299-2303). So `target_chain` and
-   `designs_total` below fall back to the run's own inputs, as iggm's partial
-   does (iggm_results.html:20, :29).
+   `designs_total` below fall back to the run's own inputs, reading them the
+   way iggm's partial does (iggm_results.html:20). The `designs_total`
+   fallback is NOT iggm's: iggm_results.html:29 falls back to
+   `recovered_total` or the row count and never to inputs, which is the
+   ordering the next paragraph gives the reason for departing from.
 
    THE "Returned N / M" TOTAL IS THE SUBMITTED COUNT, NOT A MEASURED ONE.
    components/results_shell.html:46-47 says M is "what the run was asked for",
@@ -108,10 +111,12 @@
 {# `gpu_seconds=` below is passed runtime_seconds, not gpu_seconds: that is the
    key this pipeline writes (tools/rfd4/run_pipeline.py:1300), and
    results_shell.html:242 drops the line on a falsy value, so reading
-   gpu_seconds hid it on every run. The four sibling tools that also store
-   runtime_seconds pass it the same way (boltz2_results.html:139,
-   iggm_results.html:102, opendde_results.html:120,
-   esmfold2_design_results.html:524). #}
+   gpu_seconds hid it on every run. Sibling tools that store runtime_seconds
+   pass it under this parameter name too, for example boltz2_results.html:139,
+   iggm_results.html:102, opendde_results.html:120 and
+   esmfold2_design_results.html:524; af2 (:111), colabfold (:99) and esmfold
+   (:109) do the same through a `runtime` variable, so four is the count of
+   the direct form, not of every tool that does this. #}
 {% call results_panel(
     candidates=candidates,
     columns=columns,
