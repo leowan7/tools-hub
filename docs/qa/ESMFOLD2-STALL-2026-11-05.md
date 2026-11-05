@@ -32,7 +32,7 @@ The row (Leo pulled it from prod; ground truth for this file):
 | 11-05 06:54:11 | first heartbeat -> `status=running`, `started_at` stamped (7 s after create) | the row; `shared/jobs.py::mark_running` |
 | ~11-05 07:05 | last heartbeat consistent with `gpu_seconds_used = 655` (~10 min 55 s) | §5 |
 | <= 11-05 08:39:11 | the orchestrator container is **certainly** gone: `_ORCHESTRATOR_TIMEOUT_S = 6300` s (1 h 45 m) from its own start, enforced by Modal killing the task | `tools/esmfold2_design/modal_app.py:145-172` |
-| 11-05 12:54:11 | row becomes sweeper-eligible (`started_at` + `STUCK_RUNNING_AGE_HOURS`, default 6) | `cron/sweep_stuck_jobs.py:196,201,258` |
+| 11-05 12:54:11 | row becomes sweeper-eligible (`started_at` + `STUCK_RUNNING_AGE_HOURS`, default 6) | `cron/sweep_stuck_jobs.py:223,228,285` |
 | 11-05 13:00:29 | the hourly sweep terminalises it: `status=timeout`, `failure_class=no_progress_timeout`, hold settled | the row; `cron/sweep_stuck_jobs.py` running arm |
 
 **Detection lag: 6 h 06 min from `started_at`.** At least **4 h 20 min** of that
@@ -62,14 +62,15 @@ is not readable from here. §6 SQL block A settles it from the row instead.
 .eq("status", "running").lt("started_at", running_cutoff)
 ```
 
-`cron/sweep_stuck_jobs.py:255-259`, cutoff at `:201`. Nothing in that query or
+`cron/sweep_stuck_jobs.py:284-285`, cutoff computed at `:228` from the env
+read at `:223`. Nothing in that query or
 anywhere in `sweep_stuck_jobs` reads progress, heartbeats or the tool's own
 time limit. It then calls `timeout_stuck_job(job_id)`
-(`cron/sweep_stuck_jobs.py:272`).
+(`cron/sweep_stuck_jobs.py:301`).
 
 Inside `shared/jobs.py::timeout_stuck_job` (`:1833`): recovery is tried first
 (`recover_stuck_job_result`), and only when it returns nothing does the row go
-`mark_timeout` -> conditional keep -> settle (`:1960-1971`):
+`mark_timeout` -> conditional keep -> settle (`:1961-1972`):
 
 ```python
 if not mark_timeout(job_id):
@@ -93,7 +94,7 @@ different outcomes, not two.** Ranked by what the SQL would show:
 | i | `reconstruct` found nothing to keep (`shared/job_recovery.py::reconstruct`, `:215-253`): no streamed candidates and an empty Storage prefix | NULL | absent/empty | either |
 | ii | `exit_verdict == "still_running"` -> designs kept, `reclassify=False`, class deliberately left refunded (`shared/jobs.py:1951-1959`) | has `candidates`, `partial: true` | non-empty | either |
 | iii | `exit_verdict` was `failed` / `failed_unconfirmed` -> the keep was skipped entirely | NULL | may be non-empty | either |
-| iv | keep ran with `reclassify=True` but **migration 0047 is not applied**, so the second CAS failed the CHECK and the class stayed put | has `candidates`, `partial: true` | non-empty | **absent** |
+| iv | keep ran with `reclassify=True` but **migration 0047's CHECK does not yet name the new class** (whether it was applied is unverified from here - SQL block B reads it), so the second CAS failed the CHECK and the class stayed put | has `candidates`, `partial: true` | non-empty | **absent** |
 | v | #490 was not deployed on the sweeper service at 13:00Z - no keep path existed | NULL | may be non-empty | either |
 
 Distinguishing columns: `result` (candidates vs NULL), `result->>'partial'`,
@@ -101,7 +102,9 @@ Distinguishing columns: `result` (candidates vs NULL), `result->>'partial'`,
 `tool_jobs_failure_class_check` names `timeout_with_delivery`. SQL blocks A and
 B in §6 read exactly those. Note (iv) is a real possibility and not in the
 original two-outcome framing: the sibling note
-`timeout-keep-designs-PR490-handover.md` records 0047 as **hand-apply and not
+`timeout-keep-designs-PR490-handover.md` (in this session group's shared notes
+folder, outside the repo, so a reader of the repo alone cannot open it) records
+0047 as **hand-apply and not
 yet applied**, and `supabase/migrations/0047_timeout_with_delivery_failure_class.sql`
 says so itself ("Until it is, the second CAS that writes the new class fails
 the CHECK ... the row keeps 'no_progress_timeout' -> full refund. The designs
@@ -118,7 +121,7 @@ are written by a separate earlier CAS, so they survive either way").
 Two independent reasons, either alone sufficient:
 
 1. `timeout_stuck_job` never calls `complete_job` on the timeout path
-   (`shared/jobs.py:1960-1971` writes through `mark_timeout` /
+   (`shared/jobs.py:1961-1972` writes through `mark_timeout` /
    `_keep_streamed_designs` / `_settle_wallet_hold_for_completed_job`), and
    `_send_completion_email` is only reached from `complete_job`.
 2. Even if it were reached, its own gate drops the row:
@@ -148,7 +151,7 @@ result" and no results block. There is no third state.
 
 ### Exports: no status gate at all. (verified from code)
 
-`blueprints/jobs.py::export_csv` (`:1552`) and `export_fasta` (`:1597`) read
+`blueprints/jobs.py::export_csv` (`:1552`) and `export_fasta` (`:1599`) read
 `page_ordered_records(job.tool, job.result)` with no check on `job.status`. So
 a single `result` write fixes the page, the CSV and the FASTA together.
 
@@ -188,7 +191,7 @@ settlement path.
   `settle_live_run(..., refund=True)` (`:2732-2740`);
 - `no_progress_timeout` is in `_REFUNDED_FAILURE_CLASSES`, so it takes the
   refund arm: `release_hold(hold_tx_id, reason="timeout")` and returns
-  (`:2745-2757`).
+  (`:2748-2759`).
 
 esmfold2-design is in `_LIVE_ALL_PRESETS` (`shared/wallet_guard.py:40-130`), so
 this run was live-metered and the live route is the one taken.
@@ -229,7 +232,7 @@ expose: no `hold_release` child at all (the RPC raised and was only logged,
   CPU orchestrator's own `timeout=`; it has no `gpu=`;
 - `_CHILD_WAIT_BUDGET_S = _ORCHESTRATOR_TIMEOUT_S - _REAP_MARGIN_S` (`:171-172`)
   bounds the wait for the slowest child, leaving a reaping margin;
-- the comment at `:134-141` states Modal enforces `timeout=` by killing the
+- the comment at `:154-155` states Modal enforces `timeout=` by killing the
   task and raising `FunctionTimeoutError` client-side.
 
 1 h 45 m is therefore the hard ceiling on this run's GPU life, against a
@@ -241,15 +244,17 @@ lag, which is our defect, not Modal's.
 
 `gpu_seconds_used` is written from each inbound heartbeat by
 `mid_run_monitor_check` (`shared/jobs.py:2956-2990`, CAS-guarded on
-pending/running), through `billed_gpu_seconds` (`:2913`). With per-seed beats
+pending/running), through `billed_gpu_seconds` (`:2914`). With per-seed beats
 (`inputs._seed_beats`, stamped by `webhooks/modal.py:625-631`), a seed whose
 last beat is older than `_SEED_BEAT_STALE_S = 150` (`:2870`) counts only to its
 **last beat**, not to now. So:
 
 - 655 s is a last-heartbeat-derived figure, frozen when the beats stopped. It
   is the number the refund settled against (and a refund makes it moot here).
-- Because dead seeds cap at last beat + 150 s, `meter_live_runs` could not run
-  the debits away over six hours and **no wallet stop could ever fire** for a
+- Because a seed counts to *now* only while its last beat is under 150 s old
+  and falls back to that last beat once it is staler than that, the metered
+  figure steps *down* when the beats stop rather than growing. So
+  `meter_live_runs` could not run the debits away over six hours and **no wallet stop could ever fire** for a
   stalled run - the metered elapsed simply stops growing. That is by design,
   but it means the money path is structurally blind to a stall.
 
@@ -267,11 +272,16 @@ run.
 
 On the `still_running` verdict the sweeper refunds the run and **leaves the
 Modal call running** - nothing on any path cancels Modal
-(`shared/jobs.py:1951-1959` names this explicitly; the sibling note
-`timeout-keep-designs-PR490-handover.md` lists it as a pre-existing gap, and
-`docs/design/LIVE-CHARGING-2026-10-01.md:428,440` records that neither the
-stop nor the sweep service even has Modal tokens). For *this* row the 1 h 45 m
-ceiling caps the exposure, but for a tool whose own ceiling is longer than
+(`shared/jobs.py:1951-1959` names the deliberate refund, and names Modal only
+as the source of the `still_running` verdict - it says nothing about
+*cancelling* Modal; the no-cancel half is recorded in
+`docs/design/LIVE-CHARGING-2026-10-01.md:428,440`, which states that
+`timeout_stuck_job` "does not call Modal's cancel" (`:428`) and that the
+sweep service "has no Modal tokens" (`:440`). That page discusses the stop
+button's own gap in the same paragraph, but it states the missing-tokens fact
+only for the sweep service; the stop's token situation is **unverified** here.
+The sibling note `timeout-keep-designs-PR490-handover.md` lists the no-cancel
+gap as pre-existing.) For *this* row the 1 h 45 m ceiling caps the exposure, but for a tool whose own ceiling is longer than
 `STUCK_RUNNING_AGE_HOURS` the refund-and-abandon combination pays for GPU we
 have already given away.
 
@@ -365,8 +375,9 @@ is a uuid. `parent_tx_id` is the only reliable link.
 - `ALERTING.md` is entirely site-uptime: UptimeRobot on `/health` and `/`,
   Railway native deploy/crash/OOM email, `/readyz`, the synthetic Platform API
   smoke, an outbound-timeout audit, and one operator alert on a new Platform
-  API submission. Greps for `stuck` and `no_progress_timeout` in it return only
-  unrelated HTTP-timeout material.
+  API submission. Greps for `stuck` and for `no_progress` in it return
+  **nothing at all** (`grep -c -i stuck ALERTING.md` -> 0,
+  `grep -c -i no_progress ALERTING.md` -> 0).
 - The only operator-alert sender in the codebase is
   `notify_operator_new_submission` (`shared/email.py`, `OPERATOR_ALERT_EMAIL`,
   default `leo@ranomics.com`). There is nothing for a stalled run.
@@ -396,10 +407,15 @@ and the sweeper already holds a service client and runs on a schedule. So:
 
 Roughly 40 lines of detection plus a template. The detection half is safe and
 self-contained; the **email half is what makes it an alert**, and that is the
-part that is not: it is an outward-facing send, and the one operator-email
-surface (`cron/daily_digest.py`) is owned by open PR #430. A log-only version
-would be a guard that certifies false - nobody reads cron logs and there is no
-Sentry to catch the line.
+part that is not. It is a new recurring outward-facing send, it needs a
+staleness threshold and a per-tool scope that are Leo's policy call rather
+than a defect fix, and it lands inside the cron that settles wallet holds.
+(An earlier draft of this file gave a different reason - that the one
+operator-email surface, `cron/daily_digest.py`, was owned by open PR #430.
+That is wrong: #430 merged on 2026-10-15 (`6e322cc3`, `gh pr view 430`) and is
+an ancestor of this branch, so the file is free.) A log-only version would be
+a guard that certifies false - nobody reads cron logs and there is no Sentry
+to catch the line.
 
 **So this is written up, not implemented.** It is the P1 below.
 
@@ -409,10 +425,10 @@ Sentry to catch the line.
 
 | # | severity | defect | evidence | why it is not fixed here |
 | --- | --- | --- | --- | --- |
-| 1 | **P1** | Nothing alerts on a paying run going silent. 6 h 06 m to notice, >= 4 h 20 m of it after the GPU was certainly dead. | §7 | Needs an operator email channel (outward-facing) and the only such surface is inside open PR #430. |
-| 2 | **P1** | On the `still_running` verdict the sweeper refunds the run and leaves the Modal call running; nothing on any path cancels Modal, and neither the stop nor the sweep service holds Modal tokens. | `shared/jobs.py:1951-1959`; `docs/design/LIVE-CHARGING-2026-10-01.md:428,440` | Money + production state. Lead schedules. |
-| 3 | **P1** | Migration 0047 is hand-apply and, per the sibling handover note, **not yet applied**. Until it is, every delivered timeout keeps its designs *and* stays fully refunded - we give away GPU silently. | `supabase/migrations/0047_timeout_with_delivery_failure_class.sql` ("Must be applied BEFORE the PR #489 code deploys"); SQL block B | Leo applies migrations. |
-| 4 | **P2** | A swept timeout sends the customer **no email**, even though the refunded-timeout wording already exists in `shared/email.py`. Their only signal is re-opening the page. | `shared/jobs.py:2999`; the timeout path never calls `complete_job` (`:1960-1971`) | Outward-facing send; the fix is a policy call (which timeouts mail, and what they say). |
-| 5 | **P2** | `STUCK_RUNNING_AGE_HOURS` is a single flat 6 h for every tool, anchored on `started_at` and reading no progress. For esmfold2-design, whose own ceiling is 1 h 45 m, that is 4 h 15 m of guaranteed dead time; for a tool with a longer ceiling it kills live runs (which `shared/jobs.py:1951-1959` already calls "our stall"). A per-tool cutoff derived from each tool's Modal `timeout=` would fix both ends. | `cron/sweep_stuck_jobs.py:196,201,255-259`; `tools/esmfold2_design/modal_app.py:145-148` | Changes when runs are terminated, i.e. the money path. |
-| 6 | **P2** | The live meter is structurally blind to a stall: a dead seed's billed seconds stop growing at last beat + 150 s, so no wallet stop can ever fire for a silent run. | `shared/jobs.py:2870,2913-2953` | By design today; listed so it is not mistaken for a safety net. |
+| 1 | **P1** | Nothing alerts on a paying run going silent. 6 h 06 m to notice, >= 4 h 20 m of it after the GPU was certainly dead. | §7 | Needs a new recurring operator email (outward-facing) plus a staleness threshold that is a policy call, in the cron that settles holds. |
+| 2 | **P1** | On the `still_running` verdict the sweeper refunds the run and leaves the Modal call running; nothing on any path cancels Modal, and the sweep service holds no Modal tokens (the stop button's own token situation is unverified). | refund-by-design: `shared/jobs.py:1951-1959`; no Modal cancel and no Modal tokens: `docs/design/LIVE-CHARGING-2026-10-01.md:428,440` | Money + production state. Lead schedules. |
+| 3 | **P1** | Migration 0047 is hand-apply and, per the sibling handover note, **not yet applied**. Until it is, every delivered timeout keeps its designs *and* stays fully refunded - we give away GPU silently. | ordering requirement: `supabase/migrations/0047_timeout_with_delivery_failure_class.sql:43`. "Hand-apply" and "not yet applied" come from a sibling session note outside the repo and are **unverified** here; SQL block B settles it. | Leo applies migrations. |
+| 4 | **P2** | A swept timeout sends the customer **no email**, even though the refunded-timeout wording already exists in `shared/email.py`. Their only signal is re-opening the page. | `shared/jobs.py:2999`; the timeout path never calls `complete_job` (`:1961-1972`) | Outward-facing send; the fix is a policy call (which timeouts mail, and what they say). |
+| 5 | **P2** | `STUCK_RUNNING_AGE_HOURS` is a single flat 6 h for every tool, anchored on `started_at` and reading no progress. For esmfold2-design, whose own ceiling is 1 h 45 m, that is 4 h 15 m of guaranteed dead time; for a tool with a longer ceiling it kills live runs (which `shared/jobs.py:1951-1959` already calls "our stall"). A per-tool cutoff derived from each tool's Modal `timeout=` would fix both ends. | `cron/sweep_stuck_jobs.py:223,228,284-285`; `tools/esmfold2_design/modal_app.py:145-148` | Changes when runs are terminated, i.e. the money path. |
+| 6 | **P2** | The live meter is structurally blind to a stall: a dead seed's billed seconds stop growing once its last beat is more than 150 s stale (the figure falls back to that last beat), so no wallet stop can ever fire for a silent run. | `shared/jobs.py:2870,2913-2953` | By design today; listed so it is not mistaken for a safety net. |
 | 7 | **P3** | Two stale claims in `cron/sweep_stuck_jobs.py`'s own docstrings described detection that does not exist ("running with no progress this long") and a refund policy #490 superseded ("Only jobs with nothing recoverable are ... full-refunded"). | the file, before this change | **Fixed in this PR** - prose only. |

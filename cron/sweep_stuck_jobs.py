@@ -12,22 +12,29 @@ Jobs occasionally get marooned in a non-terminal state:
              terminal webhook, and no further heartbeats arrived.
              That is the intent; the ``stuck_running`` query below
              cannot see it. It matches on ``started_at`` age alone and
-             reads no heartbeat, no progress field and no tool time
-             limit, so a row still beating healthily past the cutoff is
-             swept too (``shared/jobs.py::timeout_stuck_job`` calls that
-             case "our stall" and withholds the bill for it).
+             reads no heartbeat and no progress field (the only
+             per-tool read on this path is the campaign-piece
+             budget in ``_within_campaign_session``), so a row still
+             beating healthily past the cutoff is swept too
+             (``shared/jobs.py::timeout_stuck_job`` calls that case
+             "our stall" and withholds the bill for it).
 
 Both states leak a wallet hold. This module routes stale rows through the
 public ``timeout_stuck_job`` helper, which first tries to RECOVER a job
 whose work actually completed but whose terminal webhook was lost (it
 finalizes such a job as ``succeeded`` through the normal ``complete_job``
 settle path). Only jobs with nothing recoverable are CAS-transitioned to
-``timeout``. That is a full refund unless the run had already streamed
-designs to the user AND Modal reported neither a failure nor that the
-call was still alive, in which case the GPU it consumed is billed under
-``timeout_with_delivery`` (Leo 2026-11-04; the gate is in
-``shared/jobs.py::timeout_stuck_job``). The summary counts recoveries
-separately so a lost-webhook incident is visible in the cron log.
+``timeout``. Designs the run had already streamed are kept on the row
+unless Modal reported a failure (``_keep_streamed_designs``). The bill is a
+full refund today: the gate in ``shared/jobs.py::timeout_stuck_job``
+asks for ``timeout_with_delivery`` when the run delivered designs and
+Modal reported neither a failure nor that the call was still alive, but
+that CAS will only succeed once migration 0047 is applied (Leo
+2026-11-04; ``supabase/migrations/0047_timeout_with_delivery_failure_class.sql``
+line 43 says it must be applied before the PR #489 code deploys, and
+whether it has been is not verifiable from this repo). The summary
+counts recoveries separately so a lost-webhook incident is visible in
+the cron log.
 
 Configuration
 -------------
@@ -39,8 +46,9 @@ Configuration
                                heartbeat timestamp.
                                Campaign pieces with a longer session
                                budget get that budget plus 2 h instead.
-                               One flat value for every tool, so a tool
-                               whose own Modal ``timeout=`` is shorter
+                               One flat value for every non-campaign
+                               tool, so one whose own Modal
+                               ``timeout=`` is shorter
                                (esmfold2-design: 6300 s, about 1 h 45 m,
                                at ``tools/esmfold2_design/modal_app.py``
                                ``_ORCHESTRATOR_TIMEOUT_S``) spends the
