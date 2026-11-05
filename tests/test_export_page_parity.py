@@ -36,6 +36,11 @@ JOB_ID = "0f6be32f-e971-41f7-b7ec-33fbf795addd"
 
 # Every tool whose page renders the shared candidate table from its example.
 # Listed so the audit cannot pass by rendering nothing.
+# `rfd4` is absent on purpose: `_render_partial` resolves the partial through
+# `tool_base.get(slug)` (tests/test_worked_examples.py:190), which returns None
+# until the adapter is registered. Adding it here is part of the registration
+# step, not of this file. Its table is covered meanwhile by
+# tests/test_rfd4_results_and_exports.py, which injects the adapter itself.
 TABLE_TOOLS = (
     "af2", "bindcraft", "boltz2", "boltzgen", "esmfold2-design", "iggm",
     "opendde", "proteina", "pxdesign", "rfantibody", "rfdiffusion",
@@ -245,9 +250,11 @@ def _pdb(chains: dict[str, str]) -> bytes:
 
 # The P1-3 list. colabfold/esmfold examples are the single-structure shape,
 # which renders no candidate table; their multi-design shape is used instead.
+# `rfd4` IS here: this list drives `_wire`, which never touches the registry,
+# so the FASTA half needs no registration.
 FASTA_TOOLS = (
     "af2", "colabfold", "esmfold", "boltz2", "boltzgen", "bindcraft",
-    "pxdesign", "opendde", "iggm", "rfantibody", "proteina",
+    "pxdesign", "opendde", "iggm", "rfantibody", "proteina", "rfd4",
 )
 
 
