@@ -192,7 +192,7 @@ def test_a_lossy_run_says_how_many_designs_are_missing(tools_app, rfd4_registere
     ``requested_designs`` cannot supply it either: no _DESIGN_PARAM_KEY entry
     for rfd4, so it returns None and results_shell.html:49 drops the line.
 
-    Mutation-proven 2026-11-05, this test failing on each revert and passing
+    Mutation-proven 2026-11-04, this test failing on each revert and passing
     when restored: ``requested=requested_designs(job)`` fails at the first
     assertion (None drops the line outright), and dropping the ``submitted``
     term from the total fails at the second, rendering "6 / 6".
