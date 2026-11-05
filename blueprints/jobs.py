@@ -1551,7 +1551,9 @@ def _storage_fetcher(user_id: str, route: str):
 @login_required
 def export_csv(job_id: str):
     from flask import Response  # noqa: PLC0415
-    from shared.exports import candidates_to_csv, sequences_to_csv  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_csv, sequences_to_csv, target_chain_for_export,
+    )
     from shared.jobs import is_candidate_array, page_ordered_records  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
@@ -1575,10 +1577,16 @@ def export_csv(job_id: str):
         # their FASTA carried records, but no candidate row in any
         # tools/*/example/result.json stores a sequence field, so the set
         # that reads here is wider than those four.
+        # target_chain, so a tool that names its uploaded chain gets the two
+        # sequence developability columns for the DESIGNED chain only. Returns
+        # None for every tool but the allow-listed ones, which is every tool's
+        # behaviour before this (shared/exports.py::target_chain_for_export).
         body = candidates_to_csv(
             candidates,
             fetch_bytes=_storage_fetcher(ctx.user_id, "export_csv"),
             default_job_id=job_id,
+            target_chain=target_chain_for_export(
+                job.tool, job.result or {}, job.inputs or {}),
         )
     return Response(
         body,
@@ -1590,7 +1598,9 @@ def export_csv(job_id: str):
 @login_required
 def export_fasta(job_id: str):
     from flask import Response  # noqa: PLC0415
-    from shared.exports import candidates_to_fasta  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_fasta, target_chain_for_export,
+    )
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -1610,6 +1620,10 @@ def export_fasta(job_id: str):
         preset=score_legends.resolve_mode(job.tool or "", job.result, job.preset),
         fetch_bytes=_storage_fetcher(ctx.user_id, "export_fasta"),
         default_job_id=job_id,
+        # So a two-chain structure's records say which one is the binder,
+        # for the tools whose target chain is known (see export_csv above).
+        target_chain=target_chain_for_export(
+            job.tool, job.result or {}, job.inputs or {}),
     )
     if not body:
         body = "# No sequences found in this job's output.\n"

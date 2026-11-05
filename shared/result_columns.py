@@ -58,6 +58,22 @@ _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
         "rf3_score", "binder_scrmsd",
     ],
     "iggm": ["epitope_contacts"],
+    # NO ``rfd4`` KEY, for the ``cluster_id`` reason above: a column header is a
+    # claim the number exists. tools/rfd4/run_pipeline.py::_upload_design writes
+    # exactly ``{"rank", "name", "pdb_key"}`` into each delivered design, so
+    # every metric column rfd4 could be given would render an em dash on every
+    # row. The scoring leg that would supply one is a separate job that does not
+    # exist yet — rfd4 has no entry in shared/refold.py::SOURCE_TOOLS, none in
+    # _TOOL_PRIMARY_METRIC below, and none in
+    # shared/compute_campaigns.py::SUPPORTED_TOOLS, so nothing asks this table
+    # for an rfd4 ranking either. ``columns_for`` returns [] for an unknown
+    # slug, which is the right answer here; templates/tools/rfd4_results.html
+    # carries the same note and asks this table for nothing, passing its own
+    # ``[]`` on the ordinary path. NOT on the recovered one: there it passes
+    # ``recovered_columns(recovered)`` (shared/jobs.py::recovered_columns),
+    # which is keyed on which of six score names appear in the rows it is
+    # given and not on the slug, so what an rfd4 recovery renders is decided
+    # by the rebuilt rows and not here.
 }
 
 # Primary metric each tool's designs are globally ranked by, and its direction.

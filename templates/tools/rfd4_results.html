@@ -1,0 +1,140 @@
+{# RFD4-Proteina results partial — included by job_detail.html on status=succeeded
+   or a cancelled run that kept designs.
+
+   NO SCORE COLUMNS, AND THAT IS THE SHAPE, NOT AN OMISSION. Every delivered
+   design carries exactly three keys — rank, name, pdb_key — written by
+   tools/rfd4/run_pipeline.py::_upload_design (`return {"rank": rank, "name":
+   uniq, "pdb_key": cif_key}`). The pipeline writes no confidence, no ipTM and
+   no RMSD: the Boltz-2 scoring leg that would produce them is a separate job
+   that does not exist yet (rfd4 has no entry in shared/refold.py::SOURCE_TOOLS).
+   So the table is the structure list plus its viewers, and rfd4 is likewise
+   absent from shared/score_legends.py::GATE_COLUMNS (:1527): `judge` returns
+   ``Judgement("unjudged", (), ())`` when `gate_columns` is empty
+   (score_legends.py:2321-2323), and the shell's shortfall banner only counts
+   rows whose verdict is ``below`` (components/results_shell.html:88, :93), so
+   it stays silent.
+
+   `ranked=false`. The pipeline's ranks are "not quality ranks": they are
+   completion order to within a poll interval, path-sorted within one sweep
+   (run_pipeline.py:1053-1055).
+
+   WHICH CHAIN IS THE BINDER. Each downloaded CIF holds two chains: the target
+   chain the operator uploaded, named in `target_chain` at the result root, and
+   the de-novo binder. The binder is NOT identifiable by length — in the
+   committed rung-4 run (docs/scoping/rung4-probe/gpu_result_20261103T114437.json)
+   design 4 is a 116-residue binder against a 115-residue target, so the line
+   below names the target and lets the reader take the other one. #}
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output      = job.result or {} %}
+{% set raw_designs = display_rows(output.get('designs')) %}
+{# A run rebuilt by shared/job_recovery.recover_stuck_job_result stores its rows
+   under `candidates`, not this tool's native `designs` — the af2 partial's note
+   gives the full reason. Those rows are already candidate-shaped. #}
+{% set recovered   = display_rows(output.get('candidates')) %}
+{# A recovered, wallet-stopped or cancel-kept result replaces the whole result
+   dict and carries NO root keys of this tool's own — only `candidates`,
+   `candidate_count` and a flag, except the wallet stop, which carries two:
+   `backfilled` on a recovery (shared/job_recovery.py:480-484), `partial` on a
+   cancel-kept result (shared/jobs.py:2299-2303), and `partial` plus
+   `stop_reason` on the wallet stop (shared/jobs.py:2093-2100). The
+   no-tool-own-root-keys point is what matters below and holds for all three.
+   So `target_chain` and
+   `designs_total` below fall back to the run's own inputs, reading them the
+   way iggm's partial does (iggm_results.html:20). The `designs_total`
+   fallback is NOT iggm's: iggm_results.html:29 falls back to
+   `recovered_total` or the row count and never to inputs, which is the
+   ordering the next paragraph gives the reason for departing from.
+
+   THE "Returned N / M" TOTAL IS THE SUBMITTED COUNT, NOT A MEASURED ONE.
+   components/results_shell.html:46-47 says M is "what the run was asked for",
+   and the only authority for that is the run's own inputs: the adapter stamps
+   the accepted count twice, as `nsamples` (tools/rfd4/__init__.py:200) and as
+   `parameters.n_designs_total` (:209), the latter being the key the wallet
+   scales the charge on. The result root's `designs_total` is NOT that number —
+   run_pipeline.py:1290 writes it as `len(design_cifs)`, the count the
+   generator actually produced, and the heartbeat snapshot behind it ends the
+   run holding the same measured figure (run_pipeline.py:1064,
+   `planned_total if mid_run else len(paths)`). Using either would render
+   "6 / 6" for a run billed for eight that generated six, so they sit BEHIND
+   the inputs here and only cover a job whose inputs predate those stamps.
+
+   NOT `requested_designs(job)` either: it resolves the form field through
+   shared/compute_campaigns.py::_DESIGN_PARAM_KEY (:93-104), which has no rfd4
+   entry, so it returns None for every rfd4 job and
+   components/results_shell.html:49 drops the line.
+
+   The inputs fallback names the SAME chain the container designed against, or
+   the run failed: tools/rfd4/__init__.py:148-158 refuses a multi-chain
+   request and defaults a blank field to "A" (:148), so
+   `inputs.target_chain` is always one concrete id, and
+   run_pipeline.py:657-674 `_fail`s a request that is not a polymer chain of
+   the upload (:661-666) or that leaves other polymer chains standing
+   (:667-674). There is
+   no path on which it returns a chain other than the one requested. #}
+{% set job_inputs  = job.inputs or {} %}
+{% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
+{% set is_example  = (job.id == 'example') %}
+
+{% set candidates = [] %}
+{% for d in raw_designs %}
+  {% set _ = candidates.append({
+      '_source_index': loop.index0,
+      'rank': d.get('rank'),
+      'name': d.get('name'),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {},
+  }) %}
+{% endfor %}
+{% set candidates = recovered or candidates %}
+{% set columns = recovered_columns(recovered) if recovered else [] %}
+
+{% set target_chain     = output.get('target_chain') or job_inputs.get('target_chain') %}
+{% set target_length    = output.get('target_length') %}
+{% set submitted        = (job_inputs.get('parameters') or {}).get('n_designs_total') or job_inputs.get('nsamples') %}
+{% set designs_total    = submitted or output.get('designs_total') or (recovered_total(job, recovered) if recovered else none) %}
+{% set designs_returned = (recovered or candidates) | length %}
+{% if target_chain %}
+  <p class="subtitle" style="margin-top:1rem;">
+    <strong>Target chain {{ target_chain }}</strong>{% if target_length %}
+    ({{ target_length }} aa){% endif %} — each downloaded structure
+    holds your target plus one de-novo binder chain, and the binder is the chain
+    that is not {{ target_chain }}. Do not pick it by length; it can be longer
+    than the target.
+    {% if output.get('contig') %}
+      Contig <code>{{ output.get('contig') }}</code>.
+    {% endif %}
+  </p>
+{% endif %}
+<p class="subtitle">
+  These designs carry no confidence score. RFD4 generates backbones and
+  sequences; scoring the complex is a separate fold run, so take the structures
+  into a predictor before choosing between them.
+</p>
+
+{# `gpu_seconds=` below is passed runtime_seconds, not gpu_seconds: that is the
+   key this pipeline writes (tools/rfd4/run_pipeline.py:1300), and
+   results_shell.html:242 drops the line on a falsy value, so reading
+   gpu_seconds hid it on every run. Sibling tools that store runtime_seconds
+   pass it under this parameter name too, for example boltz2_results.html:139,
+   iggm_results.html:102, opendde_results.html:120 and
+   esmfold2_design_results.html:524; af2 (:111), colabfold (:99) and esmfold
+   (:109) do the same through a `runtime` variable, so four is the count of
+   the direct form, not of every tool that does this. #}
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='rfd4',
+    job_id=job.id,
+    clone_url=('' if is_example else clone_url),
+    tier=output.get('tier'),
+    gpu_seconds=output.get('runtime_seconds'),
+    send_target_tools=send_target_tools,
+    ranked=false,
+    requested=designs_total,
+    returned=designs_returned) %}
+  <p class="subtitle">
+    This run returned no designs. Contact us with this job's id and we can
+    look into why.
+  </p>
+{% endcall %}
