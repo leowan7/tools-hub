@@ -240,11 +240,10 @@ def _boltzgen_stored_result() -> dict:
     """The shipped boltzgen example result as a terminal write stores it.
 
     ``shared.jobs._slim_result_for_persist`` is the write path
-    (``complete_job``), and it drops the inline structure of the one row that
-    carries one after reading that row's chains onto the row itself. So the
-    first candidate is a REAL stored row whose sequences are on the row and
-    nowhere else; the rest reference a ``designs/*.cif`` the panel does not
-    read."""
+    (``complete_job``); it reads the chains of the one row carrying an inline
+    structure onto that row (shared/jobs.py:2388). So the first candidate is a
+    REAL stored row whose chain sequences are on the row; the rest reference a
+    ``designs/*.cif`` the panel does not read."""
     import json
     from pathlib import Path
     from shared.jobs import _slim_result_for_persist
