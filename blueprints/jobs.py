@@ -1008,9 +1008,13 @@ def job_status(job_id: str):
             # SUCCEEDED off Storage + the heartbeat snapshot
             # (shared/job_recovery.py::recover_stuck_job_result), not refunded
             # with its results discarded. Only when nothing is recoverable does
-            # it mark_timeout + settle, which releases the hold in full
-            # (status="timeout" -> failure_class="no_progress_timeout" ->
-            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES).
+            # it mark_timeout + keep + settle, which releases the hold in
+            # full when the run delivered nothing
+            # (status="timeout" with no kept designs ->
+            # failure_class="no_progress_timeout" ->
+            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES) and charges the GPU
+            # when it did (-> "timeout_with_delivery", which is in
+            # shared/jobs.py::_BILLED_FAILURE_CLASSES).
             #
             # probe_modal=False: we just polled Modal above and got a terminal
             # container timeout, so recovery's own Modal probe would re-raise

@@ -1,11 +1,16 @@
 """A timed-out run keeps the designs it already streamed (Leo 2026-11-04).
 
-The row stays ``timeout`` / ``no_progress_timeout`` and its result carries the
-designs ``job_recovery.reconstruct`` rebuilt, flagged ``partial`` -- the same
-second write ``cancel_job`` has made since PR #483
-(shared/jobs.py::_keep_streamed_designs). What the run charges is untouched:
-``test_keeping_designs_does_not_change_the_settle`` compares the settle calls
-against the ones a timeout made before this change.
+The row stays ``timeout`` and its result carries the designs
+``job_recovery.reconstruct`` rebuilt, flagged ``partial`` -- the same second
+write ``cancel_job`` has made since PR #483
+(shared/jobs.py::_keep_streamed_designs).
+
+And then Leo's second decision, option C: such a run is BILLED for the GPU it
+consumed, while a timeout that delivered nothing stays fully refunded. So the
+class splits too -- ``timeout_with_delivery`` against ``no_progress_timeout``
+-- and the two cases have a test each
+(``test_a_timeout_that_kept_designs_is_billed``,
+``test_a_timeout_that_kept_nothing_is_still_refunded``).
 """
 from __future__ import annotations
 
@@ -53,29 +58,122 @@ def test_a_timed_out_run_keeps_the_streamed_designs():
     r = _timeout(store, candidates=DESIGNS)
     row = store.rows["job-1"]
     assert r.outcome == "timed_out"
-    assert (row["status"], row["failure_class"]) == ("timeout", "no_progress_timeout")
+    assert (row["status"], row["failure_class"]) == (
+        "timeout", "timeout_with_delivery")
     assert row["result"] == KEPT
 
 
-def _settle_calls(r):
-    return [m.call_args_list for m in (r.settle_live, r.settle_hold, r.release)]
+def _one_settle(r) -> bool:
+    """Exactly one of the three settle entry points was called, once."""
+    return sum(m.call_count for m in (r.settle_live, r.settle_hold,
+                                      r.release)) == 1
 
 
-@pytest.mark.parametrize("wallet", [
+def _refunded(r) -> bool:
+    """True iff that one settle call was a full refund.
+
+    A live run refunds through ``settle_live_run(..., refund=True)`` and bills
+    through the same function without the kwarg; a held run refunds through
+    ``release_hold`` and bills through ``settle_hold``
+    (shared/jobs.py::_settle_wallet_hold_for_completed_job).
+    """
+    if r.settle_live.call_args_list:
+        return r.settle_live.call_args.kwargs.get("refund") is True
+    return bool(r.release.call_args_list)
+
+
+WALLETS = [
     None,  # live run
     {"hold_tx_id": "hold-1", "estimate_usd": "2.00", "tool_slug": "boltz2"},
-])
+]
+
+
+@pytest.mark.parametrize("wallet", WALLETS)
 @pytest.mark.parametrize("seconds", [None, 120])
-def test_keeping_designs_does_not_change_the_settle(wallet, seconds):
-    """The settle with designs kept is the settle of a timeout that kept none,
-    which is what every timeout did before this change. Exactly one settle."""
-    kept = _timeout(_Jobs(_job_row(wallet=wallet, gpu_seconds_used=seconds)),
-                    candidates=DESIGNS)
-    today = _timeout(_Jobs(_job_row(wallet=wallet, gpu_seconds_used=seconds)),
-                     candidates=())
-    assert _settle_calls(kept) == _settle_calls(today)
-    assert sum(m.call_count for m in (kept.settle_live, kept.settle_hold,
-                                      kept.release)) == 1
+def test_a_timeout_that_kept_nothing_is_still_refunded(wallet, seconds):
+    """Option C's bound, and Leo's objection to billing every timeout: a stall
+    that handed the user nothing is refunded in full, whoever caused it. This
+    is the settle every timeout made before option C."""
+    store = _Jobs(_job_row(wallet=wallet, gpu_seconds_used=seconds))
+    r = _timeout(store, candidates=())
+    assert store.rows["job-1"]["failure_class"] == "no_progress_timeout"
+    assert _one_settle(r) and _refunded(r)
+
+
+@pytest.mark.parametrize("wallet", WALLETS)
+@pytest.mark.parametrize("seconds", [None, 120])
+def test_a_timeout_that_kept_designs_is_billed(wallet, seconds):
+    """The other half of option C: real designs in the customer's hands, so
+    the GPU is charged, exactly as a cancel that kept designs is charged."""
+    store = _Jobs(_job_row(wallet=wallet, gpu_seconds_used=seconds))
+    r = _timeout(store, candidates=DESIGNS)
+    assert store.rows["job-1"]["failure_class"] == "timeout_with_delivery"
+    assert _one_settle(r) and not _refunded(r)
+
+
+def test_the_settle_sees_the_upgraded_class():
+    """The keep runs BEFORE the settle on both timeout writers, and the settle
+    routes on the ``failure_class`` of the object handed to it
+    (shared/jobs.py::_settle_wallet_hold_for_completed_job's
+    ``if job.failure_class is not None`` branch), so the bill follows the
+    designs rather than the row as ``mark_timeout`` first wrote it."""
+    seen: list = []
+
+    def record(job):  # noqa: ANN001
+        seen.append((job.status, job.failure_class,
+                     bool((job.result or {}).get("candidates"))))
+
+    for drive in (
+        lambda: jobs_mod.timeout_stuck_job("job-1", probe_modal=False),
+        lambda: jobs_mod.complete_job("job-1", terminal_status="timeout"),
+    ):
+        store = _Jobs(_job_row(gpu_seconds_used=120))
+        with patch.object(jobs_mod, "get_service_client", store.client), \
+             patch.object(jobs_mod, "_charge_workspace_for_completed_job"), \
+             patch.object(jobs_mod, "_send_completion_email"), \
+             patch.object(jobs_mod, "_settle_wallet_hold_for_completed_job",
+                          record), \
+             patch("shared.job_recovery.recover_stuck_job_result",
+                   return_value=None), \
+             patch("shared.job_recovery.reconstruct",
+                   MagicMock(return_value=list(DESIGNS))):
+            drive()
+
+    assert seen == [("timeout", "timeout_with_delivery", True)] * 2
+
+
+def test_a_cancel_never_reclassifies():
+    """The second CAS fires only where re-classifying over the kept result
+    disagrees with the class already on the row. For a cancel it cannot: the
+    ``status == "cancelled"`` arm returns ``"user_cancelled"`` unconditionally,
+    whatever the result holds (shared/jobs.py::classify_terminal_state), and
+    that is what ``mark_cancelled`` wrote."""
+    assert jobs_mod.classify_terminal_state(
+        status="cancelled",
+        result={"candidates": DESIGNS, "candidate_count": 2, "partial": True},
+    ) == "user_cancelled"
+
+
+def test_without_migration_0047_the_designs_still_land_and_stay_refunded():
+    """Why the class is a SECOND CAS rather than one combined write:
+    ``_cas_update`` fails whole and swallows the error
+    (shared/jobs.py::_cas_update), so until
+    supabase/migrations/0047_timeout_with_delivery_failure_class.sql is
+    applied the new class value fails the CHECK constraint. Split, the
+    designs land anyway and only the bill is forgone."""
+    store = _Jobs(_job_row(gpu_seconds_used=120))
+    real = jobs_mod._cas_update
+
+    def cas(job_id, payload, **kw):  # noqa: ANN001, ANN202
+        if payload.get("failure_class") == "timeout_with_delivery":
+            return False  # the CHECK constraint rejects it
+        return real(job_id, payload, **kw)
+
+    with patch.object(jobs_mod, "_cas_update", cas):
+        r = _timeout(store, candidates=DESIGNS)
+    assert store.rows["job-1"]["result"] == KEPT
+    assert store.rows["job-1"]["failure_class"] == "no_progress_timeout"
+    assert _one_settle(r) and _refunded(r)
 
 
 @pytest.mark.parametrize("candidates,exc", [
@@ -88,8 +186,9 @@ def test_a_rebuild_with_nothing_or_an_error_still_times_out(candidates, exc):
     assert r.outcome == "timed_out"
     assert store.rows["job-1"]["status"] == "timeout"
     assert store.rows["job-1"]["result"] is None
+    assert store.rows["job-1"]["failure_class"] == "no_progress_timeout"
     r.rec.assert_called_once()
-    r.settle_live.assert_called_once()
+    assert _one_settle(r) and _refunded(r)
 
 
 def test_no_rebuild_when_the_work_was_recoverable():
@@ -116,7 +215,9 @@ def test_complete_job_keeps_them_on_the_timeout_arm():
          patch("shared.wallet.settle_live_run"):
         fresh = jobs_mod.complete_job("job-1", terminal_status="timeout")
     assert store.rows["job-1"]["result"] == KEPT
+    assert store.rows["job-1"]["failure_class"] == "timeout_with_delivery"
     assert fresh.status == "timeout" and fresh.result == KEPT
+    assert fresh.failure_class == "timeout_with_delivery"
 
 
 # ---------------------------------------------------------------------------
@@ -126,18 +227,29 @@ def test_complete_job_keeps_them_on_the_timeout_arm():
 HOLD = "hold-1"
 
 
+REFUNDED_LEDGER = {"usd": Decimal("0"), "settled": True,
+                   "held": Decimal("1.00")}
+BILLED_LEDGER = {"usd": Decimal("1.00"), "settled": True,
+                 "held": Decimal("1.00")}
+
+
 def _timed_out(result=None):
+    """A timed-out row carrying the class the classifier gives it, so the page
+    tests run against the real pairing of result and class rather than a
+    hand-picked one (shared/jobs.py::classify_terminal_state)."""
     from tests.test_run_notices import _job
 
-    return replace(_job(status="timeout", tool="boltz2"), result=result,
-                   failure_class="no_progress_timeout")
+    return replace(
+        _job(status="timeout", tool="boltz2"), result=result,
+        failure_class=jobs_mod.classify_terminal_state(
+            status="timeout", result=result),
+    )
 
 
-def _html(client, job, monkeypatch):
+def _html(client, job, monkeypatch, ledger=REFUNDED_LEDGER):
     monkeypatch.setattr(
         "shared.wallet.job_spend_by_hold",
-        lambda user_id, holds: {HOLD: {"usd": Decimal("0"), "settled": True,
-                                       "held": Decimal("1.00")}},
+        lambda user_id, holds: {HOLD: dict(ledger)},
     )
     ctx = SimpleNamespace(user_id="u-1", tier="free", balance=100,
                           email="u@example.com")
@@ -171,14 +283,23 @@ def test_the_page_no_longer_says_it_produced_no_result(client, monkeypatch):
     assert "Job timed out before it finished." in html
 
 
-def test_the_page_keeps_the_refund_sentence(client, monkeypatch):
+def test_the_page_keeps_the_money_sentence(client, monkeypatch):
     """Showing results must not hide what happened to the money: the failure
     panel still renders for a timeout that kept designs (the two sibling
-    blocks in templates/job_detail.html's results-container)."""
-    html = _html(client, _timed_out(_rows(2)), monkeypatch)
+    blocks in templates/job_detail.html's results-container).
+
+    The sentence is read off the ledger, not off the class
+    (blueprints/jobs.py::_failure_money), so under option C a timeout that
+    kept designs says it was charged and one that kept none says it was not.
+    """
+    html = _html(client, _timed_out(_rows(2)), monkeypatch,
+                 ledger=BILLED_LEDGER)
     assert "data-failure-money" in html
-    assert "You were not charged for this run." in html
+    assert "You were charged $1.00 for the GPU time this run used." in html
     assert "data-retry-link" in html
+
+    refunded = _html(client, _timed_out(), monkeypatch)
+    assert "You were not charged for this run." in refunded
 
 
 def test_a_timeout_that_kept_nothing_is_unchanged(client, monkeypatch):

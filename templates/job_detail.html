@@ -317,16 +317,19 @@
           {% include tool_results_partial %}
         {% endif %}
         {# Not an `elif`: a timed-out run that kept designs shows BOTH, so it
-           does not lose the refund sentence `failure_money` renders below
-           (tests/test_timeout_keeps_designs.py::test_the_page_keeps_the_refund_sentence).
+           does not lose the money sentence `failure_money` renders below
+           (tests/test_timeout_keeps_designs.py::test_the_page_keeps_the_money_sentence).
            Every other state reaches at most one of the two blocks, so the
            split changes nothing for them. #}
         {% if job.status in ('failed', 'timeout') %}
           {# Plain-words cause, what to change, the ledger's refund sentence
              and a retry link FIRST, raw error detail underneath for support. The gate covers 'timeout' as well as
-             'failed': a timed-out run is refunded the same way
-             (no_progress_timeout is in _REFUNDED_FAILURE_CLASSES) and used to
-             be told nothing here. Rendered even when job.error is empty,
+             'failed': a timed-out run used to be told nothing here. Its money
+             sentence is whichever one the ledger supports -- a timeout that
+             kept designs is billed and a timeout that kept none is refunded
+             (shared/jobs.py::classify_terminal_state's timeout arm), and
+             `failure_money` reads the ledger rather than the class
+             (blueprints/jobs.py::_failure_money). Rendered even when job.error is empty,
              which is the usual shape of a timeout row. #}
           {% set _advice = failure_advice(job) %}
           <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-top: 1rem;">
