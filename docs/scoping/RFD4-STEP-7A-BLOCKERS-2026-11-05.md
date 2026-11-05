@@ -23,7 +23,8 @@ upload without stranding the customer, by two different mechanisms, and
 **A premise of this investigation does not survive the code read.** The framing
 that a customer "pays the start minimum for zero designs" is wrong in two
 independent places: `live_start_usd` never charges anything, and the container's
-refusal bucket routes to a *full refund*. The real residual cost is smaller and
+refusal bucket routes to a *full refund* — and so does the fallback bucket, so
+there is no billing branch here at all. The real residual cost is smaller and
 different. Evidence in §2. This changes how option C (ship with the gap) should
 be priced.
 
@@ -171,9 +172,11 @@ Caveat on the plumbing: `blueprints/jobs.py:993` builds the failed row's bucket 
 `poll.get("error_bucket") or "pipeline"`, and
 `gpu/modal_client.py:768` sets `error_bucket` from the container's `err.get("bucket")`.
 So `"input"` survives to the row only if the container's result JSON is read; if it
-is not, the row defaults to `"pipeline"`, which IS in the table. I did not run a
-job, so which path a real stranded run takes is UNVERIFIED. Both outcomes are
-listed in §3's pricing.
+is not, the row defaults to `"pipeline"`, which IS in the table — mapping to
+`"tool_error"` (`shared/jobs.py:833`), which is itself in
+`_REFUNDED_FAILURE_CLASSES` (`:821-827`). I did not run a job, so which path a
+real stranded run takes is UNVERIFIED, but both paths refund, so it does not
+change the price (§3).
 
 ### What the customer does lose
 
@@ -211,11 +214,19 @@ listed in §3's pricing.
 What the customer loses: a submit-to-failure round trip (container start plus
 download, order-of-seconds), a Workspace-cap debit that is not returned, and the
 wait. What we refund: the metered seconds in full, via `unclassified` and
-`settle_live_run(..., refund=True)`, **if** the container's `"input"` bucket
-reaches the row; if it defaults to `"pipeline"`
-instead, `pipeline` maps into the billed set and the GPU seconds are **settled,
-not refunded** — still only seconds, but charged. That branch is UNVERIFIED and is
-the reason option C is not free.
+`settle_live_run(..., refund=True)`.
+
+**Both bucket paths refund, so this is not a billing branch.** Which bucket
+actually reaches the row is UNVERIFIED (no job was run) — but it does not matter.
+If the container's `"input"` bucket arrives, `"input"` is absent from
+`_ERROR_BUCKET_TO_FAILURE_CLASS` (`shared/jobs.py:831`) and the row classifies
+`unclassified`. If `blueprints/jobs.py:993` defaults it to `"pipeline"`, that
+bucket maps to `"tool_error"` (`shared/jobs.py:833`). Both `unclassified` and
+`tool_error` are in `_REFUNDED_FAILURE_CLASSES` (`shared/jobs.py:821-827`);
+`_BILLED_FAILURE_CLASSES` (`:807-817`) holds only `succeeded`,
+`completed_no_yield`, `user_cancelled`, `safety_kill` and
+`timeout_with_delivery`. So the GPU seconds are refunded either way, and the only
+cost that survives is the Workspace-cap debit plus the customer's time.
 
 What option C does not cost: nothing customer-facing misstates the situation. The
 container's own message names the real problem and the real fix ("Crop the
@@ -250,10 +261,15 @@ runs for `rfantibody` and `bindcraft`, whose containers are fine with the extra
 chain (§1). Keying a refusal on "the preview dropped a chain" would refuse two
 tools that work today — a regression, and a far worse one than the gap it closes.
 The refusal has to be gated on a field that is true for rfd4 only; the existing
-`multi_chain_supported` / `multi_chain_container_ready` pair cannot carry it,
-because both are already `False` for `rfantibody` *and* for `bindcraft`
-(`shared/pdb_preflight_rules.py:176-218` documents why, and the pinned test at
-`tests/test_rfd4_adapter.py:189-191` records that they are inert for this input).
+`multi_chain_supported` / `multi_chain_container_ready` pair cannot carry it.
+`rfantibody` has both `False` (`shared/pdb_preflight_rules.py:384-385`) and so
+does rfd4 (`:1033-1034`), so `multi_chain_supported` alone cannot separate rfd4
+from rfantibody. `bindcraft` differs again — `multi_chain_supported=True`
+(`:612`) with only `multi_chain_container_ready=False` (`:626`) — so no
+combination of the existing pair is true for rfd4 and false for both siblings.
+(`shared/pdb_preflight_rules.py:176-218` documents the pair's intent, and the
+pinned test at `tests/test_rfd4_adapter.py:189-191` records that it is inert for
+this input.)
 So: a third field, something like `container_refuses_extra_chains`, true for rfd4
 alone.
 
@@ -301,7 +317,9 @@ static/example/1HEW.pdb
 **What else it affects.** The pinned test goes red by design, which is its job —
 `tests/test_rfd4_adapter.py:210-211` says so. Everything else routes through
 `preflight_for_tool`, so a new rules field has to be defaulted `False` for the
-other thirteen tools or the preflight suite (`tests/test_pdb_preflight.py`) moves.
+six other tools that carry a `ToolRules` — `TOOL_RULES`
+(`shared/pdb_preflight_rules.py:1132-1140`) has seven entries, not fourteen — or
+the preflight suite (`tests/test_pdb_preflight.py`) moves.
 The new field is also a *claim about a container*, which under house rules needs
 the `file:line` that enforces it — here `tools/rfd4/run_pipeline.py:643`, which is
 in this repo and so actually citable. That is a point in this option's favour: the
@@ -335,7 +353,8 @@ pending/running rows across all nine before the merge, not just rfd4's.
 real chain list, so cropping there is where the information already is — no new
 plumbing. But cropping silently changes what the customer's structure *is*, which
 is a thing the hub currently tells them about for `rfantibody` only via container
-logs (`:1446`), not via the UI. Also: `resolve_target_chain`'s docstring opens
+logs (`docker/rfantibody/run_pipeline.py:1421-1426` for the kept/dropped chain
+lists, `:1447` for the preprocessed-target line), not via the UI. Also: `resolve_target_chain`'s docstring opens
 *"MULTI-CHAIN TARGETS ARE REFUSED"* and is cited from three other places
 (`tools/rfd4/__init__.py:126-131`, `shared/pipeline_normalize.py:707-708`,
 `tests/test_rfd4_adapter.py:179-182`); all four move together or the claims rot.
@@ -512,8 +531,8 @@ owner/repo pair, same form as `rfantibody`'s and `rfdiffusion`'s.
   currently asserts `paper_token in meta.paper_url`; under an `Optional` token that
   assertion becomes conditional, so any future tool — or any future edit to an
   existing one — can satisfy the guard with `None` and no paper link check at all.
-  Thirteen of the fourteen also lose the only thing standing between them and a
-  `paper_url` pointing at the wrong paper.
+  That removes the only thing standing between any of them and a `paper_url`
+  pointing at the wrong paper.
 - It also interacts badly with `test_the_leak_maps_are_not_empty` (`:492`), which
   documents that an emptied map yields an empty `parametrize` that pytest **skips**
   (there is no pytest ini in the repo making that an error). An `Optional` shape
@@ -544,10 +563,12 @@ D is only available by not registering, i.e. not shipping step 7A.
 **Option A: `("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina")`,
 keeping the guard's shape unchanged.**
 
-It is the only option that costs the other fourteen tools nothing (A and B both
-cost zero, but B is the weaker token and the file already records the objection to
-its form). It identifies one document rather than a publisher or a project, which
-is the standard the two recorded rejections were enforcing. Both halves resolve
+A and B both cost the other fourteen tools nothing; B is the weaker token and the
+file already records the objection to its form, which is why A wins between
+them. Only option C costs anything, and it costs all fourteen.
+
+Option A identifies one document rather than a publisher or a project, which is
+the standard the two recorded rejections were enforcing. Both halves resolve
 today: the PDF 200s with real PDF bytes (§5.1) and the repo is the one we pin.
 
 One honest caveat to write into the entry's comment, in the present tense because
@@ -597,8 +618,9 @@ scope doc's measured `24 TemplateNotFound tools/rfd4_form.html`.
 **Whose step it is: step 7.** §8's step 7 row names
 `shared/tools_catalog.py`, `shared/tool_chooser.py`, `shared/email.py` and the
 comparison and guide templates — it does **not** name `rfd4_form.html`. The only
-attribution anywhere in the doc is step 8's prose, *"47 of the 66 are the two
-templates steps 7 and 5 own"*; step 5 shipped `rfd4_results.html` (it is on disk),
+attribution anywhere in the doc is a prose aside at scope-doc line 1132 — in the
+paragraph after the §8 table that explains why registration is its own step —
+*"47 of the 66 are the two templates steps 7 and 5 own"*; step 5 shipped `rfd4_results.html` (it is on disk),
 so by elimination the form template is step 7's.
 
 Recommendation: **add `templates/tools/rfd4_form.html` explicitly to §8's step 7
