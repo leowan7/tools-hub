@@ -686,6 +686,14 @@
     // -----------------------------------------------------------------------
     // Known binders table
     // -----------------------------------------------------------------------
+    // Chain ids reach this table from SAbDab's summary CSV, and the rows are
+    // built with innerHTML (see tr.innerHTML below).
+    function escText(s) {
+      return String(s).replace(/[&<>"]/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+      });
+    }
+
     function renderKnownBinders(binders, epitopes) {
       var section = document.getElementById('known-binders-section');
       var tbody = document.getElementById('known-binders-body');
@@ -720,17 +728,34 @@
         // DID -- it recorded no contacts, or it has not recorded any -- and
         // neither claims to know why. An earlier draft labelled these rows
         // "none found" and commented it "looked, found nothing within the
-        // cutoff"; both were wrong, because a present [] arrives six ways and
-        // only ONE of them can be a measurement. (Six code paths -- nothing
-        // here counts how often each is hit.) They are enumerated in that same
-        // module docstring, not here.
+        // cutoff"; both were wrong, because a present [] arrives seven ways
+        // and only ONE of them can be a measurement. (Seven code paths --
+        // nothing here counts how often each is hit.) They are enumerated in
+        // that same module docstring, not here.
         var computed = Object.prototype.hasOwnProperty.call(b, 'contact_residues')
           && b.contact_residues !== null;
         var contacts = computed ? b.contact_residues : [];
+        var unresolved = b.contact_unresolved || [];
         var contactDisplay;
-        if (contacts.length > 0) {
+        if (unresolved.length > 0) {
+          // One of the seven, and the only one that is not an absence of
+          // contacts: the server measured chains it could not tie to this
+          // target and refused to pick one. Checked BEFORE the empty-list
+          // branches so it can never read as "no contacts recorded" -- which
+          // would say this antibody touches nothing, the wrong-chain answer
+          // the refusal exists to avoid.
+          contactDisplay =
+            '<span style="color:var(--muted)">chain not resolved (candidates '
+            + unresolved.map(escText).join(', ') + ')</span>';
+        } else if (contacts.length > 0) {
           contactDisplay = contacts.slice(0, 10).join(', ')
             + (contacts.length > 10 ? '\u2026 (+' + (contacts.length - 10) + ')' : '');
+          // Which chain these residue numbers belong to. Residue numbering
+          // restarts per chain, so the numbers alone do not say.
+          if (b.contact_chain) {
+            contactDisplay += '<span style="color:var(--muted)"> (chain '
+              + escText(b.contact_chain) + ')</span>';
+          }
         } else if (computed) {
           contactDisplay =
             '<span style="color:var(--muted)">no contacts recorded</span>';

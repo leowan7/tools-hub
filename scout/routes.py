@@ -864,12 +864,23 @@ def _binders_with_contacts(cache: dict) -> list[dict]:
     # Fill in only the missing interfaces. Swapping the whole list in would
     # also swap in whatever SAbDab has published since, which is a different
     # change from the one this is here to make.
+    #
+    # The whole contact_* payload moves together. contact_chain says which
+    # chain the residues were measured on and contact_unresolved marks a
+    # refusal (see scout.epitope_db._resolve_antigen_chain); carrying
+    # contact_residues alone would turn a refusal's empty list into a measured
+    # "no contacts", which is the wrong-chain answer wearing a different hat.
     out = []
     for b in binders:
-        contacts = None
+        repaired = None
         if "contact_residues" not in b:
-            contacts = (fresh.get(b.get("pdb_id")) or {}).get("contact_residues")
-        out.append(b if contacts is None else {**b, "contact_residues": contacts})
+            warm_entry = fresh.get(b.get("pdb_id")) or {}
+            if "contact_residues" in warm_entry:
+                repaired = {
+                    k: v for k, v in warm_entry.items()
+                    if k.startswith("contact_")
+                }
+        out.append(b if repaired is None else {**b, **repaired})
     return out
 
 
