@@ -59,7 +59,7 @@ cumulative `gpu_seconds` 3662 and is stamped 07:55:13, and 07:55:13 minus
 `gpu_seconds_used = 655` is exactly 06:54:11 to 07:05:06, the span from
 `started_at` to the last design upload. That is the figure
 `billed_gpu_seconds` is meant to produce for a seed whose batch has finished
-streaming (`shared/jobs.py:2927`, with `_seed_last_design_at`), and it is
+streaming (`shared/jobs.py:2928`, with `_seed_last_design_at`), and it is
 correct: with `n_seeds: 1` there was nothing left to meter after 07:05:06. It
 did not freeze by accident.
 
@@ -98,7 +98,7 @@ log; treat it as unverified. It does not change the fix.
 would have refused anyway: `_progress.designs_total` is 0, so
 `_completion_signal` returns `"unknown"` (`shared/job_recovery.py:382-388` -
 the `total <= 0` arm, **not** the `"incomplete"` arm), and the gate at
-`:466` requires either a clean exit or a `"complete"` signal.
+`:467` requires either a clean exit or a `"complete"` signal.
 
 ## 4. B - did the customer get anything?
 
@@ -106,7 +106,7 @@ the `total <= 0` arm, **not** the `"incomplete"` arm), and the gate at
 
 - **Email: none.** Two independent gates. The timeout path never calls
   `complete_job`, and `_send_completion_email` fires only on
-  `{"succeeded", "failed"}` (`shared/jobs.py:3012`).
+  `{"succeeded", "failed"}` (`shared/jobs.py:3013`).
 - **Results page: empty.** The page's copy and its results block both hang off
   `kept_designs`, which reads `result`.
 - **CSV and FASTA: empty.** The exports have no status gate at all; they read
@@ -134,7 +134,8 @@ returned **$15.0000** with `gpu_seconds 655` and `failure_reason: timeout`.
 Exactly one settle row. The customer paid nothing.
 
 That $15.00 is not a coincidence: it is `esmfold2-design`'s
-`base_hard_cap_usd` (`shared/wallet_estimates.py:561`). Twelve of the thirteen
+`base_hard_cap_usd` (`shared/wallet_estimates.py:632`, in the
+`esmfold2-design` spec that starts at `:561`). Twelve of the thirteen
 debits match `delta_seconds * 0.002417 * 1.70` to the cent
 (`shared/wallet_estimates.py:75` and `:54`); the thirteenth should have been
 $1.1505 and charged **$1.1037**, which is the clamp landing the running total
@@ -157,28 +158,41 @@ about an hour after a run, so a reading taken now is a lower bound.
 The worse defect is not the detection lag. It is that **a run which delivered
 its entire requested deliverable could not be recognised as having finished.**
 
-The only completion evidence the recovery gate reads is
+The gate takes either of two proofs: a `clean_exit` verdict from the Modal
+probe, which needs no `_progress` at all
+(`shared/job_recovery.py:467`, pinned by
+`tests/test_sweep_stuck_recovery.py::test_clean_exit_zero_webhook_lost_recovers_from_storage`),
+or - failing that - a `"complete"` signal computed from
 `_progress.designs_completed` against `designs_total`
-(`shared/job_recovery.py:368-389`). This pipeline left both at 0 for the whole
-run - the row still says `stage: folding` after all three designs had
-shipped - so the gate's answer was `"unknown"` and recovery refused. Meanwhile
+(`shared/job_recovery.py:368-389`). This run got neither: the probe returned a
+failure verdict, so the counters were the only proof left - and this pipeline
+left both at 0 for the whole run. The row still says `stage: folding` after all
+three designs had shipped, so the gate's answer was `"unknown"` and recovery
+refused. Meanwhile
 the delivered count sat on the same row in `_partial_candidates` (3) and the
 requested count in `inputs.parameters.n_designs_total` (3). The evidence was
 present and unread.
 
-That blind spot is permanent and tool-agnostic: any pipeline that does not fill
-those two counters can never be recovered, however much it delivered.
+The blind spot is narrower than "always", and still tool-agnostic: whenever
+Modal gives no clean-exit verdict, a pipeline that does not fill those two
+counters can never be recovered, however much it delivered.
 
 ## 7. Was anything watching? No.
 
 Nothing alerts on a paying run going silent.
 
-- There is no Sentry in any non-test Python file in this repo.
-- The only operator-alert sender is `notify_operator_new_submission`.
-- `ALERTING.md:326-329` rules out the nearest existing option: a Railway cron
-  can only signal failure by emitting to Resend or a webhook on a non-zero
-  exit, which "does not natively alert ... as cleanly as a deploy failure".
-  Nothing wires that today.
+- No non-test Python file imports Sentry. The word appears once, in a comment
+  (`shared/idempotency.py:416`); `ALERTING.md:18` has Sentry "Deferred by
+  decision" (that comment cites `:17`, off by one).
+- The only `notify_operator_*` sender is `notify_operator_new_submission`
+  (`shared/email.py:2158`). Unverified: that no other function alerts an
+  operator by some other name - I did not audit every sender.
+- The nearest existing option is not wired. `ALERTING.md:323-330` says a
+  Railway cron running the smoke script "works, but the failure signal has to
+  be wired", because Railway "does not natively alert on a script's exit code
+  as cleanly as a deploy failure", and it recommends Option A as simpler.
+  Unverified: whether anything wires that signal today - I found no sender,
+  but did not read the Railway configuration.
 - The only visibility is the daily digest's aggregate per-tool `timeout` count,
   which is a number, not a page.
 
@@ -223,9 +237,12 @@ three pre-existing tests still assert `release` called once and `settle_hold`
 never, and the test added here asserts the same).
 
 What changes is that the designs reach the customer. Run against this
-incident's shape, the row carries all three designs on the results page, in the
-CSV and in the FASTA, still fully refunded
-(`::test_a_failed_verdict_still_shows_the_designs_it_delivered`).
+incident's shape, the row carries all three designs and stays fully refunded
+(`::test_a_failed_verdict_still_shows_the_designs_it_delivered`, which asserts
+the three candidates, `partial`, the class and the refund). That the same
+`result` reaches the page, the CSV and the FASTA is pinned separately
+(`tests/test_timeout_keeps_designs.py::test_the_page_says_designs_were_kept`,
+`::test_exports_carry_the_kept_designs`).
 
 A design whose structure is not in Storage is still dropped by `reconstruct`, so
 nothing is invented.
@@ -238,14 +255,14 @@ not in this change.
 
 | # | Grade | Defect | State |
 |---|---|---|---|
-| 1 | **P0** | A run that delivered its full requested count cannot be recognised as complete: the recovery gate reads only `_progress` counters this pipeline never filled, while the delivered count sits unread in `_partial_candidates` (`shared/job_recovery.py:368-389`). Cost one finished job and $8.85-$15.23 of H100. | **open** - the repair changes billing classification (a delivered-complete stuck run would bill instead of refund), so it needs Leo's decision, not just a patch |
+| 1 | **P0** | A run that delivered its full requested count cannot be recognised as complete: with no clean-exit verdict the recovery gate has only the `_progress` counters this pipeline never filled, while the delivered count sits unread in `_partial_candidates` (`shared/job_recovery.py:368-389`, gate at `:467`). Cost one finished job and $8.85-$15.23 of H100. | **open** - the repair changes billing classification (a delivered-complete stuck run would bill instead of refund), so it needs Leo's decision, not just a patch |
 | 2 | **P1** | Delivered designs were withheld from the customer because Modal reported a failure - a billing rule applied to the display path. | **fixed here** |
 | 3 | **P1** | Nothing alerts on a silent paying run, and the two obvious signals are dead (section 7). The live one is `running` past the tool's own ceiling. | open |
 | 4 | **P1** | The debits bill raw cumulative wall clock (3,662 s) while the row's own `gpu_seconds_used` bills per-seed spans (655 s) - a 5.6x disagreement on one run. The debits kept charging for 50 minutes after the work was done. | open |
 | 5 | **P1** | `base_hard_cap_usd` silently stops debiting at the cap. Past it the GPU is free to the customer and a pure loss to us, and the ledger can no longer date a run's death. | open |
 | 6 | **P2** | One flat `STUCK_RUNNING_AGE_HOURS = 6` for every tool. `esmfold2-design` cannot exceed 6,300 s by its own design, so at least 4h20m of this gap was guaranteed dead time; for a longer-ceiling tool the same flat value kills live runs. | open |
 | 7 | **P2** | A swept timeout emails the customer nothing, though the refunded-timeout wording already exists in `shared/email.py`. | open |
-| 8 | **P2** | On `still_running` the sweeper refunds and leaves Modal running. Nothing cancels the call, and the sweep service holds no Modal tokens. | open |
+| 8 | **P2** | On `still_running` the sweeper refunds and leaves Modal running. Nothing cancels the call (`docs/design/LIVE-CHARGING-2026-10-01.md:428`). That the sweep service holds no Modal tokens is **unverified**: its only source is the same design note (`:440`), not the Railway configuration. | open |
 
 Migration 0047 was previously listed here as unapplied, on a sibling session's
 note. It **is** applied (section 1). Closed.

@@ -523,9 +523,12 @@ class TestGenuinelyDeadJobStillTimesOut:
         # inside 11 minutes, then went silent with no terminal webhook. Six
         # hours later the sweeper swept it and the customer was shown
         # NOTHING. Which of the two failure verdicts the probe returned was
-        # not logged and is no longer recoverable (see the write-up); either
-        # one used to skip the keep outright instead of only withholding the
-        # bill, so this pins the shape for both.
+        # not logged and is no longer recoverable (see the write-up); both
+        # used to skip the keep outright instead of only withholding the
+        # bill. This test polls "error", so it pins the unconfirmed verdict;
+        # the confirmed-crash verdict is pinned by
+        # ::test_crashed_pipeline_with_partial_designs_is_not_billed above,
+        # which now asserts its designs are kept too.
         #
         # The progress counters cannot rescue this: this pipeline never
         # filled them, so ``_completion_signal`` reads ``designs_total: 0``
