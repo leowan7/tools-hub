@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 from flask import Flask
 
+from tests.test_stripe_compat import _wrap
 from webhooks import stripe as stripe_webhook
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -683,3 +684,61 @@ def test_user_id_from_metadata_handles_missing():
     assert stripe_webhook._user_id_from_metadata(
         {"metadata": {"user_id": "  user_x  "}}
     ) == "user_x"
+
+
+# ---------------------------------------------------------------------------
+# stripe-python 15: construct_event returns a StripeObject that is not a dict
+# ---------------------------------------------------------------------------
+
+
+def test_verify_signature_accepts_a_non_dict_stripe_object(
+    client, wallet_calls, email_log, monkeypatch
+):
+    """Run the real ``_verify_signature`` against a 15.x-shaped event.
+
+    Every other route test in this file patches ``_verify_signature``
+    itself, so the conversion inside it is never exercised. This one patches
+    ``stripe.Webhook.construct_event`` instead and lets the real
+    ``_verify_signature`` run, which is how this file exercises that
+    conversion.
+    """
+    evt = _checkout_session_event(event_id="evt_non_dict_object")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    import stripe
+
+    double = _wrap(evt)
+    assert not isinstance(double, dict)  # the double, not a dict in disguise
+
+    with patch.object(stripe.Webhook, "construct_event", return_value=double):
+        resp = _post_event(client, evt)
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["status"] == "ok"
+    assert body["event_type"] == "checkout.session.completed"
+    assert len(wallet_calls["top_up_wallet"]) == 1
+    call = wallet_calls["top_up_wallet"][0]
+    assert call["user_id"] == USER_A
+    assert call["kind"] == "topup"
+    assert [n for n, _ in email_log]
+
+
+def test_dispute_charge_retrieve_accepts_a_non_dict_stripe_object(
+    client, wallet_calls
+):
+    """``stripe.Charge.retrieve`` is the second conversion point."""
+    evt = _dispute_event(event_id="evt_dispute_non_dict_charge")
+    charge = _wrap({
+        "id": "ch_test_1",
+        "metadata": {"user_id": USER_A, "kind": "topup"},
+        "payment_intent": "pi_test_1",
+    })
+    import stripe
+
+    with patch.object(
+        stripe_webhook, "_verify_signature", return_value=evt
+    ), patch.object(stripe.Charge, "retrieve", return_value=charge):
+        resp = _post_event(client, evt)
+
+    assert resp.status_code == 200
+    assert wallet_calls["freeze_wallet_on_dispute"][0]["user_id"] == USER_A

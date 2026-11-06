@@ -54,6 +54,7 @@ from typing import Any, Optional
 from flask import Flask, Response, jsonify, request
 
 from shared.credits import get_service_client
+from shared.stripe_compat import as_dict
 from shared.wallet import freeze_wallet_on_dispute, top_up_wallet
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def _verify_signature(payload: bytes, signature: str) -> Optional[dict]:
             sig_header=signature,
             secret=secret,
         )
-        return dict(event)
+        return as_dict(event)
     except Exception as exc:  # ValueError, SignatureVerificationError, etc.
         logger.warning("Stripe signature verification failed: %s", exc)
         return None
@@ -209,7 +210,7 @@ def _persist_payment_method_from_session(
         import stripe  # noqa: PLC0415
         stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
-        payment_method = pi.get("payment_method")
+        payment_method = as_dict(pi).get("payment_method")
         customer_id = session_obj.get("customer")
     except Exception:
         logger.warning(
@@ -260,7 +261,7 @@ def _user_id_from_charge(charge_obj: dict) -> Optional[str]:
         import stripe  # noqa: PLC0415
         stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
-        return _user_id_from_metadata(dict(pi))
+        return _user_id_from_metadata(as_dict(pi))
     except Exception:
         logger.warning(
             "Could not retrieve PaymentIntent %s while resolving dispute user.",
@@ -525,7 +526,7 @@ def _apply_charge_dispute_created(event: dict) -> dict:
     try:
         import stripe  # noqa: PLC0415
         stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
-        charge_obj = dict(stripe.Charge.retrieve(charge_id))
+        charge_obj = as_dict(stripe.Charge.retrieve(charge_id))
     except Exception:
         logger.error(
             "charge.dispute.created: could not retrieve charge %s",
