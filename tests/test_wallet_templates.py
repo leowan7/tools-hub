@@ -26,6 +26,7 @@ yet because it is imported as macros rather than rendered standalone.
 
 from __future__ import annotations
 
+import pathlib
 from decimal import Decimal
 from datetime import datetime, timezone
 
@@ -622,6 +623,207 @@ class _FakeLedgerClient:
                 return _R()
 
         return _Q()
+
+
+# ---------------------------------------------------------------------------
+# A run's roll-up vs the debit rows printed under it
+# ---------------------------------------------------------------------------
+
+
+class TestRunRollUp:
+    """The headline figure on a live run has to add up to its own rows.
+
+    A live run is one table row (the $0 anchor) carrying "$X so far" or
+    "it closed at $X", with its per-heartbeat debits listed under it and
+    again as their own rows. Every amount cell is rendered by
+    ``display_record_usd``, half-up to 2dp, so a roll-up summed from the
+    exact amounts prints cents away from the column it stands over -- the
+    harm ``shared/compute_campaigns.py::display_total_usd`` exists to
+    prevent, on a page that does not call it.
+    """
+
+    @staticmethod
+    def _rows(n, each):
+        anchor = {
+            "id": "h-1", "user_id": "u-1", "kind": "hold",
+            "amount_usd": Decimal("0"), "balance_after_usd": Decimal("20"),
+            "created_at": "2026-11-06T10:00:00+00:00",
+            "tool_slug": "esmfold2_design", "job_id": None,
+            "parent_tx_id": None, "notes": None, "stripe_event_id": None,
+        }
+        debits = [
+            dict(anchor, id="d-%d" % i, kind="run_debit",
+                 amount_usd=Decimal(each), balance_after_usd=Decimal("1"),
+                 created_at="2026-11-06T10:%02d:00+00:00" % (10 + i),
+                 parent_tx_id="h-1")
+            for i in range(n)
+        ]
+        return [anchor] + debits
+
+    @staticmethod
+    def _render(app, rows, annotations):
+        with app.test_request_context("/account/wallet/transactions"):
+            return render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations=annotations,
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=len(rows),
+            )
+
+    def test_roll_up_adds_up_to_the_debit_rows_printed_under_it(self, app):
+        """Thirteen debits of $1.1549: the rows print $14.95, not $15.01.
+
+        The shape of a stalled esmfold2-design run: many heartbeat debits,
+        each a fraction of a cent above a round cent. Summed exactly,
+        ``taken`` was 15.0137 and the anchor read "$15.01 so far" over
+        thirteen rows each reading $1.15.
+        """
+        from blueprints.wallet import _build_tx_lineage_annotations
+        from shared.compute_campaigns import display_record_usd
+
+        rows = self._rows(13, "-1.1549")
+        annotations = _build_tx_lineage_annotations(
+            _FakeLedgerClient(rows), "u-1", rows,
+        )
+        printed = [display_record_usd(r["amount_usd"]) for r in rows[1:]]
+        assert set(printed) == {"\u2212$1.15"}
+        rows_total = sum(
+            (Decimal(s.lstrip("\u2212$")) for s in printed), Decimal("0"),
+        )
+        assert rows_total == Decimal("14.95")
+        assert annotations["h-1"]["taken"] == rows_total
+
+        html = self._render(app, rows, annotations)
+        assert "charged as it runs; $14.95 so far" in html
+        assert "15.01" not in html
+
+    def test_the_net_the_closed_branch_reads_stays_exact(self, app):
+        """``net`` answers "is it zero", which a rounded sum answers wrongly.
+
+        The template picks "all of it was returned when it closed" over "it
+        closed at $X" on ``ann.net == 0``
+        (``templates/wallet/transactions.html``, the is_run branch), so the
+        figure it reads has to be the exact one. Both of these pairs
+        misclassify if each row is rounded before being summed: the full
+        refund sums to -0.06 (a cost on a free run) and the 5-cent charge
+        sums to +0.01 (a refund on a charged run).
+        """
+        from blueprints.wallet import _build_tx_lineage_annotations
+
+        def closed(each, released):
+            rows = self._rows(13, each)
+            rows.append(dict(rows[0], id="r-1", kind="hold_release",
+                             amount_usd=Decimal(released),
+                             created_at="2026-11-06T10:30:00+00:00",
+                             parent_tx_id="h-1"))
+            ann = _build_tx_lineage_annotations(
+                _FakeLedgerClient(rows), "u-1", rows,
+            )
+            return ann, self._render(app, rows, ann)
+
+        # settle_live_run releases v_taken - v_final, so a $0 final cost
+        # returns the whole 15.0163 the debits took
+        # (supabase/migrations/0045_live_run_debits.sql, its ELSE arm).
+        ann, html = closed("-1.1551", "15.0163")
+        assert ann["h-1"]["net"] == Decimal("0")
+        assert "all of it was returned when it closed" in html
+        assert "closed at" not in html
+
+        # 5.37 cents kept: a cost, however small, is not a full refund.
+        ann, html = closed("-1.1549", "14.96")
+        assert ann["h-1"]["net"] == Decimal("-0.0537")
+        assert "it closed at $0.05" in html
+        assert "all of it was returned" not in html
+
+    def test_a_run_of_sub_cent_debits_is_not_read_as_a_refund(self, app):
+        """The closed branch is guarded on having debits, not on their sum.
+
+        Each of these debits prints "<$0.01" but contributes 0.00 to the
+        printed total, so a guard on that total being positive would send a
+        fully refunded run to the "it closed at $0.00" arm instead.
+        """
+        from blueprints.wallet import _build_tx_lineage_annotations
+
+        rows = self._rows(3, "-0.001")
+        rows.append(dict(rows[0], id="r-1", kind="hold_release",
+                         amount_usd=Decimal("0.003"),
+                         created_at="2026-11-06T10:30:00+00:00",
+                         parent_tx_id="h-1"))
+        ann = _build_tx_lineage_annotations(
+            _FakeLedgerClient(rows), "u-1", rows,
+        )
+        assert ann["h-1"]["taken"] == Decimal("0.00")
+        assert ann["h-1"]["net"] == Decimal("0")
+        html = self._render(app, rows, ann)
+        assert "all of it was returned when it closed" in html
+        assert "closed at $0.00" not in html
+
+
+# ---------------------------------------------------------------------------
+# settle_hold's note on a clamped settlement (migration 0048)
+# ---------------------------------------------------------------------------
+
+
+class TestSettleHoldClampNote:
+    """0048 may change settle_hold's note, and nothing else.
+
+    F-17 (``docs/qa/QA-2026-10-01-paid-sweep.md``): the 0020 definition
+    noted EVERY clamped settlement "estimate matched actual", because
+    clamping the metered actual down to the cap drives v_diff to 0 and
+    that branch was written for an estimate that was simply right.
+    """
+
+    MIGRATIONS = pathlib.Path(__file__).resolve().parents[1] / "supabase" / "migrations"
+
+    OLD_NOTE = "p_hold_tx_id, p_failure_reason, 'estimate matched actual'"
+    NEW_NOTE = """p_hold_tx_id, p_failure_reason,
+               CASE WHEN p_actual_usd > p_hard_cap_usd
+                    THEN 'charge clamped at the tool hard cap of ' ||
+                         p_hard_cap_usd::text || ' USD; metered ' ||
+                         p_actual_usd::text || ' USD'
+                    ELSE 'estimate matched actual' END"""
+
+    @classmethod
+    def _body(cls, name):
+        """settle_hold's definition with every SQL comment line dropped."""
+        sql = (cls.MIGRATIONS / name).read_text(encoding="utf-8")
+        start = sql.index("CREATE OR REPLACE FUNCTION public.settle_hold(")
+        end = sql.index("GRANT EXECUTE ON FUNCTION public.settle_hold(")
+        return "\n".join(
+            line.rstrip() for line in sql[start:end].splitlines()
+            if line.strip() and not line.strip().startswith("--")
+        )
+
+    def test_0048_changes_only_the_note(self):
+        """0048's body is 0020's with one notes expression swapped.
+
+        Compared statement for statement (comments dropped), so nobody has
+        to re-derive that the charged, released and absorbed amounts are
+        untouched: a stray edit to any of them fails here.
+        """
+        old, new = self._body("0020_wallet_corrections.sql"), self._body(
+            "0048_settle_hold_clamp_note.sql")
+        assert old.count(self.OLD_NOTE) == 1
+        expected = "\n".join(
+            line.rstrip() for line in
+            old.replace(self.OLD_NOTE, self.NEW_NOTE).splitlines()
+        )
+        assert new == expected
+
+    def test_the_clamped_settlement_says_it_was_clamped(self):
+        """Only the unclamped arm of the note claims the estimate matched."""
+        new = self._body("0048_settle_hold_clamp_note.sql")
+        assert "CASE WHEN p_actual_usd > p_hard_cap_usd" in new
+        clamped, sep, rest = new.partition("ELSE 'estimate matched actual'")
+        assert sep and "clamped at the tool hard cap" in clamped
+        assert clamped.count("estimate matched actual") == 0
+        assert rest.lstrip().startswith("END")
 
 
 # ---------------------------------------------------------------------------
