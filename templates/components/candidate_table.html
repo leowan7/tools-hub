@@ -566,17 +566,26 @@
    not arrival order, so "the order they came back in" would be a false
    claim and the shorter line is used instead.
 
+   WHOSE WORDS THESE ARE. Leo gave the sentence on 2026-11-06: "ranking based
+   on when designs completed and not binding rankings". Two departures from it
+   are deliberate. It says "the order the designs came back in" rather than an
+   exact completion order, because completion order holds only to within a
+   poll interval: designs landing in the same sweep are ordered by filename
+   (tools/rfd4/run_pipeline.py:1049-1055). And the completion half is dropped
+   entirely from the `columns` branch, where it would be false. No clause
+   explains polling to a customer; the hedge carries it.
+
    Suppressed in pooled (target-page) mode, where _rank_position is a real
    cross-run ranking and the badge above is anchored on it rather than on
    `ranked`. Pinned by tests/test_unranked_table_note.py. #}
 {% if not ranked and not pooled %}
 <p class="cand-unranked-note">
   {%- if columns %}
-  This table is not ranked, so the # column is only each row's place in the
-  list as it is sorted now, not a verdict on which design is best.
+  The # column is only each row's place in the list as it is sorted now, not a
+  ranking of how well anything binds.
   {%- else %}
-  The # column is the order the designs came back in. Nothing in this run
-  scores them, so the first row is not the best one.
+  The # column is the order the designs came back in, not a ranking of how well
+  anything binds.
   {%- endif %}
 </p>
 {% endif %}
