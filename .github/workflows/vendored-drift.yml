@@ -22,7 +22,7 @@ jobs:
   verify-vendored-sha:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify vendored SHA256
         run: |
           set -euo pipefail
