@@ -13,13 +13,20 @@ unconditionally and ships no score columns. Every other partial that passes
 ``ranked=(not output.get('backfilled'))``, so it reaches the note only on a
 backfilled result; ``mpnn_results.html`` and ``_default_results.html`` pass
 no ``ranked=`` and take the macro default ``ranked=true``, so they never
-reach it at all. On a backfilled result each of the thirteen DISCARDS its
-own score sort,
-because the sort is followed immediately by
-``candidates = recovered or candidates``. ``test_the_score_sort_is_discarded``
-below measures that on af2 instead of taking the template's word for it: an
-earlier draft of this file claimed the opposite and justified a second wording
-with it.
+reach it at all. All thirteen render a backfilled result in arrival order,
+for three reasons rather than one: SIX discard a score sort they just ran,
+because it is followed immediately by ``candidates = recovered or
+candidates`` (af2, boltz2, colabfold, esmfold, iggm, opendde); SIX never sort
+in the partial at all (bindcraft, boltzgen, proteina, pxdesign, rfantibody,
+rfdiffusion), so the stored order renders; and esmfold2_design returns from
+its ``output_candidates`` branch before reaching its sort. The template
+comment carries the line cites.
+
+``test_the_score_sort_is_discarded_so_the_sentence_is_true`` below measures
+the first of those three on af2 instead of taking the template's word for it.
+An earlier draft of this file claimed those pages render in SCORE order and
+justified a second wording with it; a later draft fixed that but asserted all
+thirteen discard a sort, which only six of them have.
 """
 import os
 import re

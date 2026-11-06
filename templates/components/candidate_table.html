@@ -557,15 +557,28 @@
    them -- passes ranked=(not output.get('backfilled')), so it reaches this
    branch only on a backfilled result. mpnn_results.html and
    _default_results.html pass no ranked= at all, so they take this macro's
-   default ranked=true (:59) and never reach here. On a backfilled result
-   each of the thirteen DISCARDS its own score sort,
-   because the sort is followed immediately by
-   `candidates = recovered or candidates` and `recovered` is non-empty
-   exactly when the run was rebuilt: af2_results.html:76-77,
+   default ranked=true (:59) and never reach here. The thirteen reach a
+   backfilled result in arrival order for THREE different reasons, counted
+   rather than generalised:
+
+   SIX DISCARD a score sort they just ran, because the sort is followed
+   immediately by `candidates = recovered or candidates` and `recovered` is
+   non-empty exactly when the run was rebuilt: af2_results.html:76-77,
    boltz2_results.html:81-82, colabfold_results.html:66-67,
    esmfold_results.html:75-76, iggm_results.html:49-50 and
-   opendde_results.html:67-68. esmfold2_design never reaches its sort on
-   that path at all; the `output_candidates` branch returns first
+   opendde_results.html:67-68.
+
+   SIX NEVER SORT in the partial at all -- bindcraft_results.html:6,
+   boltzgen_results.html:6, proteina_results.html:25,
+   pxdesign_results.html:6, rfantibody_results.html:5 and
+   rfdiffusion_results.html:7 each take output['candidates'] straight
+   through (proteina through display_rows, which shared/jobs.py:317-319
+   documents as same length, same order), and `grep -c 'sort('` over
+   those six files returns 0 for every one of them -- so the stored
+   order is what renders.
+
+   ONE, esmfold2_design, never reaches its sort on that path; the
+   `output_candidates` branch returns first
    (esmfold2_design_results.html:155-157 and :187). `recovered` is
    display_rows(output['candidates']), which shared/job_recovery.py::reconstruct
    builds by walking the streamed `_partial_candidates` in stored order
