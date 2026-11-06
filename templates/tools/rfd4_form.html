@@ -265,9 +265,17 @@
                baseline -- a 200-design run would preview at the price and cap
                of eight. The hidden field below carries the same number under
                the name the panel reads, mirrored by the script at the bottom
-               of this form; the empty string is mirrored too, so the panel's
-               own "Enter a number." guard still fires on a cleared box. Same
-               arrangement as templates/tools/af2_form.html and the other
+               of this form. Clearing the box previews the 8-design baseline
+               rather than a no-price note: the panel's "Enter a number."
+               guard tests the element named by ``count_key``
+               (templates/wallet/_partials.html:234-235), which here is this
+               hidden field, and a hidden input's ``type`` is not "number";
+               the mirrored empty string is then dropped by
+               blueprints/wallet.py:464-465 before the server-side count check
+               at :483-486 sees it. The previewed figure is the count
+               ``validate`` would default to anyway, so the preview still
+               matches the run. Same arrangement as
+               templates/tools/af2_form.html:226 and the other
                n_designs_total-scaled forms. #}
             <input type="hidden" name="n_designs_total" id="n_designs_total" value="{{ pre_fill.get('num_designs') if pre_fill and pre_fill.get('num_designs') is not none else 8 }}">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">

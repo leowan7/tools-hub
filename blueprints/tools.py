@@ -584,8 +584,13 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     # short name that precedes it.
     "opendde": "Protein, DNA, RNA, Ligand",
     "proteina": "Hard-Target Binder Design",
-    # 23 characters, so the rendered <title> stays inside the 65-char cap
-    # this map exists for. Says the mechanism, not a rank: "Best Binder
+    # 23 characters, counted by hand, well inside the 65-char SERP cap this
+    # map exists for. NO test measures that cap: the lede-shape guard counts
+    # words, not characters (MAX_PHRASE_WORDS,
+    # tests/test_public_tool_pages.py:1010), and the one guard that reads the
+    # rendered <title> only looks for the word "free" (:1136-1157). The cap is
+    # a convention this map keeps by hand, and nothing will start enforcing it
+    # at step 7A either. Says the mechanism, not a rank: "Best Binder
     # Generator" is the line Leo refused on 2026-11-05.
     "rfd4": "One-Model Binder Design",
 }
@@ -743,7 +748,7 @@ def _related_tool_cards(slug: str) -> list[dict]:
 # iggm: tools/iggm/__init__.py:334-337 vs templates/tools/iggm_form.html:93,116,122.
 _CLONE_RENAMES: dict[str, tuple[tuple[str, str, str], ...]] = {
     # rfd4's validate() stores the design count as ``nsamples`` -- the key
-    # run_pipeline.parse_num_designs reads (tools/rfd4/__init__.py:208) --
+    # run_pipeline.parse_num_designs reads (tools/rfd4/__init__.py:211) --
     # while templates/tools/rfd4_form.html asks for it as ``num_designs``.
     # Without this row a clone of a 2-design pilot run refills the box with
     # the form's hard-coded 8 and _clone_missing reports nothing.

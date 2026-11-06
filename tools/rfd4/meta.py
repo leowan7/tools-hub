@@ -63,9 +63,11 @@ comparison_one_liner: str = (
     "RFD4-Proteina writes the sequence and the all-atom structure in a "
     "single model, so there is no separate sequence-design step to run "
     "afterwards. It returns no confidence number: judging the complex is "
-    "a fold run of its own. For a backbone you sequence yourself use "
-    "RFdiffusion; for a backbone with its own designability screen use "
-    "Proteina; for an antibody or nanobody format use RFantibody or IgGM."
+    "a fold run of its own. For a route that sequences and refolds the "
+    "backbone for you, so each candidate arrives with an AlphaFold2 "
+    "confidence score, use RFdiffusion; for a backbone with its own "
+    "designability screen use Proteina; for an antibody or nanobody "
+    "format use RFantibody or IgGM."
 )
 example_output_id: Optional[str] = None
 
@@ -314,9 +316,15 @@ EXAMPLE: dict | None = {
     # customer would have paid, not what this validation run cost us.
     "cost_usd": "0.38",
     "runtime": "4 minutes",
-    # Read by components/worked_example.html into the stub job's
-    # created_at so a date-gated era notice knows when this ran. Taken
-    # from the probe artefact's own filename stamp,
-    # gpu_result_20261103T114437.json.
+    # Read by components/worked_example.html:92 into the stub job's
+    # created_at, where the only consumer is the date-gated era notice
+    # (components/score_era_notice.html). Taken from the probe artefact's
+    # own filename stamp, gpu_result_20261103T114437.json. That stamp's
+    # timezone is not recorded anywhere in the harness -- the artefact's
+    # internal log lines read 16:42:01, five hours later, so the filename
+    # is probably local time and the trailing Z is the house format of the
+    # sibling meta modules rather than a measured UTC offset. Only the date
+    # is load-bearing, and rfd4 has no era caveat to gate (no rfd4 key in
+    # shared/score_legends.py), so the clock is not customer-visible.
     "ran_on": "2026-11-03T11:44:37Z",
 }

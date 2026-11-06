@@ -47,9 +47,10 @@ PICKER_FORM_TEMPLATES = [
     # rglob the templates tree and so reach this file too
     # (tests/test_template_endpoints.py, test_no_prerun_numbers_logged_in.py,
     # test_min_topup_single_source.py, test_hotspot_picker_runtime.py,
-    # test_derived_verdicts.py) -- but it is the only one that asserts
-    # anything about the picker block specifically. The rendered-page guards
-    # arm at 7A.
+    # test_derived_verdicts.py) -- but it is the only one that reads the
+    # template's picker markup and its vendored-script tags (lines 111-121).
+    # test_hotspot_picker_runtime.py asserts the call-site scan and the
+    # chainPrefixed flag instead. The rendered-page guards arm at 7A.
     REPO_ROOT / "templates" / "tools" / "rfd4_form.html",
 ]
 
