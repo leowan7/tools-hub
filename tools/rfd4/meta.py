@@ -227,15 +227,12 @@ EXAMPLE: dict | None = {
         "&mdash; the solved PD-1/PD-L1 complex. One hotspot residue, 56."
     ),
     "why_this_target": (
-        "The same target and chain as the RFdiffusion, BoltzGen, "
-        "BindCraft and RFantibody examples on this site, which makes it "
-        "the one epitope you can compare five generators on. This run was "
-        "ours but it was not a customer's: it is the validation run that "
-        "proved the container works, driven straight from the binder "
-        "condition spec that ships inside the upstream image rather than "
-        "from the form above. So read it for the <em>shape</em> of what "
-        "comes back &mdash; eight complete structures and no scores "
-        "&mdash; and not as a result on a target of your own."
+        "This run was ours but it was not a customer's: it is the "
+        "validation run that proved the container works, driven straight "
+        "from the binder condition spec that ships inside the upstream "
+        "image rather than from the form above. So read it for the "
+        "<em>shape</em> of what comes back, eight complete structures and "
+        "no scores, and not as a result on a target of your own."
     ),
     "inputs_used": [
         (
@@ -284,14 +281,7 @@ EXAMPLE: dict | None = {
         "name and its structure, and nothing more."
     ),
     "how_to_read_it": (
-        "<strong>The <em>#</em> column is not a ranking.</strong> It is "
-        "the order the designs finished in, so the first row is not the "
-        "best one and there is no best one on this page &mdash; nothing "
-        "in this run measures whether a binder holds. That is the "
-        "difference worth understanding before you compare this page to "
-        "the RFdiffusion or BindCraft example on the same target, both of "
-        "which lead with a confidence number. "
-        "So the reading is structural. Open each file, find the chain "
+        "The reading is structural. Open each file, find the chain "
         "that is not A, and check it actually sits against residue 56 "
         "rather than somewhere else on the surface. Eight samples at one "
         "setting will not all do that."
