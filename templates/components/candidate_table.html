@@ -550,43 +550,53 @@
    statement of what the column means lived in a Jinja comment the browser
    never sees (templates/tools/rfd4_results.html:17-19).
 
-   TWO WORDINGS, because ranked=false reaches this macro two different ways
-   and one sentence is false for the second. rfd4 passes it unconditionally
-   (templates/tools/rfd4_results.html:133) and ships no score columns at all,
-   so `columns` is empty there and its rows are the order the designs
-   arrived in. Every other results partial passes
-   ranked=(not output.get('backfilled')), and a backfilled result DOES carry
-   whatever scores its streamed partials kept
-   (shared/job_recovery.py::_candidate_from_partial builds a `scores` dict);
-   seven of those partials then sort on one of those scores before calling
-   this macro, unconditionally, with no backfilled branch -- af2_results.html:76,
-   boltz2_results.html, colabfold_results.html, esmfold_results.html,
-   esmfold2_design_results.html, iggm_results.html:49 and
-   opendde_results.html. On those pages an unranked table is in SCORE order,
-   not arrival order, so "the order they came back in" would be a false
-   claim and the shorter line is used instead.
+   ONE WORDING, and it is arrival order on every page that reaches here.
+   rfd4 passes ranked=false unconditionally
+   (templates/tools/rfd4_results.html:133) and ships no score columns at all.
+   Every other results partial passes ranked=(not output.get('backfilled')),
+   so it reaches this branch only on a backfilled result -- and on a
+   backfilled result each of those partials DISCARDS its own score sort,
+   because the sort is followed immediately by
+   `candidates = recovered or candidates` and `recovered` is non-empty
+   exactly when the run was rebuilt: af2_results.html:76-77,
+   boltz2_results.html:81-82, colabfold_results.html:66-67,
+   esmfold_results.html:75-76, iggm_results.html:49-50 and
+   opendde_results.html:67-68. esmfold2_design never reaches its sort on
+   that path at all; the `output_candidates` branch returns first
+   (esmfold2_design_results.html:155-157 and :187). `recovered` is
+   display_rows(output['candidates']), which shared/job_recovery.py::reconstruct
+   builds by walking the streamed `_partial_candidates` in stored order
+   (shared/job_recovery.py:237-245).
+
+   AN EARLIER DRAFT OF THIS COMMENT WAS WRONG about that and is corrected
+   rather than restated: it claimed those seven pages render in SCORE order
+   and used that to justify a second, shorter wording keyed on `columns`.
+   The sort is discarded, so they do not, and the split is gone with it.
+
+   ONE PATH WHERE "came back in" IS APPROXIMATE, recorded here and not on
+   the page: when no streamed partial survives, reconstruct() falls back to
+   listing Storage, which is sorted by FILENAME
+   (shared/job_recovery.py::_list_design_files) and carries no scores. Those
+   rows are in name order, which is usually but not provably arrival order.
 
    WHOSE WORDS THESE ARE. Leo gave the sentence on 2026-11-06: "ranking based
    on when designs completed and not binding rankings". Two departures from it
    are deliberate. It says "the order the designs came back in" rather than an
    exact completion order, because completion order holds only to within a
    poll interval: designs landing in the same sweep are ordered by filename
-   (tools/rfd4/run_pipeline.py:1049-1055). And the completion half is dropped
-   entirely from the `columns` branch, where it would be false. No clause
-   explains polling to a customer; the hedge carries it.
+   (tools/rfd4/run_pipeline.py:1049-1055). A click on a sortable header also
+   re-orders the rows and renumberRows() rewrites these numbers, so the
+   sentence describes the table as rendered. No clause on the page explains
+   either: the hedge carries the first, and the second is the customer's own
+   act.
 
    Suppressed in pooled (target-page) mode, where _rank_position is a real
    cross-run ranking and the badge above is anchored on it rather than on
    `ranked`. Pinned by tests/test_unranked_table_note.py. #}
 {% if not ranked and not pooled %}
 <p class="cand-unranked-note">
-  {%- if columns %}
-  The # column is only each row's place in the list as it is sorted now, not a
-  ranking of how well anything binds.
-  {%- else %}
   The # column is the order the designs came back in, not a ranking of how well
   anything binds.
-  {%- endif %}
 </p>
 {% endif %}
 <div class="cand-table-scroll">

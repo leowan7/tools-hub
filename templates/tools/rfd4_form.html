@@ -223,10 +223,12 @@
 
             {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues") %}
             <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
-            {# pre_value, not a bare value=: the adapter stores this NESTED
-               as binder_length={min,max}, the same shape rfdiffusion uses,
-               and blueprints/tools.py::_normalize_clone_pre_fill explodes
-               that key into the two names read here. Hard-coded attributes
+            {# pre_value, not a bare value=: the adapter stores this NESTED,
+               as the two-element list binder_length=[min, max]
+               (tools/rfd4/__init__.py:214) -- proteina's shape, not
+               rfdiffusion's {min, max} dict (tools/rfdiffusion/__init__.py:38)
+               -- and blueprints/tools.py::_normalize_clone_pre_fill handles
+               both, exploding that key into the two names read here. Hard-coded attributes
                would reset a cloned run's window in silence. #}
             <div class="rfd4-binder-length">
               <input type="number" name="binder_length_min" id="binder_length_min"

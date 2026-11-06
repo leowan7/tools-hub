@@ -309,12 +309,15 @@ EXAMPLE: dict | None = {
     # Read by components/worked_example.html:92 into the stub job's
     # created_at, where the only consumer is the date-gated era notice
     # (components/score_era_notice.html). Taken from the probe artefact's
-    # own filename stamp, gpu_result_20261103T114437.json. That stamp's
-    # timezone is not recorded anywhere in the harness -- the artefact's
-    # internal log lines read 16:42:01, five hours later, so the filename
-    # is probably local time and the trailing Z is the house format of the
-    # sibling meta modules rather than a measured UTC offset. Only the date
-    # is load-bearing, and rfd4 has no era caveat to gate (no rfd4 key in
+    # own filename stamp, gpu_result_20261103T114437.json. That stamp is
+    # LOCAL time, not UTC: the scope document records the artefact as
+    # "written 11:44:37 local" with local = UTC-5
+    # (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:627), which also
+    # explains the artefact's own 16:42:01 internal log line. So the
+    # trailing Z here is the house format of the sibling meta modules and
+    # was wrong by five hours; the value below is the converted instant,
+    # 11:44:37 - (-5) = 16:44:37Z, and the DATE is unchanged either way.
+    # Only the date is load-bearing, and rfd4 has no era caveat to gate (no rfd4 key in
     # shared/score_legends.py), so the clock is not customer-visible.
-    "ran_on": "2026-11-03T11:44:37Z",
+    "ran_on": "2026-11-03T16:44:37Z",
 }
