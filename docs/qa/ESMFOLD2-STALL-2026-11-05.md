@@ -206,8 +206,12 @@ real problem.
 The signal that survives needs no heartbeat at all: **`status = running` past
 the tool's own Modal session cap.** That cap is computable from `started_at`,
 `now` and `gpu/modal_client.py::preset_gpu_seconds(tool, preset)`
-(`:378-380`), the maintained central mirror of each tool's `_MAX_SESSION_S`;
-for this pair it returns 5400 s, 1h30m (`gpu/modal_client.py:294`). This row
+(`:378-380`), the central table of per-tool, per-preset session seconds; for
+this pair it returns 5400 s, 1h30m, matching this tool's own `_MAX_SESSION_S`
+(`gpu/modal_client.py:294`). Calling the whole table a maintained mirror would
+be too strong - its own comment at `:285-293` records that these two rows have
+almost no live reader - so an alarm built on it should re-check the row it uses
+against that tool's `modal_app.py`. This row
 was **4h36m** past that when the sweeper found it. The cap is 15 minutes short
 of the orchestrator ceiling the run is actually killed at
 (`_ORCHESTRATOR_TIMEOUT_S = _MAX_SESSION_S + 15 * 60`,
