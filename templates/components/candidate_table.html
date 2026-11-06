@@ -175,6 +175,11 @@
    than with scout.css's .error-message, which no page rendering this macro
    loads; --error/--error-bg are static/style.css tokens, which base.html
    does load. */
+.cand-unranked-note {
+  margin: 0 0 .7rem 0;
+  font-size: .8rem;
+  color: var(--text-secondary);
+}
 .cand-download-error {
   margin: 0 0 .7rem 0;
   font-size: .8rem;
@@ -539,6 +544,42 @@
    to the shared guard and writes here. Keyed on `scope` like table_id above,
    so a page holding two panels gets one surface each. #}
 <p id="cand-dl-err-{{ scope }}" class="cand-download-error" aria-live="polite" hidden></p>
+{# WHY A VISIBLE LINE AND NOT A HEADER TOOLTIP. The "#" heading below is bare
+   while Score and Pctile each carry their own title, so an unranked table
+   reads as best-first to anyone who does not hover, and the only accurate
+   statement of what the column means lived in a Jinja comment the browser
+   never sees (templates/tools/rfd4_results.html:17-19).
+
+   TWO WORDINGS, because ranked=false reaches this macro two different ways
+   and one sentence is false for the second. rfd4 passes it unconditionally
+   (templates/tools/rfd4_results.html:133) and ships no score columns at all,
+   so `columns` is empty there and its rows are the order the designs
+   arrived in. Every other results partial passes
+   ranked=(not output.get('backfilled')), and a backfilled result DOES carry
+   whatever scores its streamed partials kept
+   (shared/job_recovery.py::_candidate_from_partial builds a `scores` dict);
+   seven of those partials then sort on one of those scores before calling
+   this macro, unconditionally, with no backfilled branch -- af2_results.html:76,
+   boltz2_results.html, colabfold_results.html, esmfold_results.html,
+   esmfold2_design_results.html, iggm_results.html:49 and
+   opendde_results.html. On those pages an unranked table is in SCORE order,
+   not arrival order, so "the order they came back in" would be a false
+   claim and the shorter line is used instead.
+
+   Suppressed in pooled (target-page) mode, where _rank_position is a real
+   cross-run ranking and the badge above is anchored on it rather than on
+   `ranked`. Pinned by tests/test_unranked_table_note.py. #}
+{% if not ranked and not pooled %}
+<p class="cand-unranked-note">
+  {%- if columns %}
+  This table is not ranked, so the # column is only each row's place in the
+  list as it is sorted now, not a verdict on which design is best.
+  {%- else %}
+  The # column is the order the designs came back in. Nothing in this run
+  scores them, so the first row is not the best one.
+  {%- endif %}
+</p>
+{% endif %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>

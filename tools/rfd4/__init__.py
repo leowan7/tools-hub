@@ -31,10 +31,16 @@ design: nothing in a run of it measures how well a binder holds.
 Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
 that row complete, so registering ahead of them turns the suite red. The
 scope document's step table records 66 failing ids, measured on step 3's
-branch; re-running the same experiment on this base on 2026-11-05 gave 49,
-because steps 5 and 7 have since landed the two templates that accounted for
-most of the difference. Neither figure is a bound on 7A's own work -- both
-were measured with nothing but the registration applied.
+branch; re-running the same experiment on this base on 2026-11-05 gave 49.
+NO CAUSE IS OFFERED FOR THE DROP, because the obvious one does not add up:
+the scope document attributes 47 of the 66 to the two missing templates
+(docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md, the per-banner tally -- 24
+TemplateNotFound on rfd4_form.html and 23 on rfd4_results.html), and only
+rfd4_results.html had landed at this base, which predicts 43 rather than 49.
+Both figures are recorded as measurements and neither is a bound on 7A's own
+work: both were taken with nothing but the registration applied, and
+reconciling them would need the experiment re-run twice, which no decision
+here depends on.
 
 So the slug is unreachable for two independent reasons:
 ``blueprints/tools.py::_require_tool`` 404s a slug ``tools.base.get`` does
