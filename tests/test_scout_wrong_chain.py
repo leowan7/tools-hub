@@ -153,6 +153,24 @@ def test_single_candidate_needs_no_provenance():
     assert out == {"contact_residues": [10], "contact_chain": "B"}
 
 
+def test_one_of_several_candidates_surviving_still_needs_provenance():
+    """A listed chain absent from the file must not promote the other one.
+
+    Chain Z is not in the structure, so only A is measurable -- but SAbDab
+    named two, and A is the other protein. Answering here would be the same
+    wrong-chain answer with one candidate instead of two.
+    """
+    out = epitope_db._resolve_antigen_chain(
+        _PDB_BOTH_TYPED, ["A", "Z"], _AB, _TARGET
+    )
+    assert out == {"contact_residues": [], "contact_unresolved": ["A"]}
+    # The chain that IS the target is still answered on the same shape.
+    out = epitope_db._resolve_antigen_chain(
+        _PDB_BOTH_TYPED, ["B", "Z"], _AB, _TARGET
+    )
+    assert out == {"contact_residues": [10], "contact_chain": "B"}
+
+
 def test_absent_candidates_settle_empty_without_a_chain():
     out = epitope_db._resolve_antigen_chain(
         _PDB_BOTH_TYPED, ["Z"], _AB, _TARGET

@@ -1382,8 +1382,8 @@ def _resolve_antigen_chain(
       the residues belong to, and is the empty string when no candidate chain
       is in the file (so the residues are ``[]``).
     * ``{"contact_residues": [], "contact_unresolved": [chains]}`` -- a refusal:
-      several candidate chains are present and none of their DBREF accessions
-      is the target. The empty list is NOT a measurement, which is why the key is
+      SAbDab named several antigen chains and none of the DBREF accessions of
+      the ones present in the file is the target. The empty list is NOT a measurement, which is why the key is
       there for the template to branch on: renderKnownBinders in
       templates/scout/index.html renders it as "chain not resolved", never as
       "no contacts recorded".
@@ -1401,7 +1401,13 @@ def _resolve_antigen_chain(
     if not usable:
         return {"contact_residues": [], "contact_chain": ""}
 
-    if len(usable) == 1:
+    # SAbDab named one antigen chain, so there is nothing to choose between
+    # and no accession to check -- the overwhelming majority of entries, and
+    # the behaviour before this function existed. A short ``usable`` does NOT
+    # qualify: a listed chain can be missing from the legacy file, and
+    # answering with whichever one survived would be the wrong-chain answer
+    # with a smaller candidate set.
+    if len(antigen_chains) == 1 and len(usable) == 1:
         chain = usable[0]
         return {"contact_residues": by_chain[chain], "contact_chain": chain}
 

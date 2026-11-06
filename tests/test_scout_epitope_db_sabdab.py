@@ -675,8 +675,10 @@ class TestContactFailureIsNotCachedForever:
         # answer and an unreadable one never reaches this function at all.
         monkeypatch.setattr(
             epitope_db,
-            "_contacts_by_chain",
-            lambda text, chains, ab, **k: {chains[0]: list(contacts)},
+            "_resolve_antigen_chain",
+            lambda text, chains, ab, acc="", **k: {
+                "contact_residues": list(contacts), "contact_chain": chains[0]
+            },
         )
         return downloads
 
@@ -856,8 +858,10 @@ class TestContactFailureIsNotCachedForever:
         )
         monkeypatch.setattr(
             epitope_db,
-            "_contacts_by_chain",
-            lambda text, chains, ab, **k: None if ab == ["A", "B"] else {chains[0]: [7]},
+            "_resolve_antigen_chain",
+            lambda text, chains, ab, acc="", **k: None if ab == ["A", "B"] else {
+                "contact_residues": [7], "contact_chain": chains[0]
+            },
         )
 
         for round_no in (1, 2, 3):
@@ -889,7 +893,9 @@ class TestContactFailureIsNotCachedForever:
                 200,
             ),
         )
-        monkeypatch.setattr(epitope_db, "_contacts_by_chain", lambda *a, **k: None)
+        monkeypatch.setattr(
+            epitope_db, "_resolve_antigen_chain", lambda *a, **k: None
+        )
         for _ in range(3):
             epitope_db.fetch_known_binders("P0DTC2")
 
@@ -897,8 +903,10 @@ class TestContactFailureIsNotCachedForever:
         self._binders(monkeypatch, ids=["1A2Y"])
         monkeypatch.setattr(
             epitope_db,
-            "_contacts_by_chain",
-            lambda text, chains, ab, **k: {chains[0]: [7]},
+            "_resolve_antigen_chain",
+            lambda text, chains, ab, acc="", **k: {
+                "contact_residues": [7], "contact_chain": chains[0]
+            },
         )
         assert epitope_db.fetch_known_binders("P00698")[0]["contact_residues"] == [7]
 
@@ -934,8 +942,10 @@ class TestContactFailureIsNotCachedForever:
         )
         monkeypatch.setattr(
             epitope_db,
-            "_contacts_by_chain",
-            lambda text, chains, ab, **k: {chains[0]: [7]},
+            "_resolve_antigen_chain",
+            lambda text, chains, ab, acc="", **k: {
+                "contact_residues": [7], "contact_chain": chains[0]
+            },
         )
         binders = {b["pdb_id"]: b for b in epitope_db.fetch_known_binders("P0DTC2")}
         assert binders["1A2Y"]["contact_residues"] == [7]
