@@ -573,9 +573,14 @@
    pxdesign_results.html:6, rfantibody_results.html:5 and
    rfdiffusion_results.html:7 each take output['candidates'] straight
    through (proteina through display_rows, which shared/jobs.py:317-319
-   documents as same length, same order), and `grep -c 'sort('` over
-   those six files returns 0 for every one of them -- so the stored
-   order is what renders.
+   documents as same length, same order). The check is
+   `grep -c sort_by_number`, which returns 0 on each of those six and 1
+   on each of the seven that do sort -- so it DISCRIMINATES, which
+   `grep -c 'sort('` did not: the sorts are written
+   `candidates | sort_by_number(...)` and carry no `sort(` substring, so
+   that pattern returned 0 on both groups and told them apart not at
+   all. Nothing in the six reorders, so the stored order is what
+   renders.
 
    ONE, esmfold2_design, never reaches its sort on that path; the
    `output_candidates` branch returns first
