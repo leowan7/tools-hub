@@ -70,7 +70,8 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
                   run_debit
         taken     on a run, what its run_debit children took (positive),
                   summed from each debit rounded as the page prints it,
-                  except on an all-sub-cent run (see ``_debits_total``)
+                  except where every debit is under half a cent
+                  (see ``_debits_total``)
         debits    on a run, its run_debit children, oldest first
         reserved  the amount the hold reserved (positive), for holds
         outcome   for holds, what settling did with the reservation, read
@@ -277,9 +278,9 @@ def _as_printed(value) -> Decimal:  # noqa: ANN001
     as "<$0.01" (``shared/compute_campaigns.py``, ``display_record_usd``)
     while this contributes 0.00 for it. The template guards the is_run
     branch on ``ann.debits`` rather than on this sum being positive, so a
-    run of only sub-cent debits is still read as having been charged, and
-    ``_debits_total`` below keeps the live "so far" figure sub-cent rather
-    than rounding it to "$0.00".
+    run of debits under half a cent is still read as having been charged,
+    and ``_debits_total`` below keeps the live "so far" figure sub-cent
+    rather than rounding it to "$0.00".
 
     Summing what is printed is the rule ``display_total_usd`` applies for
     the launch consent panel. That helper is not reused here because it
@@ -298,8 +299,8 @@ def _debits_total(debits) -> Decimal:  # noqa: ANN001
     The sum of those rows AS PRINTED (``_as_printed``), so the figure agrees
     with the column beneath it.
 
-    One shape needs the exact sum instead: when every debit is sub-cent the
-    printed sum is 0.00, which renders "$0.00", while each row renders
+    One shape needs the exact sum instead: when every debit is under half a
+    cent the printed sum is 0.00, which renders "$0.00", while each row renders
     "<$0.01" -- so the anchor would read as free over rows that say
     otherwise. ``display_record_usd`` renders any non-zero amount under half
     a cent as "<$0.01" (``shared/compute_campaigns.py``,
