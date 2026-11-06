@@ -741,6 +741,31 @@ class TestRunRollUp:
         assert "it closed at $0.05" in html
         assert "all of it was returned" not in html
 
+    def test_a_live_run_of_only_sub_cent_debits_does_not_read_as_free(self, app):
+        """An unsettled run of sub-cent debits says "<$0.01", not "$0.00".
+
+        Reachable on a nearly empty wallet: debit_live_run takes
+        GREATEST(LEAST(v_step, v_balance), 0), so a balance under a cent
+        yields a sub-cent debit however much the heartbeat owes
+        (``supabase/migrations/0045_live_run_debits.sql``). Each row prints
+        "<$0.01", so the figure standing over them may not print "$0.00";
+        summing the rounded rows alone gives exactly that.
+        """
+        from blueprints.wallet import _build_tx_lineage_annotations
+        from shared.compute_campaigns import display_record_usd
+
+        rows = self._rows(3, "-0.001")
+        ann = _build_tx_lineage_annotations(
+            _FakeLedgerClient(rows), "u-1", rows,
+        )
+        assert ann["h-1"]["settled"] is False
+        assert ann["h-1"]["taken"] == Decimal("0.003")
+        assert display_record_usd(ann["h-1"]["taken"]) == "<$0.01"
+        html = self._render(app, rows, ann)
+        # Jinja escapes the "<" of "<$0.01".
+        assert "charged as it runs; &lt;$0.01 so far" in html
+        assert "$0.00 so far" not in html
+
     def test_a_run_of_sub_cent_debits_is_not_read_as_a_refund(self, app):
         """The closed branch is guarded on having debits, not on their sum.
 
@@ -758,7 +783,7 @@ class TestRunRollUp:
         ann = _build_tx_lineage_annotations(
             _FakeLedgerClient(rows), "u-1", rows,
         )
-        assert ann["h-1"]["taken"] == Decimal("0.00")
+        assert ann["h-1"]["taken"] == Decimal("0.003")
         assert ann["h-1"]["net"] == Decimal("0")
         html = self._render(app, rows, ann)
         assert "all of it was returned when it closed" in html

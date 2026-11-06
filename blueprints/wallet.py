@@ -69,8 +69,8 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
         settled   True when the hold has at least one child that is not a
                   run_debit
         taken     on a run, what its run_debit children took (positive),
-                  summed from each debit rounded as the page prints it
-                  (see ``_as_printed``)
+                  summed from each debit rounded as the page prints it,
+                  except on an all-sub-cent run (see ``_debits_total``)
         debits    on a run, its run_debit children, oldest first
         reserved  the amount the hold reserved (positive), for holds
         outcome   for holds, what settling did with the reservation, read
@@ -210,10 +210,7 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
                 annotations[hold_row["id"]] = {
                     "role": "run",
                     "settled": settled,
-                    "taken": -sum(
-                        (_as_printed(d.get("amount_usd")) for d in debits),
-                        Decimal("0"),
-                    ),
+                    "taken": _debits_total(debits),
                     "net": net,
                     "debits": debits,
                 }
@@ -280,7 +277,9 @@ def _as_printed(value) -> Decimal:  # noqa: ANN001
     as "<$0.01" (``shared/compute_campaigns.py``, ``display_record_usd``)
     while this contributes 0.00 for it. The template guards the is_run
     branch on ``ann.debits`` rather than on this sum being positive, so a
-    run of only sub-cent debits is still read as having been charged.
+    run of only sub-cent debits is still read as having been charged, and
+    ``_debits_total`` below keeps the live "so far" figure sub-cent rather
+    than rounding it to "$0.00".
 
     Summing what is printed is the rule ``display_total_usd`` applies for
     the launch consent panel. That helper is not reused here because it
@@ -290,6 +289,37 @@ def _as_printed(value) -> Decimal:  # noqa: ANN001
     cells are.
     """
     return _tx_amount_decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _debits_total(debits) -> Decimal:  # noqa: ANN001
+    """What a run has taken so far, as a positive amount, for the figure that
+    sits directly above the debit rows themselves.
+
+    The sum of those rows AS PRINTED (``_as_printed``), so the figure agrees
+    with the column beneath it.
+
+    One shape needs the exact sum instead: when every debit is sub-cent the
+    printed sum is 0.00, which renders "$0.00", while each row renders
+    "<$0.01" -- so the anchor would read as free over rows that say
+    otherwise. ``display_record_usd`` renders any non-zero amount under half
+    a cent as "<$0.01" (``shared/compute_campaigns.py``,
+    ``display_record_usd``), so handing it the exact sum in that case prints
+    the same thing the rows do.
+
+    That shape is reachable on a nearly empty wallet: a heartbeat owes at
+    least ``MIN_CHARGE_USD`` = $0.05 (``shared/wallet_estimates.py``,
+    ``apply_min_charge``, reached through ``shared/wallet.py``'s
+    ``compute_charge_usd`` and ``live_due_usd``), but
+    ``supabase/migrations/0045_live_run_debits.sql`` debits
+    ``GREATEST(LEAST(v_step, v_balance), 0)`` -- what the balance covers --
+    and ``open_live_run`` in that same file admits any balance above 0.
+    Pinned by ``tests/test_wallet_templates.py::TestRunRollUp::
+    test_a_live_run_of_only_sub_cent_debits_does_not_read_as_free``.
+    """
+    printed = -sum((_as_printed(d.get("amount_usd")) for d in debits), Decimal("0"))
+    if printed != 0:
+        return printed
+    return -sum((_tx_amount_decimal(d.get("amount_usd")) for d in debits), Decimal("0"))
 
 
 def _tx_amount_decimal(value) -> Decimal:  # noqa: ANN001
