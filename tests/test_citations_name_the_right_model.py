@@ -253,7 +253,8 @@ REQUIRED_URL_TOKENS: dict[str, tuple[str, str | None]] = {
     "proteina": ("2603.27950", "NVIDIA-BioNeMo/Proteina-Complexa"),
     "pxdesign": ("s41467-023-38328-5", None),
     # THE ONLY PAPER TOKEN IN THIS MAP THAT IS A URL PATH RATHER THAN A
-    # PERSISTENT IDENTIFIER. Every other entry pins a DOI or a bioRxiv id,
+    # PERSISTENT IDENTIFIER. Every other entry pins a DOI, a bioRxiv id or
+    # an arXiv id (proteina 2603.27950, opendde 2607.03787) --
     # which keeps identifying the work after the publisher moves the file;
     # this one pins a filename on the authors' own GitHub Pages site, so it
     # stops matching the day upstream reshuffles that repository, and it

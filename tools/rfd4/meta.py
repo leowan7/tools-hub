@@ -36,7 +36,8 @@ from typing import Optional
 # tests/test_citations_name_the_right_model.py pins this link on the path
 # "assets/paper/RFD4-Proteina.pdf". That is the first entry in that map
 # whose paper token is a URL PATH rather than a persistent identifier:
-# every other entry pins a DOI or a bioRxiv id, which survives the
+# every other entry pins a DOI, a bioRxiv id or an arXiv id (proteina
+# 2603.27950, opendde 2607.03787), which survives the
 # publisher moving the file, and this one does not. The site is GitHub
 # Pages (the PDF answered 200 with Server: GitHub.com on 2026-11-05), so
 # an upstream repository reshuffle breaks it silently. Replace both the

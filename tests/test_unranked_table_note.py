@@ -8,9 +8,13 @@ Jinja comment the browser never sees.
 
 ONE wording, on every page that reaches it, and this file pins why that is
 true rather than only that it renders. rfd4 passes ``ranked=false``
-unconditionally and ships no score columns. Every other partial passes
+unconditionally and ships no score columns. Every other partial that passes
+``ranked`` at all -- thirteen of them -- passes
 ``ranked=(not output.get('backfilled'))``, so it reaches the note only on a
-backfilled result -- and there each of them DISCARDS its own score sort,
+backfilled result; ``mpnn_results.html`` and ``_default_results.html`` pass
+no ``ranked=`` and take the macro default ``ranked=true``, so they never
+reach it at all. On a backfilled result each of the thirteen DISCARDS its
+own score sort,
 because the sort is followed immediately by
 ``candidates = recovered or candidates``. ``test_the_score_sort_is_discarded``
 below measures that on af2 instead of taking the template's word for it: an

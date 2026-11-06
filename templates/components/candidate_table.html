@@ -553,9 +553,12 @@
    ONE WORDING, and it is arrival order on every page that reaches here.
    rfd4 passes ranked=false unconditionally
    (templates/tools/rfd4_results.html:133) and ships no score columns at all.
-   Every other results partial passes ranked=(not output.get('backfilled')),
-   so it reaches this branch only on a backfilled result -- and on a
-   backfilled result each of those partials DISCARDS its own score sort,
+   Every other results partial that passes ranked AT ALL -- thirteen of
+   them -- passes ranked=(not output.get('backfilled')), so it reaches this
+   branch only on a backfilled result. mpnn_results.html and
+   _default_results.html pass no ranked= at all, so they take this macro's
+   default ranked=true (:59) and never reach here. On a backfilled result
+   each of the thirteen DISCARDS its own score sort,
    because the sort is followed immediately by
    `candidates = recovered or candidates` and `recovered` is non-empty
    exactly when the run was rebuilt: af2_results.html:76-77,
