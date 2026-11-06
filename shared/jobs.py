@@ -1919,55 +1919,68 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
         )
         return ""
 
-    # Not recoverable. Two different reasons reach here and they differ in
-    # money. A failure Modal itself reported must NOT be billed off designs
-    # rebuilt from Storage -- either a nonzero pipeline exit
-    # ("failed", the "Ground-truth veto" at
-    # shared/job_recovery.py::recover_stuck_job_result step 2) or a failed
-    # or errored poll it could not pin to an exit code
-    # ("failed_unconfirmed", shared/job_recovery.py::_probe_modal). Two
-    # reasons: the webhook and the inline poll classify the same crash to a
-    # refunded class, so keeping and billing it here would make the bill
-    # depend on which path happened to notice the crash; and status="error"
-    # also covers our own ModalCallTimeout on a wedged poll channel
-    # (gpu/modal_client.py::ModalClient.poll), which is a stall on our side
-    # and must never become a bill. Skip the keep for both and settle
-    # exactly as before
+    # Not recoverable. Every verdict that reaches here KEEPS the designs the
+    # run had already streamed; the verdicts differ only in whether the run
+    # is BILLED for them, which is the ``reclassify`` argument.
+    #
+    # Keeping and billing are separable because they are two writes
+    # (shared/jobs.py::_keep_streamed_designs: a ``result`` CAS, then a
+    # ``failure_class`` CAS it skips entirely when ``reclassify=False``).
+    # The designs are the run's own streamed output, already uploaded to
+    # Storage and already listed on the row at ``inputs._partial_candidates``
+    # (webhooks/modal.py::_hb_merge_inputs); showing them costs the customer
+    # nothing, and withholding them deletes delivered work from the results
+    # page, the CSV and the FASTA at once, because all three read ``result``
+    # (tests/test_timeout_keeps_designs.py::
+    # test_the_page_says_designs_were_kept,
+    # ::test_exports_carry_the_kept_designs). A design whose structure is
+    # not in Storage is dropped by the rebuild itself, so nothing is
+    # invented here (shared/job_recovery.py::reconstruct).
+    #
+    # THREE verdicts withhold the bill, all for the same reason — the run
+    # did not demonstrably finish, so WE do not get to charge for it:
+    #
+    #   * ``"failed"`` — a nonzero pipeline exit, the "Ground-truth veto" at
+    #     shared/job_recovery.py::recover_stuck_job_result step 2.
+    #   * ``"failed_unconfirmed"`` — a failed or errored poll Modal could not
+    #     pin to an exit code (shared/job_recovery.py::_probe_modal). The
+    #     webhook and the inline poll classify the same crash to a refunded
+    #     class, so billing here would make the bill depend on which path
+    #     noticed the crash; and status="error" also covers our own
+    #     ModalCallTimeout on a wedged poll channel
+    #     (gpu/modal_client.py::ModalClient.poll), a stall on our side.
+    #   * ``"still_running"`` — Modal saying the call had not finished, so the
+    #     sweeper is killing a live run on age alone
+    #     (cron/sweep_stuck_jobs.py's ``running_cutoff``): our stall, which
+    #     Leo refused to bill when he rejected option B.
+    #
+    # For all three the class ``mark_timeout`` already wrote is left alone,
+    # which leaves its refund standing
     # (tests/test_sweep_stuck_recovery.py::
     # TestGenuinelyDeadJobStillTimesOut::
     # test_crashed_pipeline_with_partial_designs_is_not_billed,
-    # ::test_an_unconfirmed_modal_failure_is_not_billed).
+    # ::test_an_unconfirmed_modal_failure_is_not_billed,
+    # ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
     #
-    # Otherwise it is a stall with no reported failure: keep whatever designs
-    # the run had already streamed, and settle LAST, because the keep is
-    # what decides between the two timeout classes and the settle routes on
-    # the class it reads off the object handed to it (``job.failure_class``
+    # Any other verdict is a stall with no reported failure, which Leo
+    # 2026-11-04 decided is billed for what it delivered. There the keep
+    # reclassifies, and it must run BEFORE the settle: the settle routes on
+    # the ``failure_class`` of the object handed to it (``job.failure_class``
     # at shared/jobs.py::_settle_wallet_hold_for_completed_job, the ``if
-    # job.failure_class is not None`` branch). So the keep must run first
-    # for a delivered timeout to be billed, and a stall that kept nothing
+    # job.failure_class is not None`` branch), and a stall that kept nothing
     # settles exactly as it did before
     # (tests/test_timeout_keeps_designs.py::
     # test_a_timeout_that_kept_nothing_is_still_refunded).
-    #
-    # And one verdict splits the two halves apart. ``"still_running"`` is
-    # Modal saying the call had not finished (shared/job_recovery.py::
-    # _probe_modal), so the sweeper is killing a live run on age alone
-    # (cron/sweep_stuck_jobs.py's ``running_cutoff``) — our stall, which
-    # Leo refused to bill when he rejected option B. The designs still stay,
-    # because they still reached the user; only the class upgrade is withheld,
-    # which leaves the refund ``mark_timeout`` already wrote
-    # (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
-    # ::test_a_run_modal_still_calls_running_keeps_designs_but_is_not_billed).
     if not mark_timeout(job_id):
         return ""
     fresh = get_job(job_id)
     if fresh is not None:
-        exit_verdict = verdict.get("exit_verdict")
-        if exit_verdict not in ("failed", "failed_unconfirmed"):
-            fresh = _keep_streamed_designs(
-                fresh, status="timeout",
-                reclassify=exit_verdict != "still_running",
-            )
+        fresh = _keep_streamed_designs(
+            fresh, status="timeout",
+            reclassify=verdict.get("exit_verdict") not in (
+                "failed", "failed_unconfirmed", "still_running",
+            ),
+        )
         _settle_wallet_hold_for_completed_job(fresh)
     return "timed_out"
 

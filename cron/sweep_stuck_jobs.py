@@ -25,14 +25,14 @@ whose work actually completed but whose terminal webhook was lost (it
 finalizes such a job as ``succeeded`` through the normal ``complete_job``
 settle path). Only jobs with nothing recoverable are CAS-transitioned to
 ``timeout``. Designs the run had already streamed are kept on the row
-unless Modal reported a failure (``_keep_streamed_designs``). The bill is a
-full refund today: the gate in ``shared/jobs.py::timeout_stuck_job``
-asks for ``timeout_with_delivery`` when the run delivered designs and
-Modal reported neither a failure nor that the call was still alive, but
-that CAS will only succeed once migration 0047 is applied (Leo
-2026-11-04; ``supabase/migrations/0047_timeout_with_delivery_failure_class.sql``
-line 43 says it must be applied before the PR #489 code deploys, and
-whether it has been is not verifiable from this repo). The summary
+whatever Modal reported (``shared/jobs.py::_keep_streamed_designs``); what
+Modal reported decides only the BILL. A run carries the billed class
+``timeout_with_delivery`` just when it delivered designs AND Modal reported
+neither a failure nor that the call was still alive (Leo 2026-11-04); the
+three verdicts that withhold the bill leave the full refund
+``mark_timeout`` wrote
+(tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
+::test_a_failed_verdict_still_shows_the_designs_it_delivered). The summary
 counts recoveries separately so a lost-webhook incident is visible in
 the cron log.
 
