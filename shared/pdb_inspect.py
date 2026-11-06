@@ -43,9 +43,13 @@ STANDARD_AA = frozenset([
     "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
 ])
 
-# Common aliases the GPU pipeline will remap (MSE->MET etc). We count these
-# as "protein-equivalent" for the purposes of zero-protein detection so we
-# don't spurious-reject a structure that's all-MSE.
+# The nine residues the GPU pipeline remaps (MSE->MET etc): these are exactly
+# the keys of MODRES_MAP in shared/pipeline_normalize.py:40. Counted as
+# "protein-equivalent" for zero-protein detection so an all-MSE structure is
+# not spurious-rejected. Scout keeps its own, narrower {MSE, SEC} sets
+# (scout/parser.py:56, scout/polymer.py:66, scout/glycan.py:114,
+# scout/scoring.py:606), so the two layers do NOT agree on what counts as
+# protein; the residues outside both are enumerated at scout/glycan.py:94.
 MODRES_EQUIV = frozenset(["MSE", "CME", "CSO", "SEP", "TPO", "PTR", "KCX",
                           "HYP", "LLP"])
 

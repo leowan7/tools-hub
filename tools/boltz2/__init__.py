@@ -399,8 +399,8 @@ def validate(
                     f"be kept. Rename one."
                 )
             return None, (
-                f"Binders {other!r} and {name!r} would both be saved as "
-                f"{fname!r}, so only one of the two results could be kept. "
+                f"Binders {other!r} and {name!r} both map to the stored "
+                f"file {fname!r}, so only one of the two results could be kept. "
                 f"Rename one."
             )
         saved_as[fname] = name

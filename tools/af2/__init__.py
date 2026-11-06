@@ -310,8 +310,8 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
                     f"two could be kept. Rename one."
                 )
             return None, (
-                f"Records {other!r} and {name!r} would both be saved as "
-                f"{fname!r}, so only one of the two results could be kept. "
+                f"Records {other!r} and {name!r} both map to the stored "
+                f"file {fname!r}, so only one of the two results could be kept. "
                 f"Rename one."
             )
         saved_as[fname] = name
