@@ -233,8 +233,11 @@ arm already worked this way; the change extends its treatment to the other two.
 which is `no_progress_timeout`, which is in `_REFUNDED_FAILURE_CLASSES`
 (`shared/jobs.py:825`). Every existing settle assertion is unchanged
 (`tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut`: the
-three pre-existing tests still assert `release` called once and `settle_hold`
-never, and the test added here asserts the same).
+four pre-existing tests at `:313`, `:334`, `:409` and `:464` still assert
+`release` called once and `settle_hold` never, and the test added here asserts
+the same. The fifth, `::test_incomplete_progress_without_ground_truth_times_out`,
+asserts the opposite pair - settle once, release never - and is also
+unchanged).
 
 What changes is that the designs reach the customer. Run against this
 incident's shape, the row carries all three designs and stays fully refunded
