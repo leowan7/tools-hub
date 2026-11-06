@@ -521,10 +521,11 @@ class TestGenuinelyDeadJobStillTimesOut:
         # (docs/qa/ESMFOLD2-STALL-2026-11-05.md). An esmfold2-design run
         # asked for 3 designs, produced all 3 and uploaded them to Storage
         # inside 11 minutes, then went silent with no terminal webhook. Six
-        # hours later the sweeper probed a FunctionCall Modal could no longer
-        # answer for, so the verdict was a failure one -- and the customer
-        # was shown NOTHING, because that verdict used to skip the keep
-        # outright instead of only withholding the bill.
+        # hours later the sweeper swept it and the customer was shown
+        # NOTHING. Which of the two failure verdicts the probe returned was
+        # not logged and is no longer recoverable (see the write-up); either
+        # one used to skip the keep outright instead of only withholding the
+        # bill, so this pins the shape for both.
         #
         # The progress counters cannot rescue this: this pipeline never
         # filled them, so ``_completion_signal`` reads ``designs_total: 0``
@@ -538,6 +539,7 @@ class TestGenuinelyDeadJobStillTimesOut:
         ]
         row = _row(
             status="running",
+            tool="esmfold2-design",
             gpu_seconds_used=655,
             modal_function_call_id="fc-e3703b7a",
             inputs={

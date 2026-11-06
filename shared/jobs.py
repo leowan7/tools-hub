@@ -1951,8 +1951,8 @@ def timeout_stuck_job(job_id: str, *, probe_modal: bool = True) -> str:
     #     (gpu/modal_client.py::ModalClient.poll), a stall on our side.
     #   * ``"still_running"`` — Modal saying the call had not finished, so the
     #     sweeper is killing a live run on age alone
-    #     (cron/sweep_stuck_jobs.py's ``running_cutoff``): our stall, which
-    #     Leo refused to bill when he rejected option B.
+    #     (cron/sweep_stuck_jobs.py's ``running_cutoff``): our stall, so
+    #     not the customer's to pay for.
     #
     # For all three the class ``mark_timeout`` already wrote is left alone,
     # which leaves its refund standing
@@ -2273,7 +2273,8 @@ def _keep_streamed_designs(
        tests/test_timeout_keeps_designs.py::test_a_rebuild_with_nothing_or_an_error_still_times_out).
     2. ``{"failure_class": ...}`` -- skipped entirely when
        ``reclassify=False``, which is how ``timeout_stuck_job`` keeps the
-       designs of a run Modal still reported as running without billing it
+       designs of a run it may not bill - a confirmed crash, an
+       unconfirmed fault, or a call Modal still reported as running
        (see that function's comment); otherwise only when re-running
        ``classify_terminal_state`` over the result just written disagrees
        with the class already on the row. Today that is the timeout split

@@ -150,7 +150,8 @@ because the container went quiet. The run may have been alive until 08:39:11.
 **We paid for between 3,662 and 6,300 H100-seconds and recovered none of it.**
 The lower bound is the last metered second; the upper is the orchestrator
 ceiling. At the $0.002417/GPU-s basis in `shared/wallet_estimates.py:75` that is
-**$8.85 to $15.23**, and Modal's own line settles upward by roughly 1.7% for
+**$8.85 to $15.23**, and Modal's own line settles upward by roughly 1.7% (measured on
+earlier runs, not a repo fact) for
 about an hour after a run, so a reading taken now is a lower bound.
 
 The worse defect is not the detection lag. It is that **a run which delivered
@@ -174,8 +175,10 @@ Nothing alerts on a paying run going silent.
 
 - There is no Sentry in any non-test Python file in this repo.
 - The only operator-alert sender is `notify_operator_new_submission`.
-- `ALERTING.md:329` states that a Railway cron exit code is not a usable alert
-  channel.
+- `ALERTING.md:326-329` rules out the nearest existing option: a Railway cron
+  can only signal failure by emitting to Resend or a webhook on a non-zero
+  exit, which "does not natively alert ... as cleanly as a deploy failure".
+  Nothing wires that today.
 - The only visibility is the daily digest's aggregate per-tool `timeout` count,
   which is a number, not a page.
 
@@ -187,11 +190,16 @@ stopped moving" alarm would have been a false positive here and silent on the
 real problem.
 
 The signal that survives needs no heartbeat at all: **`status = running` past
-the tool's own Modal ceiling.** This row was 4h21m past its 1h45m ceiling when
-the sweeper found it. It is computable from `started_at`, `now` and
-`gpu/modal_client.py::preset_gpu_seconds(tool, preset)` (`:378-380`), which is
-the maintained central mirror of each tool's `_MAX_SESSION_S`. The same
-quantity is the per-tool sweep cutoff, so one change would serve both.
+the tool's own Modal session cap.** That cap is computable from `started_at`,
+`now` and `gpu/modal_client.py::preset_gpu_seconds(tool, preset)`
+(`:378-380`), the maintained central mirror of each tool's `_MAX_SESSION_S`;
+for this pair it returns 5400 s, 1h30m (`gpu/modal_client.py:294`). This row
+was **4h36m** past that when the sweeper found it. The cap is 15 minutes short
+of the orchestrator ceiling the run is actually killed at
+(`_ORCHESTRATOR_TIMEOUT_S = _MAX_SESSION_S + 15 * 60`,
+`tools/esmfold2_design/modal_app.py:148`), so an alarm on it fires slightly
+early - harmless for an alarm, and it is the same quantity a per-tool sweep
+cutoff would need, so one change would serve both.
 
 This is not implemented here. It would be a new recurring outward-facing send,
 the per-tool scope and threshold are Leo's policy call, and it lands inside the
@@ -210,8 +218,9 @@ arm already worked this way; the change extends its treatment to the other two.
 **No money moves.** `reclassify=False` leaves the class `mark_timeout` wrote,
 which is `no_progress_timeout`, which is in `_REFUNDED_FAILURE_CLASSES`
 (`shared/jobs.py:825`). Every existing settle assertion is unchanged
-(`tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut`, three
-tests, each still asserting `release` called once and `settle_hold` never).
+(`tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut`: the
+three pre-existing tests still assert `release` called once and `settle_hold`
+never, and the test added here asserts the same).
 
 What changes is that the designs reach the customer. Run against this
 incident's shape, the row carries all three designs on the results page, in the
