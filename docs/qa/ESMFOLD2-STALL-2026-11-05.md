@@ -89,10 +89,16 @@ Modal could not answer and our own `ModalCallTimeout` - but which one it was is
 **unverified and now unrecoverable.**
 
 One alternative is not excluded by the data: the keep could have run and had its
-`result` CAS fail. That path logs a warning naming the job
-(`shared/jobs.py::_keep_streamed_designs`), so the Railway log for the
-`tools-hub-sweep-stuck` service at 13:00 would settle it. Nobody has read that
-log; treat it as unverified. It does not change the fix.
+`result` CAS fail. The Railway log for the `tools-hub-sweep-stuck` service at
+13:00 would settle that only partly. Two of the keep's exit paths log and name
+the row - `reconstruct` raising
+(`logger.warning`, `shared/jobs.py:2306-2309`) and the CAS call itself raising
+(`logger.error`, `shared/jobs.py:3301-3306`) - but a CAS that simply matches
+zero rows returns `False` with **no log at all**
+(`shared/jobs.py:3308-3309`, then `:2318`), and so does an empty rebuild
+(`:2311`). So a log naming this job would prove the keep ran and broke; silence
+proves nothing either way. Nobody has read that log regardless; treat it as
+unverified. It does not change the fix.
 
 `recover_stuck_job_result` refused for the same reason the keep was skipped, and
 would have refused anyway: `_progress.designs_total` is 0, so
