@@ -30,7 +30,7 @@ Each returned dict has:
                           placeholder [] back.
                           A PRESENT [] is not a measurement either. It means
                           only that this module has SETTLED the row and will
-                          not retry it, and it arrives SIX ways:
+                          not retry it, and it arrives SEVEN ways:
                             1. SAbDab records no antigen chain (2347 of 22201
                                rows, 10.6%, measured 2026-09-04) or no
                                antibody chain -- no download at all;
@@ -38,16 +38,35 @@ Each returned dict has:
                                404s -- no coordinates read;
                             3. the antigen chain is not in the legacy file;
                             4. no antibody atoms are found;
-                            5. the antigen chain contributes no POLYMER
-                               residues -- an all-HETATM chain (carbohydrate,
-                               hapten, ion), which _parse_summary_csv can
-                               select because it takes antigen_chain's first
-                               component without consulting antigen_type;
-                            6. the interface genuinely has nothing within the
+                            5. the chosen antigen chain contributes no
+                               POLYMER residues -- an all-HETATM chain
+                               (carbohydrate, hapten, ion), which
+                               _resolve_antigen_chain can still pick, because
+                               SAbDab's antigen_chain field is not qualified by
+                               antigen_type;
+                            6. several candidate antigen chains are present and
+                               none of their DBREF accessions is the one asked
+                               about, so _resolve_antigen_chain REFUSES rather
+                               than answer for a chain that may be a different
+                               protein. ``contact_unresolved`` is set in this
+                               case and only this one;
+                            7. the interface genuinely has nothing within the
                                cutoff.
                           Only the last CAN be a measurement, so a caller must
                           not render [] as "none found".
-    antigen_chain   str   — Antigen chain ID in the PDB entry
+    contact_chain   str   — The chain ``contact_residues`` was measured on.
+                          Present alongside every computed interface (empty
+                          string when no candidate chain was in the file), and
+                          ABSENT on a refusal, where contact_unresolved is set
+                          instead.
+    contact_unresolved list[str] — Only on a refusal (case 6 above): the
+                          candidate chains that could not be tied to the
+                          target. Never render this as "no contacts".
+    antigen_chain   str   — First antigen chain ID SAbDab lists, kept as the
+                          display label; see antigen_chains.
+    antigen_chains  list[str] — Every antigen chain SAbDab lists for the entry,
+                          unranked. contact_chain is the one of these the
+                          interface was actually measured on.
     ab_chains       list[str] — Antibody chain IDs
 """
 
@@ -274,58 +293,17 @@ _THREE_TO_ONE = {
 # Automatic UniProt ID resolution
 # ---------------------------------------------------------------------------
 
-def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
-    """Extract UniProt accession from PDB DBREF records or mmCIF _struct_ref.
+def _dbref_accession_for_chain(text: str, chain_id: str) -> str:
+    """UniProt accession named for *chain_id* by *text*'s DBREF records.
 
-    PDB format example:
-        DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147
+    The PDB-format body of ``_extract_uniprot_from_dbref``, moved out verbatim
+    so a coordinate file already in memory can be read without writing it to
+    disk first. ``_resolve_antigen_chain`` reads the structure it has just
+    downloaded this way.
 
-    The wwPDB splits the record in two whenever the accession is wider
-    than the 8-character field above, which is the case for every
-    10-character accession. The accession then sits on the DBREF2 line;
-    DBREF1 carries the database name and the entry name, never the
-    accession:
-        DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
-        DBREF2 5YTL A     A0A1W6VP04                         31         352
-
-    AlphaFold DB does NOT split. It writes the 10-character accession
-    straight through that field on a plain DBREF and lets the entry name
-    shift right, so the accession is read to the next space rather than
-    stopping at the field edge:
-        DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
-
-    A plain DBREF for the chain WINS over a two-line pair. Both forms
-    appear together on ~0.5% of entries, and there the pair is typically
-    an expression tag or fusion partner covering a short N-terminal
-    segment (21JI chain A: a 90-residue rat tag alongside the 777-residue
-    protein). Preferring the plain record keeps this function's answer for
-    every file that already had one, so the two-line branch can only add
-    an accession where there was none.
-
-    mmCIF format: uses BioPython MMCIF2Dict to parse _struct_ref and
-    _struct_ref_seq loops. Cross-references ref_id to match chain_id
-    with the correct UniProt accession.
-
-    Args:
-        pdb_path: Path to the uploaded PDB or mmCIF file.
-        chain_id: Chain identifier to look up.
-
-    Returns:
-        UniProt accession string, or empty string if not found.
+    Returns "" when nothing matches; see ``_extract_uniprot_from_dbref`` for
+    the record forms handled and the precedence between them.
     """
-
-    pdb_str = str(pdb_path)
-
-    if pdb_str.endswith(".cif"):
-        return _valid_accession(_extract_uniprot_from_cif(pdb_str, chain_id))
-
-    # PDB format: parse DBREF lines
-    try:
-        with open(pdb_str, "r", errors="replace") as fh:
-            text = fh.read()
-    except OSError:
-        return ""
-
     # Chain armed by a UNP-typed DBREF1, or None. Holding the chain rather
     # than a bool is what stops a DBREF1 for one chain arming a DBREF2 for
     # another; None as the empty value keeps a blank chain column (which is
@@ -414,6 +392,61 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
             armed_chain = None
 
     return two_line_accession
+
+
+def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
+    """Extract UniProt accession from PDB DBREF records or mmCIF _struct_ref.
+
+    PDB format example:
+        DBREF  1HEW A    1   129  UNP    P00698   LYC_CHICK       19    147
+
+    The wwPDB splits the record in two whenever the accession is wider
+    than the 8-character field above, which is the case for every
+    10-character accession. The accession then sits on the DBREF2 line;
+    DBREF1 carries the database name and the entry name, never the
+    accession:
+        DBREF1 5YTL A    2   323  UNP                  A0A1W6VP04_GEOTD
+        DBREF2 5YTL A     A0A1W6VP04                         31         352
+
+    AlphaFold DB does NOT split. It writes the 10-character accession
+    straight through that field on a plain DBREF and lets the entry name
+    shift right, so the accession is read to the next space rather than
+    stopping at the field edge:
+        DBREF  XXXX A    1   130  UNP    A0A2K5QDT7 A0A2K5QDT7_CEBIM
+
+    A plain DBREF for the chain WINS over a two-line pair. Both forms
+    appear together on ~0.5% of entries, and there the pair is typically
+    an expression tag or fusion partner covering a short N-terminal
+    segment (21JI chain A: a 90-residue rat tag alongside the 777-residue
+    protein). Preferring the plain record keeps this function's answer for
+    every file that already had one, so the two-line branch can only add
+    an accession where there was none.
+
+    mmCIF format: uses BioPython MMCIF2Dict to parse _struct_ref and
+    _struct_ref_seq loops. Cross-references ref_id to match chain_id
+    with the correct UniProt accession.
+
+    Args:
+        pdb_path: Path to the uploaded PDB or mmCIF file.
+        chain_id: Chain identifier to look up.
+
+    Returns:
+        UniProt accession string, or empty string if not found.
+    """
+
+    pdb_str = str(pdb_path)
+
+    if pdb_str.endswith(".cif"):
+        return _valid_accession(_extract_uniprot_from_cif(pdb_str, chain_id))
+
+    # PDB format: parse DBREF lines
+    try:
+        with open(pdb_str, "r", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+
+    return _dbref_accession_for_chain(text, chain_id)
 
 
 def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
@@ -1161,42 +1194,45 @@ def _classify_binder(h_chain: Optional[str], l_chain: Optional[str]) -> str:
 # Contact residue computation
 # ---------------------------------------------------------------------------
 
-def _compute_contacts(
+def _contacts_by_chain(
     pdb_text: str,
-    antigen_chain: str,
+    antigen_chains: list,
     ab_chains: list,
     cutoff: float = _CONTACT_CUTOFF_ANGSTROM,
-) -> Optional[list]:
-    """Compute antigen residue numbers in contact with antibody chains.
+) -> Optional[dict]:
+    """Contact residue numbers for EACH candidate antigen chain, one parse.
 
     Uses BioPython to parse the structure and NumPy for vectorised distance
     computation.
 
     Returns ``None`` when the coordinates could not be read at all -- the
     libraries are missing, or anything in the parse-and-measure raised --
-    and a list otherwise. The caller caches what it gets forever, so those
-    two have to stay apart: an unreadable body that answers ``[]`` is
-    indistinguishable from an interface with nothing in it, and gets
+    and a dict otherwise. The caller caches what it gets forever, so those
+    two have to stay apart: an unreadable body that answers "no contacts"
+    is indistinguishable from an interface with nothing in it, and gets
     written down as a fact.
 
-    A structure that parsed but does not contain the named chains answers
-    ``[]``: re-downloading produces the same absence every time, so there is
-    nothing to retry. That is right when the chains really are absent and
-    WRONG in one case this module does not handle -- SAbDab's chain ids come
-    from mmCIF ``auth_asym_id`` and the download URL serves the legacy .pdb,
-    which can label chains differently. There is no chain-id mapping anywhere
-    here, so such an entry caches a permanent "contacts nothing". Pre-existing,
-    and a retry would not fix it; a mapping would.
+    The returned dict holds a key only for those *antigen_chains* the parsed
+    structure actually contains, so its keys are what ``_resolve_antigen_chain``
+    treats as the usable candidates. An empty dict therefore means either that
+    none of the named chains are in the file or that no antibody atoms were
+    found -- both of which re-downloading reproduces exactly, so there is
+    nothing to retry.
+
+    Taking the whole candidate list rather than one chain is what keeps the
+    resolution to a single parse: SAbDab's ``antigen_chain`` field is a
+    pipe-separated list (see ``_parse_summary_csv``) and every component has
+    to be measured before one of them can be reported.
 
     Args:
         pdb_text: Raw text content of a PDB coordinate file.
-        antigen_chain: Chain ID of the antigen in the PDB file.
+        antigen_chains: Candidate antigen chain IDs in the PDB file.
         ab_chains: List of antibody chain IDs (heavy and/or light).
         cutoff: Distance threshold in Angstroms.
 
     Returns:
-        Sorted list of antigen residue sequence numbers (PDB auth_seq_id), or
-        ``None`` if the structure could not be read.
+        ``{chain_id: sorted residue sequence numbers (PDB auth_seq_id)}`` for
+        the present chains, or ``None`` if the structure could not be read.
     """
     try:
         from Bio.PDB import PDBParser  # noqa: PLC0415
@@ -1211,13 +1247,14 @@ def _compute_contacts(
         model = next(structure.get_models())
         chain_map = {chain.id: chain for chain in model.get_chains()}
 
-        if antigen_chain not in chain_map:
+        present = [c for c in antigen_chains if c in chain_map]
+        if not present:
             logger.debug(
-                "Antigen chain %s not found in structure (available: %s)",
-                antigen_chain,
+                "Antigen chain(s) %s not found in structure (available: %s)",
+                list(antigen_chains),
                 list(chain_map.keys()),
             )
-            return []
+            return {}
 
         # Collect all antibody heavy atom coordinates.
         ab_atom_coords = []
@@ -1228,30 +1265,70 @@ def _compute_contacts(
                         ab_atom_coords.append(atom.coord)
 
         if not ab_atom_coords:
-            return []
+            return {}
 
         ab_coords = np.array(ab_atom_coords, dtype=np.float32)
 
         # For each standard antigen residue, find the minimum distance to
         # any antibody atom. Flag residues within the cutoff.
-        contact_residues = []
-        for residue in polymer.polymer_residues(chain_map[antigen_chain]):
-            res_coords = np.array(
-                [atom.coord for atom in residue.get_atoms()], dtype=np.float32
-            )
-            if len(res_coords) == 0:
-                continue
-            # Vectorised pairwise minimum distance.
-            diffs = res_coords[:, np.newaxis, :] - ab_coords[np.newaxis, :, :]
-            min_dist = float(np.sqrt((diffs ** 2).sum(axis=2)).min())
-            if min_dist <= cutoff:
-                contact_residues.append(residue.id[1])
+        out = {}
+        for antigen_chain in present:
+            contact_residues = []
+            for residue in polymer.polymer_residues(chain_map[antigen_chain]):
+                res_coords = np.array(
+                    [atom.coord for atom in residue.get_atoms()], dtype=np.float32
+                )
+                if len(res_coords) == 0:
+                    continue
+                # Vectorised pairwise minimum distance.
+                diffs = res_coords[:, np.newaxis, :] - ab_coords[np.newaxis, :, :]
+                min_dist = float(np.sqrt((diffs ** 2).sum(axis=2)).min())
+                if min_dist <= cutoff:
+                    contact_residues.append(residue.id[1])
+            out[antigen_chain] = sorted(contact_residues)
 
-        return sorted(contact_residues)
+        return out
 
     except Exception:
         logger.debug("Contact computation error.", exc_info=True)
         return None
+
+
+def _compute_contacts(
+    pdb_text: str,
+    antigen_chain: str,
+    ab_chains: list,
+    cutoff: float = _CONTACT_CUTOFF_ANGSTROM,
+) -> Optional[list]:
+    """Contact residue numbers on ONE named antigen chain.
+
+    A single-chain view of ``_contacts_by_chain``, which holds the parse and
+    the measurement. ``None`` still means the coordinates could not be read;
+    ``[]`` means the chain is not in the structure, or no antibody atoms were
+    found, or the interface really is empty -- the three stay merged here
+    because the callers of this narrow form (the MSE/hetflag tests) only ask
+    about a chain they put in the file themselves.
+
+    Nothing in the production path calls this: ``_fetch_and_compute_contacts``
+    goes to ``_contacts_by_chain`` so that the chain actually reported is
+    chosen, not assumed. See ``_resolve_antigen_chain`` for why assuming is
+    wrong.
+
+    Args:
+        pdb_text: Raw text content of a PDB coordinate file.
+        antigen_chain: Chain ID of the antigen in the PDB file.
+        ab_chains: List of antibody chain IDs (heavy and/or light).
+        cutoff: Distance threshold in Angstroms.
+
+    Returns:
+        Sorted list of antigen residue sequence numbers (PDB auth_seq_id), or
+        ``None`` if the structure could not be read.
+    """
+    by_chain = _contacts_by_chain(pdb_text, [antigen_chain], ab_chains, cutoff)
+    if by_chain is None:
+        return None
+    return by_chain.get(antigen_chain, [])
+
 
 
 # Bound on a dead files.rcsb.org, mirroring _RCSB_RETRY_AT for the search host.
@@ -1278,30 +1355,107 @@ def _compute_contacts(
 _PDB_FILE_RETRY_AT = 0.0
 
 
+def _resolve_antigen_chain(
+    pdb_text: str, antigen_chains: list, ab_chains: list, target_accession: str
+) -> Optional[dict]:
+    """Decide WHICH antigen chain's contacts may be reported, or refuse.
+
+    SAbDab's ``antigen_chain`` field is a pipe-separated list of every chain in
+    the antigen, alphabetically sorted (see ``_parse_summary_csv``). For a
+    hetero-oligomeric antigen those chains are different proteins: 10EN pairs
+    one Fab with "C|D", where C is GRIN1 and D is GRIN2B. Reporting the first
+    component's residues answers a question about GRIN1 to a user who asked
+    about GRIN2B, and those residue numbers also drive the epitope-overlap
+    badges, so the wrong answer spreads.
+
+    The chain is pinned to the accession the user resolved by reading each
+    candidate's own DBREF records out of the coordinate file (the same
+    provenance ``_extract_uniprot_from_dbref`` reads for the uploaded
+    structure), so both sides are read off one convention and no mapping
+    between SAbDab's mmCIF ``auth_asym_id`` ids and the legacy file's labels is
+    assumed.
+
+    Returns ``None`` only when ``_contacts_by_chain`` could not read the
+    coordinates, and otherwise one of:
+
+    * ``{"contact_residues": [...], "contact_chain": c}`` -- ``c`` is the chain
+      the residues belong to, and is the empty string when no candidate chain
+      is in the file (so the residues are ``[]``).
+    * ``{"contact_residues": [], "contact_unresolved": [chains]}`` -- a refusal:
+      several candidate chains are present and none of their DBREF accessions
+      is the target. The empty list is NOT a measurement, which is why the key is
+      there for the template to branch on: renderKnownBinders in
+      templates/scout/index.html renders it as "chain not resolved", never as
+      "no contacts recorded".
+
+    Both of the non-None answers are settled: re-downloading reproduces them,
+    so they are cached like any other computed interface.
+    """
+    by_chain = _contacts_by_chain(pdb_text, antigen_chains, ab_chains)
+    if by_chain is None:
+        return None
+
+    # Keys only for the chains the file actually contains -- see
+    # _contacts_by_chain's docstring.
+    usable = sorted(by_chain)
+    if not usable:
+        return {"contact_residues": [], "contact_chain": ""}
+
+    if len(usable) == 1:
+        chain = usable[0]
+        return {"contact_residues": by_chain[chain], "contact_chain": chain}
+
+    accessions = {c: _dbref_accession_for_chain(pdb_text, c) for c in usable}
+    on_target = [
+        c for c in usable if accessions[c] and accessions[c] == target_accession
+    ]
+    if on_target:
+        candidates = on_target
+    else:
+        # Nothing names the target: the file carries no UNP provenance for
+        # these chains, or names another protein. Both are refusals -- a
+        # structure RCSB returned for this accession can hold the target
+        # somewhere other than the chains SAbDab calls the antigen, so
+        # reporting one of them would be the wrong-chain answer again.
+        logger.debug(
+            "Refusing to report contacts: chains %s cannot be tied to %s "
+            "(DBREF accessions %s).", usable, target_accession, accessions,
+        )
+        return {"contact_residues": [], "contact_unresolved": usable}
+
+    # Among chains that ARE the right protein, the one the antibody actually
+    # touches. Ties break on the chain id so the answer is stable across runs.
+    chain = min(candidates, key=lambda c: (-len(by_chain[c]), c))
+    return {"contact_residues": by_chain[chain], "contact_chain": chain}
+
+
 def _fetch_and_compute_contacts(
-    pdb_id: str, antigen_chain: str, ab_chains: list
-) -> Optional[list]:
-    """Download a PDB file from RCSB and compute interface contact residues.
+    pdb_id: str, antigen_chains: list, ab_chains: list, target_accession: str = ""
+) -> Optional[dict]:
+    """Download a PDB file from RCSB and resolve its interface contacts.
 
     Args:
         pdb_id: RCSB PDB accession (case-insensitive).
-        antigen_chain: Antigen chain ID in the PDB file.
+        antigen_chains: Candidate antigen chain IDs in the PDB file.
         ab_chains: Antibody chain IDs.
+        target_accession: UniProt accession the user asked about, used by
+            ``_resolve_antigen_chain`` to pick among the candidates.
 
     Returns:
-        Sorted list of contact residue numbers; ``[]`` when the answer is
-        genuinely no contacts (or there is nothing to compute against, or the
-        entry has no PDB-format file at all); ``None`` when the coordinates
-        could not be read and the question is still open.
+        One of ``_resolve_antigen_chain``'s dicts -- contacts with the chain
+        they belong to, or a refusal -- and ``None`` when the coordinates could
+        not be read and the question is still open. An entry with nothing to
+        compute (no candidate chains, no antibody chains, or no PDB-format file
+        at all) answers an empty, settled measurement.
 
         ``fetch_known_binders`` caches what this returns for the life of the
-        worker, so ``[]`` for a 503 is what pins "this antibody touches
-        nothing" long after files.rcsb.org recovers -- the same
+        worker, so a settled empty answer for a 503 is what pins "this antibody
+        touches nothing" long after files.rcsb.org recovers -- the same
         silent-permanent-zero shape as the search-side outage above, one layer
         down. Only this layer sees the status code, so only this layer can tell
         the two apart.
 
-        A 404 is deliberately on the ``[]`` side. Structures too large for the
+        A 404 is deliberately on the settled side. Structures too large for the
         legacy format are mmCIF-only and answer 404 forever, so classifying
         that as an outage would re-download the same absence on every retry.
 
@@ -1310,8 +1464,8 @@ def _fetch_and_compute_contacts(
         the entry stays pending and is re-attempted once the TTL lapses.
     """
     global _PDB_FILE_RETRY_AT
-    if not antigen_chain or not ab_chains:
-        return []
+    if not antigen_chains or not ab_chains:
+        return {"contact_residues": [], "contact_chain": ""}
     if time.monotonic() < _PDB_FILE_RETRY_AT:
         return None
     try:
@@ -1319,7 +1473,7 @@ def _fetch_and_compute_contacts(
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT_SEC)
         if resp.status_code == 404:
             logger.debug("No PDB-format file for %s (404).", pdb_id)
-            return []
+            return {"contact_residues": [], "contact_chain": ""}
         if not resp.ok:
             logger.warning(
                 "PDB download failed for %s: HTTP %s. Backing off "
@@ -1334,7 +1488,9 @@ def _fetch_and_compute_contacts(
         # one download per lookup per unreadable structure -- bounded by
         # _MAX_CONTACT_STRUCTURES, and the price of not writing down a zero we
         # cannot justify.
-        return _compute_contacts(resp.text, antigen_chain, ab_chains)
+        return _resolve_antigen_chain(
+            resp.text, antigen_chains, ab_chains, target_accession
+        )
     except Exception:
         logger.warning(
             "PDB download error for %s. Backing off files.rcsb.org for %ss.",
@@ -1342,6 +1498,7 @@ def _fetch_and_compute_contacts(
         )
         _PDB_FILE_RETRY_AT = time.monotonic() + _RCSB_ERROR_TTL_SEC
         return None
+
 
 
 # ---------------------------------------------------------------------------
@@ -1596,16 +1753,29 @@ def _parse_summary_csv(text: str) -> dict:
         if not pdb_id:
             continue
         # SAbDab writes the literal "NA" for absent values, and pipe-separates
-        # multi-chain antigens ("I|J"). _compute_contacts scores ONE antigen
-        # chain, so take the first; the rest of that interface is not lost,
-        # it simply is not the chain whose contacts get reported.
-        antigen_chain = (row.get("antigen_chain") or "").split("|")[0].strip()
+        # multi-chain antigens ("I|J"). Keep ALL the components: the list is
+        # alphabetically sorted, not ranked, so its first element is not the
+        # chain the antibody binds and need not even be the same protein --
+        # 10EN pairs one Fab with "C|D", which are GRIN1 and GRIN2B. Picking
+        # the first and reporting its residues is the wrong-chain answer that
+        # tests/test_scout_wrong_chain.py now fails on; _resolve_antigen_chain
+        # chooses among the components instead.
+        chains = [
+            c for c in (
+                part.strip() for part in (row.get("antigen_chain") or "").split("|")
+            )
+            if c and c.upper() != "NA"
+        ]
         species = (row.get("antigen_species") or "").strip()
         index.setdefault(pdb_id, []).append({
             "pdb": pdb_id,
             "Hchain": (row.get("Hchain") or "").strip(),
             "Lchain": (row.get("Lchain") or "").strip(),
-            "antigen_chain": "" if antigen_chain.upper() == "NA" else antigen_chain,
+            # antigen_chain stays the first component, as the display label
+            # and for anything reading the old single-chain key; the resolver
+            # reads antigen_chains.
+            "antigen_chain": chains[0] if chains else "",
+            "antigen_chains": chains,
             "resolution": (row.get("resolution") or "").strip(),
             "antigen_species": "" if species.upper() == "NA" else species,
         })
@@ -1735,6 +1905,12 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
         h_chain = entry.get("Hchain") or ""
         l_chain = entry.get("Lchain") or ""
         antigen_chain = entry.get("antigen_chain") or ""
+        # _parse_summary_csv sets antigen_chains; an entry from anywhere else
+        # (a stubbed query_sabdab in the tests) may not, so fall back to the
+        # single-chain key rather than dropping the candidate.
+        antigen_chains = entry.get("antigen_chains") or (
+            [antigen_chain] if antigen_chain else []
+        )
         resolution = entry.get("resolution")
         species = entry.get("antigen_species") or entry.get("organism") or ""
         affinity = entry.get("affinity") or ""
@@ -1751,6 +1927,7 @@ def query_sabdab(uniprot_id: str) -> Optional[list]:
         results.append({
             "pdb_id": pdb_id,
             "antigen_chain": antigen_chain,
+            "antigen_chains": antigen_chains,
             "ab_chains": ab_chains,
             "binder_type": binder_type,
             "resolution": resolution,
@@ -1836,8 +2013,14 @@ def _resolve_contacts(cache_key: str, entries: list, limit: int) -> list:
 
         def _worker(slot: int, idx: int) -> None:
             entry = entries[idx]
+            # antigen_chains is what _parse_summary_csv stores; an entry built
+            # elsewhere (a stubbed query_sabdab) may only carry the single
+            # antigen_chain key.
+            candidates = entry.get("antigen_chains")
+            if not candidates:
+                candidates = [entry["antigen_chain"]] if entry["antigen_chain"] else []
             slots[slot] = _fetch_and_compute_contacts(
-                entry["pdb_id"], entry["antigen_chain"], entry["ab_chains"]
+                entry["pdb_id"], candidates, entry["ab_chains"], cache_key
             )
 
         threads = [
@@ -1855,8 +2038,13 @@ def _resolve_contacts(cache_key: str, entries: list, limit: int) -> list:
         }
 
     out = [dict(entry) for entry in entries]
-    for idx, residues in resolved.items():
-        out[idx]["contact_residues"] = residues
+    for idx, payload in resolved.items():
+        # _fetch_and_compute_contacts returns the whole contact_* payload --
+        # the residues plus the chain they were measured on, or the refusal.
+        # A bare list is accepted so a test may stub the fetch with one.
+        if isinstance(payload, list):
+            payload = {"contact_residues": payload}
+        out[idx].update(payload)
     _cache_put(cache_key, out)
     return out
 

@@ -674,7 +674,9 @@ class TestContactFailureIsNotCachedForever:
         # coordinates. What matters here is only that a readable body yields an
         # answer and an unreadable one never reaches this function at all.
         monkeypatch.setattr(
-            epitope_db, "_compute_contacts", lambda *a, **k: list(contacts)
+            epitope_db,
+            "_contacts_by_chain",
+            lambda text, chains, ab, **k: {chains[0]: list(contacts)},
         )
         return downloads
 
@@ -854,8 +856,8 @@ class TestContactFailureIsNotCachedForever:
         )
         monkeypatch.setattr(
             epitope_db,
-            "_compute_contacts",
-            lambda text, chain, ab, **k: None if ab == ["A", "B"] else [7],
+            "_contacts_by_chain",
+            lambda text, chains, ab, **k: None if ab == ["A", "B"] else {chains[0]: [7]},
         )
 
         for round_no in (1, 2, 3):
@@ -887,13 +889,17 @@ class TestContactFailureIsNotCachedForever:
                 200,
             ),
         )
-        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: None)
+        monkeypatch.setattr(epitope_db, "_contacts_by_chain", lambda *a, **k: None)
         for _ in range(3):
             epitope_db.fetch_known_binders("P0DTC2")
 
         # A different protein, whose own structure reads perfectly.
         self._binders(monkeypatch, ids=["1A2Y"])
-        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: [7])
+        monkeypatch.setattr(
+            epitope_db,
+            "_contacts_by_chain",
+            lambda text, chains, ab, **k: {chains[0]: [7]},
+        )
         assert epitope_db.fetch_known_binders("P00698")[0]["contact_residues"] == [7]
 
     def test_a_transport_failure_does_arm_the_backoff(self, monkeypatch):
@@ -926,7 +932,11 @@ class TestContactFailureIsNotCachedForever:
                 503 if "7K8M" in url else 200,
             ),
         )
-        monkeypatch.setattr(epitope_db, "_compute_contacts", lambda *a, **k: [7])
+        monkeypatch.setattr(
+            epitope_db,
+            "_contacts_by_chain",
+            lambda text, chains, ab, **k: {chains[0]: [7]},
+        )
         binders = {b["pdb_id"]: b for b in epitope_db.fetch_known_binders("P0DTC2")}
         assert binders["1A2Y"]["contact_residues"] == [7]
         assert "contact_residues" not in binders["7K8M"]
