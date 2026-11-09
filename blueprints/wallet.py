@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from flask import (
     Blueprint,
@@ -60,8 +60,7 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
     page, or the parent of a settle row on the page) we fetch the whole
     lineage (the hold plus every row whose parent_tx_id is that hold)
     even when the hold and its settlement fall on different pages, and
-    compute the group net = SUM(amount_usd) = negative of the actual
-    compute cost.
+    compute the group net = negative of the actual compute cost.
 
     Annotation shape per row id:
         role      one of 'hold', 'release', 'settlement', and for a live run
@@ -69,16 +68,21 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
                   'run' on the anchor and 'debit' on each run_debit child
         settled   True when the hold has at least one child that is not a
                   run_debit
-        taken     on a run, what its run_debit children took (positive)
+        taken     on a run, what its run_debit children took (positive),
+                  summed from each debit rounded as the page prints it,
+                  except where every debit is under half a cent
+                  (see ``_debits_total``)
         debits    on a run, its run_debit children, oldest first
         reserved  the amount the hold reserved (positive), for holds
         outcome   for holds, what settling did with the reservation, read
                   from the children's amounts: 'more_charged' (a negative
                   charge child), 'all_returned' (releases cover the hold),
                   'part_returned' (some released) or 'none_returned'
-        net       group net = SUM(amount_usd) over the lineage, on the
-                  settlement row (the charge, or the release when there
-                  is no charge); this is negative of the actual cost
+        net       group net = SUM(amount_usd) over the lineage, from the
+                  exact amounts, on the settlement row (the charge, or the
+                  release when there is no charge); this is negative of the
+                  actual cost, and the template branches on whether it is
+                  zero, which a rounded sum cannot answer
 
     On any failure the function returns an empty dict so the template
     falls back to plain rendering and the ledger page never 500s.
@@ -148,7 +152,17 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             children = [c for c in grp["children"] if c.get("kind") != "run_debit"]
             settled = len(children) > 0
 
-            # Group net = SUM(amount_usd) over the hold and all children.
+            # Group net = SUM(amount_usd) over the hold and all children,
+            # from the EXACT amounts. The template asks it a categorical
+            # question -- net == 0 picks "all of it was returned when it
+            # closed" over "it closed at $X"
+            # (templates/wallet/transactions.html, the is_run branch) -- and
+            # a per-row rounded sum answers that question wrongly in both
+            # directions: thirteen debits of -1.1551 against a full release
+            # print to -0.06 on a run that cost nothing, and thirteen of
+            # -1.1549 against a release that kept 5 cents print to +0.01,
+            # which reads as a full refund. Only ``taken`` below, which
+            # stands over the debit rows themselves, is summed as printed.
             net = Decimal("0")
             have_net = False
             if hold_row is not None:
@@ -162,10 +176,14 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
             if hold_row is not None:
                 reserved = abs(_tx_amount_decimal(hold_row.get("amount_usd")))
 
-            # From the amounts, never the stored notes: settle_hold writes
-            # "estimate matched actual" on the zero-amount charge whenever the
-            # hard cap clamps the actual down to the hold
-            # (supabase/migrations/0020_wallet_corrections.sql:263, v_diff = 0).
+            # From the amounts, never the stored notes. Rows settled before
+            # supabase/migrations/0048_settle_hold_clamp_note.sql carry
+            # "estimate matched actual" on the zero-amount charge of a
+            # clamped settlement whose hold equalled the cap, because the
+            # 0020 definition took its v_diff = 0 branch there
+            # (supabase/migrations/0020_wallet_corrections.sql:263); 0048
+            # changes the note it writes from then on, not the rows already
+            # written.
             returned = sum(
                 (_tx_amount_decimal(c.get("amount_usd")) for c in children
                  if c.get("kind") == "hold_release"),
@@ -193,10 +211,7 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
                 annotations[hold_row["id"]] = {
                     "role": "run",
                     "settled": settled,
-                    "taken": -sum(
-                        (_tx_amount_decimal(d.get("amount_usd")) for d in debits),
-                        Decimal("0"),
-                    ),
+                    "taken": _debits_total(debits),
                     "net": net,
                     "debits": debits,
                 }
@@ -238,6 +253,74 @@ def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
         )
         return {}
     return annotations
+
+
+def _as_printed(value) -> Decimal:  # noqa: ANN001
+    """A ledger amount rounded to the 2dp the page will print for that row.
+
+    A total that stands over rows the reader can see has to be summed from
+    the rows AS PRINTED, not from the exact amounts: every amount cell goes
+    through ``display_record_usd``, which rounds half-up to 2dp
+    (``shared/compute_campaigns.py``, ``display_record_usd``), so a total
+    taken from the exact sum prints cents away from the column beneath it.
+    Thirteen debits of $1.1549 print $14.95 under an exact roll-up of
+    $15.01 -- pinned by
+    ``tests/test_wallet_templates.py::TestRunRollUp::test_roll_up_adds_up_to_the_debit_rows_printed_under_it``.
+
+    Only ``taken`` is summed this way. It is the one figure on this page
+    that stands over the very rows it adds up -- the debit list in the
+    is_run branch of ``templates/wallet/transactions.html`` -- and it adds
+    rows of one sign, so rounding them cannot cross zero. ``net`` stays
+    exact because the template asks it whether it IS zero.
+
+    Sub-cent amounts are the one place the printed row and this figure
+    part: ``display_record_usd`` prints a non-zero amount under half a cent
+    as "<$0.01" (``shared/compute_campaigns.py``, ``display_record_usd``)
+    while this contributes 0.00 for it. The template guards the is_run
+    branch on ``ann.debits`` rather than on this sum being positive, so a
+    run of debits under half a cent is still read as having been charged,
+    and ``_debits_total`` below keeps the live "so far" figure sub-cent
+    rather than rounding it to "$0.00".
+
+    Summing what is printed is the rule ``display_total_usd`` applies for
+    the launch consent panel. That helper is not reused here because it
+    parses each row with ``Decimal(str(display))``
+    (``shared/compute_campaigns.py``, ``display_total_usd``), which takes a
+    bare 2dp numeral and not the "$1.15" / "<$0.01" strings this page's
+    cells are.
+    """
+    return _tx_amount_decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _debits_total(debits) -> Decimal:  # noqa: ANN001
+    """What a run has taken so far, as a positive amount, for the figure that
+    sits directly above the debit rows themselves.
+
+    The sum of those rows AS PRINTED (``_as_printed``), so the figure agrees
+    with the column beneath it.
+
+    One shape needs the exact sum instead: when every debit is under half a
+    cent the printed sum is 0.00, which renders "$0.00", while each row renders
+    "<$0.01" -- so the anchor would read as free over rows that say
+    otherwise. ``display_record_usd`` renders any non-zero amount under half
+    a cent as "<$0.01" (``shared/compute_campaigns.py``,
+    ``display_record_usd``), so handing it the exact sum in that case prints
+    the same thing the rows do.
+
+    That shape is reachable on a nearly empty wallet: a heartbeat owes at
+    least ``MIN_CHARGE_USD`` = $0.05 (``shared/wallet_estimates.py``,
+    ``apply_min_charge``, reached through ``shared/wallet.py``'s
+    ``compute_charge_usd`` and ``live_due_usd``), but
+    ``supabase/migrations/0045_live_run_debits.sql`` debits
+    ``GREATEST(LEAST(v_step, v_balance), 0)`` -- what the balance covers --
+    and ``open_live_run`` in that same file admits any balance above 0.
+    Pinned by ``tests/test_wallet_templates.py::TestRunRollUp::
+    test_a_live_run_of_only_sub_cent_debits_does_not_read_as_free``.
+    """
+    printed = -sum((_as_printed(d.get("amount_usd")) for d in debits), Decimal("0"))
+    if printed != 0:
+        return printed
+    return -sum((_tx_amount_decimal(d.get("amount_usd")) for d in debits), Decimal("0"))
 
 
 def _tx_amount_decimal(value) -> Decimal:  # noqa: ANN001

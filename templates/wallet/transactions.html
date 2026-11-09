@@ -151,7 +151,7 @@
                   {% elif is_run %}
                     {% if not ann.settled %}
                       <span class="wallet-tx-hint">charged as it runs; {{ display_record_usd(ann.taken) }} so far</span>
-                    {% elif ann.taken > 0 and ann.net == 0 %}
+                    {% elif ann.debits and ann.net == 0 %}
                       <span class="wallet-tx-hint">charged as it ran; all of it was returned when it closed</span>
                     {% else %}
                       <span class="wallet-tx-hint">charged as it ran; it closed at {{ display_record_usd(0 - ann.net) }}</span>
