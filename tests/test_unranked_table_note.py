@@ -14,9 +14,10 @@ unconditionally and ships no score columns. Every other partial that passes
 backfilled result; ``mpnn_results.html`` and ``_default_results.html`` pass
 no ``ranked=`` and take the macro default ``ranked=true``, so they never
 reach it at all. All thirteen render a backfilled result in arrival order,
-for three reasons rather than one: SIX discard a score sort they just ran,
-because it is followed immediately by ``candidates = recovered or
-candidates`` (af2, boltz2, colabfold, esmfold, iggm, opendde); SIX never sort
+for three reasons rather than one: SIX discard a sort they just ran, because
+it is followed immediately by ``candidates = recovered or candidates``
+(af2, boltz2, colabfold, esmfold, iggm on a ``scores.`` key, opendde on the
+pipeline's own ``rank`` field, which is not a score); SIX never sort
 in the partial at all (bindcraft, boltzgen, proteina, pxdesign, rfantibody,
 rfdiffusion), so the stored order renders; and esmfold2_design returns from
 its ``output_candidates`` branch before reaching its sort. The template
@@ -128,7 +129,7 @@ def test_a_normal_ranked_run_gets_no_note(flask_app):
 
 def test_rfd4_gets_the_note_too(flask_app):
     """rfd4 passes ranked=false unconditionally and resolves no score columns
-    (templates/tools/rfd4_results.html:90, :133). This is the page the
+    (templates/tools/rfd4_results.html:94, :133). This is the page the
     sentence was written for."""
     html = _render(flask_app, "rfd4", {"designs": [
         {"rank": 1, "name": "d0", "pdb_key": "designs/d0.cif"},

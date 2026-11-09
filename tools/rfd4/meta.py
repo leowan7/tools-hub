@@ -227,10 +227,13 @@ PILOT: dict | None = {
 # and :524; the path is named at tests/test_rfd4_pipeline.py:13), and that
 # spec is not in this repository, so no file here states which entry it was
 # built from. What IS first-hand is every other word of the string: chain A,
-# 115 residues, one hotspot at 56 and the pdl1_binder_* design names, all in
-# tools/rfd4/example/result.json:52, :53, :55 and :60, with the canonical
-# human PD-L1 sequence present verbatim in that run's committed CIF text
-# (docs/scoping/rung4-probe/gpu_result_20261103T114437.json:85-92). Leo chose
+# 115 residues and one hotspot at 56, in tools/rfd4/example/result.json:52,
+# :53, :55 and :60, and the pdl1_binder_* design names at :9-10 and onward.
+# An 80-residue stretch of the canonical human PD-L1 extracellular sequence,
+# NAFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRARLLKDQLSLGN,
+# appears in that run's committed CIF text, once per design
+# (docs/scoping/rung4-probe/gpu_result_20261103T114437.json:85-92); that is a
+# stretch of the 115-residue chain, not a whole-chain comparison. Leo chose
 # to drop the identifier rather than hedge it, 2026-11-09. Do not add one
 # back from another tool's 4ZQK records: those are different runs, and they
 # name three hotspots where this run used one.

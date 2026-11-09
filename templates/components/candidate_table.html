@@ -561,12 +561,14 @@
    backfilled result in arrival order for THREE different reasons, counted
    rather than generalised:
 
-   SIX DISCARD a score sort they just ran, because the sort is followed
+   SIX DISCARD a sort they just ran, because the sort is followed
    immediately by `candidates = recovered or candidates` and `recovered` is
    non-empty exactly when the run was rebuilt: af2_results.html:76-77,
    boltz2_results.html:81-82, colabfold_results.html:66-67,
    esmfold_results.html:75-76, iggm_results.html:49-50 and
-   opendde_results.html:67-68.
+   opendde_results.html:67-68. Five of those six sort on a score under
+   `scores.`; opendde sorts on the pipeline's own `rank` field
+   (opendde_results.html:67), which is not a score.
 
    SIX NEVER SORT in the partial at all -- bindcraft_results.html:6,
    boltzgen_results.html:6, proteina_results.html:25,

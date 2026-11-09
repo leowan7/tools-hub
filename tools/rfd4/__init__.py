@@ -32,6 +32,9 @@ Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
 that row complete, so registering ahead of them turns the suite red. The
 scope document's step table records 66 failing ids, measured on step 3's
 branch; re-running the same experiment on this base on 2026-11-05 gave 49.
+THE 49 IS NOT RECORDED ANYWHERE IN THIS REPOSITORY: it was measured in a
+throwaway worktree and no file here holds the run, so a reader cannot check
+it. The 66 is checkable (that scope document, the step table).
 NO CAUSE IS OFFERED FOR THE DROP, because the obvious one does not add up:
 the scope document attributes 47 of the 66 to the two missing templates
 (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md, the per-banner tally -- 24
