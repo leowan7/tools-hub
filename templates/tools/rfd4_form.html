@@ -177,7 +177,7 @@
             <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              One chain (<code>A</code>), and one only &mdash; name the chain
+              One chain (<code>A</code>), and one only. Name the chain
               carrying the face you want gripped.
               <code>A,B</code> is refused here rather than quietly designing
               against half of it (tools/rfd4/__init__.py::validate).
@@ -238,10 +238,9 @@
                      min="20" max="300" {{ pre_value(pre_fill, "binder_length_max", "120") }} placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              How long each new binder may be. Every design draws its own
-              length from this window, so the structures that come back are
-              not all the same size: a wide window buys variety, a narrow one
-              consistency. <strong>60 to 120</strong> is the default and a
+              How long each new binder may be. The range you give here is
+              passed to the generator as the binder length window.
+              <strong>60 to 120</strong> is the default and a
               reasonable first try. Narrow it towards the short end for a
               compact single-domain binder on a flat patch, and widen it for
               a broad face or a groove a short binder cannot reach across.

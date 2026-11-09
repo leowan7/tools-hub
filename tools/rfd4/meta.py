@@ -60,7 +60,7 @@ github_url: str = "https://github.com/RosettaCommons/RFD4-Proteina"
 # may say so: the figures are the authors' own, and rfd4 has produced no
 # binder for a customer here.
 comparison_one_liner: str = (
-    "You have a target structure and want a binder that arrives whole — "
+    "You have a target structure and want a binder that arrives whole. "
     "RFD4-Proteina writes the sequence and the all-atom structure in a "
     "single model, so there is no separate sequence-design step to run "
     "afterwards. It returns no confidence number: judging the complex is "
@@ -87,7 +87,7 @@ about: dict = {
     "what_it_is": (
         "Designs de-novo protein binders against a patch of your target "
         "structure, and writes each binder's sequence and its full "
-        "atomic structure in one model — so a design comes back complete "
+        "atomic structure in one model, so a design comes back complete "
         "rather than as a backbone waiting for a sequence step. "
         "RFD4-Proteina, Corley et al., preprint 2026."
     ),
@@ -101,7 +101,7 @@ about: dict = {
             "model than run a separate sequence-design step."
         ),
         (
-            "You have your own way of judging a complex — this tool "
+            "You have your own way of judging a complex. This tool "
             "hands back structures and no score."
         ),
     ],
@@ -122,9 +122,8 @@ about: dict = {
         {
             "name": "Binder length (residues)",
             "explanation": (
-                "The length range to sample a binder from. Anywhere "
-                "between 20 and 300 residues; the default range is 60 to "
-                "120."
+                "The binder length range you give. Anywhere between 20 "
+                "and 300 residues; the default range is 60 to 120."
             ),
         },
         {
@@ -221,11 +220,39 @@ PILOT: dict | None = {
 # templates/tools/rfd4_results.html, because the pipeline's rank is
 # completion order within a sweep rather than a quality order
 # (tools/rfd4/run_pipeline.py:1053-1055).
+# NO PDB IDENTIFIER, DELIBERATELY. An earlier draft of ``target`` below
+# named the entry this structure came from. Nothing we hold supports that:
+# the target was never uploaded, it came from the upstream image's own
+# example condition spec (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:475
+# and :524; the path is named at tests/test_rfd4_pipeline.py:13), and that
+# spec is not in this repository, so no file here states which entry it was
+# built from. What IS first-hand is every other word of the string: chain A,
+# 115 residues, one hotspot at 56 and the pdl1_binder_* design names, all in
+# tools/rfd4/example/result.json:52, :53, :55 and :60, with the canonical
+# human PD-L1 sequence present verbatim in that run's committed CIF text
+# (docs/scoping/rung4-probe/gpu_result_20261103T114437.json:85-92). Leo chose
+# to drop the identifier rather than hedge it, 2026-11-09. Do not add one
+# back from another tool's 4ZQK records: those are different runs, and they
+# name three hotspots where this run used one.
+#
+# NEITHER STRING CLAIMS PER-DESIGN LENGTH SAMPLING. What the repository
+# proves is what we SEND: the adapter stores the window as [min, max]
+# (tools/rfd4/__init__.py:214) and the pipeline passes it to the container as
+# one lo-hi contig (tools/rfd4/run_pipeline.py:924). How upstream spends that
+# window per design is not observable from here, and the example run's own
+# designs came back at 58 to 116 residues against a 60 to 120 window
+# (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:550, designed length =
+# n_standard_residues minus the 115 aa target, giving 58, 68, 75, 99, 101,
+# 108, 109 and 116), so ONE of the eight fell below the window a sampling
+# claim would have promised, not merely spread inside it. The strings state
+# the observed spread and stop there. Leo's wording, 2026-11-09: the user
+# provides a target length.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Human PD-L1, taken as chain A of <strong>PDB 4ZQK</strong> "
-        "&mdash; the solved PD-1/PD-L1 complex. One hotspot residue, 56."
+        "<strong>Human PD-L1</strong>, chain A, 115 residues, taken "
+        "from the vendor's own example condition spec that ships "
+        "inside the upstream image. One hotspot residue, 56."
     ),
     "why_this_target": (
         "This run was ours but it was not a customer's: it is the "
@@ -260,11 +287,11 @@ EXAMPLE: dict | None = {
         (
             "Binder length (residues)",
             "60-120",
-            "The default range. Each design samples a length inside it, "
-            "so the eight structures are not all the same size &mdash; "
-            "and a binder can come back longer than the target, which is "
-            "why the results page names the target chain instead of "
-            "telling you to take the shorter one.",
+            "The default range, passed to the generator as the binder "
+            "length window. The eight structures that came back are not "
+            "all the same size, and a binder can come back longer than "
+            "the target, which is why the results page names the target "
+            "chain instead of telling you to take the shorter one.",
         ),
         (
             "Number of designs",
@@ -290,7 +317,7 @@ EXAMPLE: dict | None = {
     "what_we_did_next": (
         "For this run, nothing: it existed to prove the container, and it "
         "did. On a target of your own the next step is the one this page "
-        "cannot do for you &mdash; fold each complex through a predictor, "
+        "cannot do for you: fold each complex through a predictor, "
         "let that give you the confidence number, and only then decide "
         "which handful is worth a larger sweep or a bench. Eight "
         "unscored structures are a starting point, not a shortlist."
