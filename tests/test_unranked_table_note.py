@@ -129,7 +129,7 @@ def test_a_normal_ranked_run_gets_no_note(flask_app):
 
 def test_rfd4_gets_the_note_too(flask_app):
     """rfd4 passes ranked=false unconditionally and resolves no score columns
-    (templates/tools/rfd4_results.html:94, :133). This is the page the
+    (templates/tools/rfd4_results.html:90, :133). This is the page the
     sentence was written for."""
     html = _render(flask_app, "rfd4", {"designs": [
         {"rank": 1, "name": "d0", "pdb_key": "designs/d0.cif"},
