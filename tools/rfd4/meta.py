@@ -229,8 +229,12 @@ PILOT: dict | None = {
 # built from. What IS first-hand is every other word of the string: chain A,
 # 115 residues and one hotspot at 56, in tools/rfd4/example/result.json:52,
 # :53, :55 and :60, and the pdl1_binder_* design names at :9-10 and onward.
-# The whole 115-residue chain is the canonical human PD-L1 extracellular
-# sequence, carried in each design's committed CIF text wrapped at 80
+# The whole 115-residue chain is the PD-L1 target, recorded as such at
+# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:504 ("entity 0 is the 115 aa
+# PD-L1 target on strand A"). That it is specifically the CANONICAL HUMAN
+# sequence is outside knowledge and no file here states it; what the repository
+# holds is the residues themselves, carried in each design's committed CIF text
+# wrapped at 80
 # characters -- NAFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRARLLKDQLSLGN
 # then AALQITDVKLQDAGVYRCMISYGGADYKRITVKVN, 80 + 35 = 115 -- and present twice
 # per design, in _entity_poly.pdbx_seq_one_letter_code and in
