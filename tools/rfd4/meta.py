@@ -231,8 +231,10 @@ PILOT: dict | None = {
 # :53, :55 and :60, and the pdl1_binder_* design names at :9-10 and onward.
 # The whole 115-residue chain is the PD-L1 target, recorded as such at
 # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md:504 ("entity 0 is the 115 aa
-# PD-L1 target on strand A"). That it is specifically the CANONICAL HUMAN
-# sequence is outside knowledge and no file here states it; what the repository
+# PD-L1 target on strand A"). The string says only PD-L1: that these residues
+# are specifically the CANONICAL HUMAN sequence is outside knowledge no file
+# here states, so the word "Human" came out of the string on the SEO lead's
+# conditional sign-off, 2026-11-10. What the repository
 # holds is the residues themselves, carried in each design's committed CIF text
 # wrapped at 80
 # characters -- NAFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRARLLKDQLSLGN
@@ -260,7 +262,7 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "<strong>Human PD-L1</strong>, chain A, 115 residues, taken "
+        "<strong>PD-L1</strong>, chain A, 115 residues, taken "
         "from the vendor's own example condition spec that ships "
         "inside the upstream image. One hotspot residue, 56."
     ),

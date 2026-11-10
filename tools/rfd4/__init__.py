@@ -276,7 +276,7 @@ adapter = ToolAdapter(
                 "your uploaded structure. Sequence and all-atom structure "
                 "are generated together, so a design arrives complete "
                 "rather than as a backbone still needing a sequence step. "
-                "A100-80GB."
+                "Runs on our GPUs."
             ),
             requires_pdb=True,
             long_running=True,
