@@ -45,6 +45,15 @@ REAL_BANDS = tuple(band for band in CATEGORY_ORDER if band != OTHER_BAND)
 # rest. Listed explicitly so the hole is visible rather than silent.
 KNOWN_LOGIN_WALLED_ROUTES = {"/scout/", "/developability"}
 
+# Slugs that carry a ``_TOOL_CATEGORIES`` band but no ``register(adapter)``
+# call yet, so they cannot appear in the catalog this build renders. Named
+# rather than derived: deriving the expected size from the registry would
+# throw away the "an adapter is unregistered" half of the alarm below for
+# every OTHER slug. ``test_the_unregistered_exception_list_is_still_true``
+# fails the moment one of these registers, so the exception cannot outlive
+# the gap it covers.
+UNREGISTERED_SLUGS = {"rfd4"}
+
 # Matches the href of a tool-catalog card on either page. The homepage
 # uses ``home-catalog-card``, /tools uses ``catalog-card``; both put the
 # class before the href on the anchor.
@@ -132,15 +141,58 @@ def test_no_tool_lands_in_other(flask_app):
     with flask_app.test_request_context("/"):
         catalog = _build_tools_catalog()
 
-    assert len(catalog) == len(_HARDCODED_TOOLS) + len(_TOOL_CATEGORIES), (
-        "catalog size does not match hardcoded + categorised adapters -- "
-        "a flag is off or an adapter is unregistered, so the assertions "
-        "below would not cover the whole catalog"
+    expected = (
+        len(_HARDCODED_TOOLS)
+        + len(_TOOL_CATEGORIES)
+        - len(UNREGISTERED_SLUGS & set(_TOOL_CATEGORIES))
+    )
+    assert len(catalog) == expected, (
+        "catalog size does not match hardcoded + categorised adapters "
+        f"(minus {sorted(UNREGISTERED_SLUGS)}) -- a flag is off or an "
+        "adapter is unregistered, so the assertions below would not cover "
+        "the whole catalog"
     )
     orphans = sorted(
         t["slug"] for t in catalog if t.get("category") not in REAL_BANDS
     )
     assert not orphans, f'tools falling through to "Other": {orphans}'
+
+
+def test_the_unregistered_exception_list_is_still_true():
+    """``UNREGISTERED_SLUGS`` must hold only slugs that really are absent.
+
+    Without this, the subtraction in ``test_no_tool_lands_in_other`` would
+    go on excusing a slug after it registered, and the catalog-size alarm
+    would be one tool loose for good.
+    """
+    registered = {a.slug for a in tool_base.all_adapters()}
+    assert registered, "empty registry; this test asserts nothing"
+    now_live = sorted(UNREGISTERED_SLUGS & registered)
+    assert not now_live, (
+        f"{now_live} now call register(adapter), so they render in the "
+        f"catalog like any other tool -- drop them from UNREGISTERED_SLUGS"
+    )
+
+    # The registry check above is silent about a typo, because a slug
+    # that does not exist is never registered. A slug misspelled the
+    # same way in all three places -- ``_FACTS``, ``_TOOL_CATEGORIES``
+    # and this set -- therefore passes every guard: the typo sits in
+    # ``known`` for test_every_fact_slug_is_a_real_catalog_slug, and it
+    # is subtracted from the expected size in
+    # test_no_tool_lands_in_other. Those three rows are copied from each
+    # other, so that is the realistic typo rather than a contrived one.
+    # An exception is only ever legitimate for a tool whose package is
+    # actually on disk and merely unregistered.
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    not_on_disk = sorted(
+        s
+        for s in UNREGISTERED_SLUGS
+        if not (repo_root / "tools" / s / "__init__.py").is_file()
+    )
+    assert not not_on_disk, (
+        f"{not_on_disk} name no tools/<slug>/__init__.py, so they are "
+        f"misspellings, not unregistered tools"
+    )
 
 
 def test_every_rendered_band_has_a_glyph(flask_app):
