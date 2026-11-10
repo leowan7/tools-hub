@@ -1122,6 +1122,7 @@ def compute_campaign_refold(campaign_id):
     from shared.feature_flags import tool_enabled  # noqa: PLC0415
     from shared.jobs import get_job  # noqa: PLC0415
     from blueprints.jobs import _spawn_refold_job  # noqa: PLC0415
+    from shared.wallet_guard import refold_gate  # noqa: PLC0415
 
     ctx = load_user_context()
     if ctx is None:
@@ -1157,6 +1158,13 @@ def compute_campaign_refold(campaign_id):
         cs = candidate_seq_from_record(cand, idx)
         if cs is not None:
             seqs_with_src.append((cs, cand.get("_source_job_id")))
+
+    # Same pre-spawn funding gate as the single-job route; see the comment
+    # there (blueprints/jobs.py::job_refold). Counted on the sequences found,
+    # which is at most ``n``.
+    gate = refold_gate(ctx.user_id, dest_tool, len(seqs_with_src), detail)
+    if gate is not None:
+        return gate
 
     campaign_label = f"validation-of-campaign-{campaign_id[:8]}"
     src_cache: dict = {}

@@ -119,6 +119,11 @@ RFANTIBODY_START_USD = Decimal("2.00")
 RFD4_START_USD = Decimal("1.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
 
+# What one spawned second-opinion fold must be funded for, per destination
+# tool. See ``refold_start_usd``; a tool absent here contributes $0, which is
+# a named gap and not a measurement.
+_REFOLD_PER_FOLD_USD: dict[str, Decimal] = {"boltz2": Decimal("0.11")}
+
 
 def live_charging_enabled(tool_slug: str, params: dict) -> bool:
     if tool_slug in _LIVE_ALL_PRESETS:
@@ -249,12 +254,21 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     * So the hole §7C.4 names -- a balance drained by generation leaves the
       fold job to start at $0 and deliver structures with no scores -- closes
       at the SPAWN, in the step that builds the chain: refuse to spawn the
-      fold unless the balance covers it. The figure that gate needs is
-      $0.11 for the first fold record (93 GPU-s, the batched anchor's slow
-      end) and $0.31 for the whole 8-design fold. No spawn path exists in
-      this repository yet (shared/refold.py::SOURCE_TOOLS has no rfd4 entry),
-      so there is nothing to gate in this step and no constant is left here
-      for it.
+      fold unless the balance covers it. That gate is
+      ``refold_start_usd`` below, called by ``refold_gate``, which both
+      refold routes now run before their spawn loop
+      (blueprints/jobs.py::job_refold,
+      blueprints/campaigns.py::compute_campaign_refold). Its figure is
+      ``_REFOLD_PER_FOLD_USD["boltz2"]`` x the number of folds, NOT the
+      $0.31 this bullet used to quote: §7C.4's $0.21-$0.31 prices eight
+      records inside ONE batched boltz2 process, and the refold path spawns
+      one job per design (shared/refold.py::DESTINATION_TOOLS states it,
+      and ``job_refold``'s loop does it), so each fold pays the process
+      fixed cost itself and
+      the right row is §7C.4's "n=1, one design" -- $0.09-$0.11, taken at
+      its slow end. Eight designs therefore need $0.88 at this gate, not
+      $0.31. Batching them into one job would be cheaper and is not what
+      this chain does.
     """
     if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
@@ -272,6 +286,61 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
+
+
+def refold_start_usd(dest_tool: str, n_folds: int) -> Decimal:
+    """The balance a chained second-opinion fold of ``n_folds`` designs needs.
+
+    One spawned job per design, each with ``n_designs_total = 1``
+    (blueprints/jobs.py::_spawn_refold_job), so every fold pays Boltz-2's
+    per-process fixed cost itself: the applicable row is scope
+    docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §7C.4's "n=1, one
+    design", 74-93 GPU-s = $0.09-$0.11 at $0.0012138 per customer GPU-second,
+    taken at its slow end. The batched $0.21-$0.31 figure in the same table
+    is for eight records in ONE process and does not apply here.
+
+    colabfold and esmfold return $0, so this gate never refuses them. That is
+    a gap, not a judgement that they are free: no measured per-fold anchor
+    exists for either in this repository, and inventing one to put in a money
+    gate would be worse than leaving the hole named. They also both fall
+    through ``live_start_usd`` to $0 today, so the gate matches the status quo
+    for them and changes behaviour only for boltz2.
+
+    Not a cap and not a hold: the spawned jobs still go through the normal
+    completion-side settlement (shared/wallet.py::settle_hold,
+    shared/wallet.py::settle_live_run), and boltz2's
+    existing cap already covers the leg (see ``live_start_usd``). This figure
+    only decides whether the chain may start.
+    """
+    per_fold = _REFOLD_PER_FOLD_USD.get(dest_tool, Decimal("0"))
+    return per_fold * max(int(n_folds), 0)
+
+
+def refold_gate(user_id: str, dest_tool: str, n_folds: int, back_url: str):
+    """``None`` when the balance covers the chain, else the top-up page.
+
+    Called before the spawn loop, so a refusal happens before any Modal
+    submit and therefore before any GPU starts. The page is the same
+    ``wallet/topup.html`` every tool-submit gate renders; ``return_tool`` is
+    deliberately omitted, because the customer did not come from a tool form
+    and a "go back to the boltz2 form" link would send them somewhere they
+    never were. ``back_url`` is the job or campaign they are on.
+    """
+    need = refold_start_usd(dest_tool, n_folds)
+    if need <= 0:
+        return None
+    balance = _balance(user_id)
+    if balance >= need:
+        return None
+    wallet = get_or_create_wallet(user_id) or {}
+    return render_template(
+        "wallet/topup.html",
+        wallet=wallet,
+        min_topup_usd=MIN_TOPUP_USD,
+        next_url=back_url,
+        gate_reason=REASON_WALLET_EMPTY if balance <= 0 else REASON_INSUFFICIENT,
+        tool_slug=dest_tool,
+    )
 
 
 def _esmfold2_seeds(params: dict) -> int:

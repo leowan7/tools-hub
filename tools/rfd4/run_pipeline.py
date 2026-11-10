@@ -579,6 +579,48 @@ def atom_names_by_residue(
     return {k: tuple(v) for k, v in out.items()}
 
 
+_AA3TO1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLN": "Q",
+    "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K",
+    "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W",
+    "TYR": "Y", "VAL": "V",
+}
+
+
+def chain_sequences(rows: Iterable[dict[str, str]]) -> dict[str, str]:
+    """One-letter sequence per author chain, from the ``_atom_site`` CA rows.
+
+    The method is the one the committed $0 rehearsal proved on real rung-4
+    output (docs/scoping/rung5-probe/prep_rung5.py::chain_seqs): one CA per
+    residue, grouped by ``auth_asym_id``, ordered by ``auth_seq_id``. A
+    residue outside the twenty standard ones becomes ``X``; callers that need
+    a foldable sequence reject an ``X`` rather than guess
+    (``_designed_sequence`` below).
+
+    Altloc rows duplicate a CA, so residues are deduplicated on their author
+    key the way ``mapping_from_atom_site`` does.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    per_chain: dict[str, list[tuple[int, str]]] = {}
+    for row in rows:
+        if row["label_atom_id"].strip() != "CA":
+            continue
+        ch = row["auth_asym_id"]
+        key = (ch, row["auth_seq_id"], _cif_opt(row.get("pdbx_PDB_ins_code", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        raw = _cif_opt(row["auth_seq_id"])
+        try:
+            pos = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"non-integer auth_seq_id in chain {ch}: {exc}") from exc
+        per_chain.setdefault(ch, []).append(
+            (pos, _AA3TO1.get(row["label_comp_id"].upper(), "X"))
+        )
+    return {ch: "".join(aa for _, aa in sorted(res)) for ch, res in per_chain.items()}
+
+
 def load_target(
     path: Path, work_dir: Path
 ) -> tuple[Path, numbering.ResidueMapping, dict[tuple[str, int], tuple[str, ...]]]:
@@ -1006,8 +1048,53 @@ def new_design_stream() -> dict[str, Any]:
     return {"taken": set(), "designs": [], "next_rank": 0, "beat_at": time.monotonic()}
 
 
+def _designed_sequence(cif_text: str, target_sequence: str) -> str:
+    """The binder chain's one-letter sequence, or ``""`` when it is not certain.
+
+    The designed chain is picked by SEQUENCE IDENTITY against the known
+    target, not by chain id and not by length: rung 4's ``pdl1_binder_4`` is
+    116 aa against a 115 aa target, so a length rule mis-picks it
+    (docs/scoping/rung5-probe/prep_rung5.py module docstring). One occurrence
+    of the target sequence is removed rather than every chain matching it, so
+    a design that copies the target verbatim -- the shape recorded for
+    proteina in memory note ``proteina-target-self-copy`` -- still yields its
+    sequence.
+
+    ``resolve_target_chain`` refuses a multi-chain target (pinned by
+    tests/test_rfd4_pipeline.py::test_a_two_chain_target_is_refused), so a
+    design file holds the one target chain plus the binder and exactly one
+    chain is left after the removal. Anything else
+    returns ``""``: no key at all is better than a wrong sequence, because
+    the sequence is what the chained Boltz-2 fold folds
+    (shared/refold.py::_candidate_sequence).
+    """
+    if not target_sequence:
+        return ""
+    try:
+        seqs = chain_sequences(read_atom_site(cif_text))
+    except ValueError as exc:
+        logger.warning("design: sequence read failed (%s) - no sequence carried", exc)
+        return ""
+    remaining = list(seqs.values())
+    if target_sequence in remaining:
+        remaining.remove(target_sequence)
+    if len(remaining) != 1:
+        logger.warning(
+            "design: %d candidate binder chains after dropping the target "
+            "- no sequence carried", len(remaining),
+        )
+        return ""
+    if "X" in remaining[0]:
+        logger.warning(
+            "design: binder chain holds a non-standard residue - no sequence carried"
+        )
+        return ""
+    return remaining[0]
+
+
 def _upload_design(
-    cif_path: Path, rank: int, *, upload_endpoint: str, job_token: str
+    cif_path: Path, rank: int, *, upload_endpoint: str, job_token: str,
+    target_sequence: str = "",
 ) -> dict | None:
     """Upload one finished design and build its manifest entry, or None on failure.
 
@@ -1021,8 +1108,18 @@ def _upload_design(
     NO SCORE. Every numeric column upstream produces lands in the two metrics
     CSVs, and scope §5.8's timings show both arriving in the same poll interval
     as the LAST design, so at stream time there is nothing numeric to carry.
-    The three keys here are all in ``_sanitize_candidate``'s allow-list
-    (webhooks/modal.py:508-511).
+    The score arrives from a chained Boltz-2 fold instead, which needs the
+    designed chain's sequence -- hence the fourth key.
+
+    ``rank``, ``name`` and ``pdb_key`` are in ``_sanitize_candidate``'s
+    allow-list; ``sequence`` is NOT, deliberately. That allowlist runs on one
+    path only, the mid-run heartbeat (webhooks/modal.py:353), and a terminal
+    COMPLETED payload reaches ``complete_job`` unfiltered
+    (webhooks/modal.py:144-151, :173-180), which is where the refold reads it
+    from -- ``job_refold`` refuses a source job that is not ``succeeded``
+    (blueprints/jobs.py::job_refold). So the sequence survives where it is
+    used and is absent from the live/partial snapshot, which is the same
+    behaviour every other refold source tool already has.
     """
     text = cif_path.read_text()
     uniq = f"{rank:03d}_{cif_path.stem}"
@@ -1033,7 +1130,11 @@ def _upload_design(
     except Exception as exc:
         logger.warning("design %s: upload failed (%s) — skipping", cif_key, exc)
         return None
-    return {"rank": rank, "name": uniq, "pdb_key": cif_key}
+    entry = {"rank": rank, "name": uniq, "pdb_key": cif_key}
+    seq = _designed_sequence(text, target_sequence)
+    if seq:
+        entry["sequence"] = seq
+    return entry
 
 
 def sweep_designs(
@@ -1220,9 +1321,19 @@ def main() -> None:
 
             stream = new_design_stream()
 
+            # Read once from the target's own atom_site rows, so each design
+            # file only has to be told which sequence is NOT the binder.
+            target_seq = chain_sequences(atoms).get(chain, "")
+            if not target_seq:
+                logger.warning(
+                    "target chain %s yielded no CA sequence; designs will carry "
+                    "no sequence and cannot be folded downstream", chain,
+                )
+
             def upload_one(path: Path, rank: int) -> dict | None:
                 return _upload_design(
-                    path, rank, upload_endpoint=upload_endpoint, job_token=job_token
+                    path, rank, upload_endpoint=upload_endpoint, job_token=job_token,
+                    target_sequence=target_seq,
                 )
 
             def _sweep(mid_run: bool) -> None:

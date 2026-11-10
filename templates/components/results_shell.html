@@ -171,10 +171,17 @@
                score": this panel renders for boltzgen, whose run contains no
                co-folded AF2 number anywhere -- which is the premise of the
                gate fix in tools/boltzgen/meta.py. #}
+            {# "where the source tool reports one of its own": rfd4 reports
+               none at all (shared/refold.py::SOURCE_TOOLS includes it, and
+               tools/rfd4/run_pipeline.py::_upload_design streams no number),
+               so the old wording promised agreement with a score that does
+               not exist on this panel's newest source. #}
             Validate the top designs with an orthogonal predictor.
-            ColabFold's no-MSA path or ESMFold's single-sequence path
-            will agree with the source tool's own confidence score on
-            robust designs and diverge on overconfident ones.
+            ColabFold's no-MSA path and ESMFold's single-sequence path each
+            put their own confidence number on a design. Where the source
+            tool reports one too, agreement marks a robust design and
+            divergence an overconfident one; where it reports none, this
+            fold is the only score the designs get.
           </p>
           <div style="display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;">
             <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">

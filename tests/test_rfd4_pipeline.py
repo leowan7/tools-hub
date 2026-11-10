@@ -770,3 +770,100 @@ def test_the_adapter_stamps_the_key_the_wallet_scales_on():
         f"key, so _effective_scaling_value falls back to the baseline and "
         f"every run prices as {we.TOOL_SPECS['rfd4'].designs_per_run_baseline} designs"
     )
+
+
+# ===========================================================================
+# The designed chain's sequence (the chained Boltz-2 fold's only input)
+# ===========================================================================
+
+
+def _rung4_design(n: int = 0) -> str:
+    """One real design CIF from the committed rung-4 artefact."""
+    files = json.loads(RUNG4_RESULT.read_text())["files"]
+    key = f"/tmp/rfd4_run/inference_samples/pdl1_binder_{n}/pdl1_binder_{n}_generated.cif"
+    return files[key]
+
+
+def test_a_real_design_file_yields_one_sequence_per_chain():
+    """Cross-check against the committed $0 rehearsal on the same bytes.
+
+    ``docs/scoping/rung5-probe/prep_rung5.py::chain_seqs`` read these two
+    chains as 115 (the PD-L1 target) and 108 (the binder) residues; the
+    binder being the LONGER of a 115/116 pair in design 4 is why
+    ``_designed_sequence`` discriminates on identity and not on length.
+    """
+    seqs = run_pipeline.chain_sequences(read_atom_site(_rung4_design(0)))
+    assert {ch: len(s) for ch, s in seqs.items()} == {"A": 115, "B": 108}
+    assert set("".join(seqs.values())) <= set("ACDEFGHIKLMNPQRSTVWY")
+
+
+def test_the_binder_chain_is_picked_by_identity_not_by_length():
+    text = _rung4_design(0)
+    seqs = run_pipeline.chain_sequences(read_atom_site(text))
+    picked = run_pipeline._designed_sequence(text, seqs["A"])
+    assert picked == seqs["B"]
+    # Design 4 is the case a length rule gets wrong: 116 aa binder, 115 aa
+    # target. Identity still picks the binder.
+    text4 = _rung4_design(4)
+    seqs4 = run_pipeline.chain_sequences(read_atom_site(text4))
+    assert len(seqs4["B"]) > len(seqs4["A"])
+    assert run_pipeline._designed_sequence(text4, seqs4["A"]) == seqs4["B"]
+
+
+def test_a_design_that_copies_the_target_still_yields_a_sequence():
+    """Only ONE occurrence of the target is dropped (memory note
+    ``proteina-target-self-copy``: a design can be the target verbatim)."""
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA GLY B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text, "G") == "G"
+
+
+def test_a_non_standard_residue_blocks_the_sequence():
+    """``X`` is not foldable, and a wrong sequence is worse than no key."""
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA MSE B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text, "G") == ""
+
+
+def test_an_unknown_target_sequence_carries_nothing():
+    text = _MINIMAL_HEAD + "ATOM 1 CA GLY A 1 1 A 1\n"
+    assert run_pipeline._designed_sequence(text, "") == ""
+    # Target not present at all: two chains remain, so no single binder.
+    text2 = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA ALA B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text2, "W") == ""
+
+
+def test_the_uploaded_entry_carries_the_sequence_only_when_it_is_certain(
+    tmp_path, monkeypatch
+):
+    """The fourth key is what ``shared/refold.py`` folds, so it must be absent
+    rather than wrong."""
+    monkeypatch.setattr(
+        run_pipeline, "request_upload_urls",
+        lambda endpoint, token, keys: {k: f"https://up/{k}" for k in keys},
+    )
+    monkeypatch.setattr(run_pipeline, "upload_file", lambda *a, **k: None)
+    path = tmp_path / "pdl1_binder_0_generated.cif"
+    path.write_text(_rung4_design(0))
+    seqs = run_pipeline.chain_sequences(read_atom_site(_rung4_design(0)))
+
+    entry = run_pipeline._upload_design(
+        path, 0, upload_endpoint="https://hub/u", job_token="t",
+        target_sequence=seqs["A"],
+    )
+    assert entry == {
+        "rank": 0, "name": "000_pdl1_binder_0_generated",
+        "pdb_key": "000_pdl1_binder_0_generated.cif", "sequence": seqs["B"],
+    }
+
+    bare = run_pipeline._upload_design(
+        path, 0, upload_endpoint="https://hub/u", job_token="t",
+    )
+    assert set(bare) == {"rank", "name", "pdb_key"}

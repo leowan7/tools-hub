@@ -425,15 +425,24 @@ def test_the_rfd4_scoring_fold_is_covered_by_boltz2s_existing_cap():
     §7C.4 measured the batched 8-design fold at $0.21-$0.31, with $0.69 as
     the per-design ceiling for the same shape. boltz2's scaled cap at 8
     designs is the headroom over that. The leg's $0 start minimum is
-    deliberate and closes at the spawn, not here -- see
-    shared/wallet_guard.py::live_start_usd.
+    deliberate and closes at the spawn instead -- ``refold_start_usd``,
+    asserted below.
     """
+    from shared.wallet_guard import refold_start_usd
     import shared.refold as refold
 
     assert compute_hard_cap("boltz2", {"n_designs_total": 8}) == Decimal("3.20")
     assert live_start_usd("boltz2", {}) == 0
-    # Nothing spawns the chained fold yet, so there is nothing to gate.
-    assert "rfd4" not in refold.SOURCE_TOOLS
+    # The spawn path exists, so the gate is where the $0 start minimum is
+    # made safe. One job per design, each 1 process and 1 record, so the
+    # figure is §7C.4's "n=1, one design" row at its slow end -- NOT the
+    # batched $0.31, which prices eight records in one process.
+    assert "rfd4" in refold.SOURCE_TOOLS
+    assert refold_start_usd("boltz2", 1) == Decimal("0.11")
+    assert refold_start_usd("boltz2", 8) == Decimal("0.88")
+    # Named gap, not a measurement: neither has a per-fold anchor here.
+    assert refold_start_usd("colabfold", 8) == 0
+    assert refold_start_usd("esmfold", 8) == 0
 
 
 def test_proteina_below_its_start_minimum_is_refused():
