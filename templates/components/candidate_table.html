@@ -175,6 +175,11 @@
    than with scout.css's .error-message, which no page rendering this macro
    loads; --error/--error-bg are static/style.css tokens, which base.html
    does load. */
+.cand-unranked-note {
+  margin: 0 0 .7rem 0;
+  font-size: .8rem;
+  color: var(--text-secondary);
+}
 .cand-download-error {
   margin: 0 0 .7rem 0;
   font-size: .8rem;
@@ -539,6 +544,84 @@
    to the shared guard and writes here. Keyed on `scope` like table_id above,
    so a page holding two panels gets one surface each. #}
 <p id="cand-dl-err-{{ scope }}" class="cand-download-error" aria-live="polite" hidden></p>
+{# WHY A VISIBLE LINE AND NOT A HEADER TOOLTIP. The "#" heading below is bare
+   while Score and Pctile each carry their own title, so an unranked table
+   reads as best-first to anyone who does not hover, and the only accurate
+   statement of what the column means lived in a Jinja comment the browser
+   never sees (templates/tools/rfd4_results.html:17-19).
+
+   ONE WORDING, and it is arrival order on every page that reaches here.
+   rfd4 passes ranked=false unconditionally
+   (templates/tools/rfd4_results.html:133) and ships no score columns at all.
+   Every other results partial that passes ranked AT ALL -- thirteen of
+   them -- passes ranked=(not output.get('backfilled')), so it reaches this
+   branch only on a backfilled result. mpnn_results.html and
+   _default_results.html pass no ranked= at all, so they take this macro's
+   default ranked=true (:59) and never reach here. The thirteen reach a
+   backfilled result in arrival order for THREE different reasons, counted
+   rather than generalised:
+
+   SIX DISCARD a sort they just ran, because the sort is followed
+   immediately by `candidates = recovered or candidates` and `recovered` is
+   non-empty exactly when the run was rebuilt: af2_results.html:76-77,
+   boltz2_results.html:81-82, colabfold_results.html:66-67,
+   esmfold_results.html:75-76, iggm_results.html:49-50 and
+   opendde_results.html:67-68. Five of those six sort on a score under
+   `scores.`; opendde sorts on the pipeline's own `rank` field
+   (opendde_results.html:67), which is not a score.
+
+   SIX NEVER SORT in the partial at all -- bindcraft_results.html:6,
+   boltzgen_results.html:6, proteina_results.html:25,
+   pxdesign_results.html:6, rfantibody_results.html:5 and
+   rfdiffusion_results.html:7 each take output['candidates'] straight
+   through (proteina through display_rows, which shared/jobs.py:317-319
+   documents as same length, same order). The check is
+   `grep -c sort_by_number`, which returns 0 on each of those six and 1
+   on each of the seven that do sort -- so it DISCRIMINATES, which
+   `grep -c 'sort('` did not: the sorts are written
+   `candidates | sort_by_number(...)` and carry no `sort(` substring, so
+   that pattern returned 0 on both groups and told them apart not at
+   all. Nothing in the six reorders, so the stored order is what
+   renders.
+
+   ONE, esmfold2_design, never reaches its sort on that path; the
+   `output_candidates` branch returns first
+   (esmfold2_design_results.html:155-157 and :187). `recovered` is
+   display_rows(output['candidates']), which shared/job_recovery.py::reconstruct
+   builds by walking the streamed `_partial_candidates` in stored order
+   (shared/job_recovery.py:237-245).
+
+   AN EARLIER DRAFT OF THIS COMMENT WAS WRONG about that and is corrected
+   rather than restated: it claimed those seven pages render in SCORE order
+   and used that to justify a second, shorter wording keyed on `columns`.
+   The sort is discarded, so they do not, and the split is gone with it.
+
+   ONE PATH WHERE "came back in" IS APPROXIMATE, recorded here and not on
+   the page: when no streamed partial survives, reconstruct() falls back to
+   listing Storage, which is sorted by FILENAME
+   (shared/job_recovery.py::_list_design_files) and carries no scores. Those
+   rows are in name order, which is usually but not provably arrival order.
+
+   WHOSE WORDS THESE ARE. Leo gave the sentence on 2026-11-06: "ranking based
+   on when designs completed and not binding rankings". Two departures from it
+   are deliberate. It says "the order the designs came back in" rather than an
+   exact completion order, because completion order holds only to within a
+   poll interval: designs landing in the same sweep are ordered by filename
+   (tools/rfd4/run_pipeline.py:1049-1055). A click on a sortable header also
+   re-orders the rows and renumberRows() rewrites these numbers, so the
+   sentence describes the table as rendered. No clause on the page explains
+   either: the hedge carries the first, and the second is the customer's own
+   act.
+
+   Suppressed in pooled (target-page) mode, where _rank_position is a real
+   cross-run ranking and the badge above is anchored on it rather than on
+   `ranked`. Pinned by tests/test_unranked_table_note.py. #}
+{% if not ranked and not pooled %}
+<p class="cand-unranked-note">
+  The # column is the order the designs came back in, not a ranking of how well
+  anything binds.
+</p>
+{% endif %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>

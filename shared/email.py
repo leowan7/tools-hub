@@ -531,7 +531,7 @@ def _tool_label(slug: str) -> str:
     The job-complete email might be sent from a worker that hasn't
     imported the tool adapter modules; keep this self-contained.
     """
-    # All 14 registered slugs, copied from tools.base.all_adapters() at
+    # Every registered slug, copied from tools.base.all_adapters() at
     # edit time rather than imported -- the docstring above explains why
     # the runtime import is avoided. It previously held five entries, one
     # of which ("proteinmpnn") is not a slug any tool uses, so it covered
@@ -552,6 +552,14 @@ def _tool_label(slug: str) -> str:
         "opendde": "OpenDDE co-folding",
         "proteina": "Proteina-Complexa",
         "pxdesign": "PXDesign",
+        # Ahead of its registration, so the coverage guard does not reach
+        # it yet: rfd4 is registered by step 7A of
+        # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md. An unregistered
+        # key costs nothing here -- the guard checks that every
+        # registered slug HAS a label, not that every label has a slug --
+        # and this is the map a worker reads with no registry imported,
+        # which is exactly the path that emailed raw slugs before.
+        "rfd4": "RFD4-Proteina",
         "rfantibody": "RFantibody",
         "rfdiffusion": "RFdiffusion",
     }

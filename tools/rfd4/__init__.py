@@ -13,13 +13,37 @@ one target chain.
 
 NOT REGISTERED YET, AND BEHIND ``FLAG_TOOL_RFD4``. This module builds the
 adapter and exports it as ``adapter``; the ``tools.base.register`` call
-that puts it in the registry belongs to a later step, together with the two
-templates named at the bottom of this file and the registry copy (the
-catalog band, the result columns, the score legends, the email label).
-Every guard that iterates ``tools.base.all_adapters()`` demands that row
-complete, so registering ahead of them turns the suite red -- measured both
-directions on the branch that wrote this file, and recorded with the figures
-in the step table of docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md.
+that puts it in the registry belongs to step 7A of
+docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8. The two templates
+named at the bottom of this file now exist, and so does the copy a guard
+reads off the slug without the registry (tools/rfd4/meta.py, the two lede
+maps in blueprints/tools.py, the ``_tool_label`` entry in shared/email.py).
+What 7A still has to land in ONE commit with the ``register`` call was
+measured 2026-11-05 on a throwaway worktree: the ``_TOOL_CATEGORIES`` band
+in shared/tools_catalog.py, the ``_FACTS`` row in shared/tool_chooser.py and
+the GPU-table row in README.md. Those three are gated by exact-identity
+guards that read the live registry -- test_no_tool_lands_in_other,
+test_every_fact_slug_is_a_real_catalog_slug and
+test_readme_tool_table_matches_the_live_registry -- so each one turns the
+suite red WHILE the slug is unregistered and green only once it is.
+rfd4 has no shared/result_columns.py entry and no score-legend row by
+design: nothing in a run of it measures how well a binder holds.
+Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
+that row complete, so registering ahead of them turns the suite red. The
+scope document's step table records 66 failing ids, measured on step 3's
+branch; re-running the same experiment on this base on 2026-11-05 gave 49.
+THE 49 IS NOT RECORDED ANYWHERE IN THIS REPOSITORY: it was measured in a
+throwaway worktree and no file here holds the run, so a reader cannot check
+it. The 66 is checkable (that scope document, the step table).
+NO CAUSE IS OFFERED FOR THE DROP, because the obvious one does not add up:
+the scope document attributes 47 of the 66 to the two missing templates
+(docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md, the per-banner tally -- 24
+TemplateNotFound on rfd4_form.html and 23 on rfd4_results.html), and only
+rfd4_results.html had landed at this base, which predicts 43 rather than 49.
+Both figures are recorded as measurements and neither is a bound on 7A's own
+work: both were taken with nothing but the registration applied, and
+reconciling them would need the experiment re-run twice, which no decision
+here depends on.
 
 So the slug is unreachable for two independent reasons:
 ``blueprints/tools.py::_require_tool`` 404s a slug ``tools.base.get`` does
@@ -43,20 +67,16 @@ from tools.base import (
     parse_target_chains,
 )
 
-# No ``tools/rfd4/meta.py`` yet, so no citation re-exports either. It is
-# deferred for a reason of its own rather than with the registration:
-# tests/test_citations_name_the_right_model.py::
-# test_every_tool_meta_is_covered_here globs ``tools/*/meta.py`` ON DISK and
-# demands a FIRST_AUTHOR, PAPER_YEAR and REQUIRED_URL_TOKENS entry for each,
-# and rfd4 has no honest REQUIRED_URL_TOKENS value. Two of the three are
-# settled: Leo decided 2026-11-04 to cite the preprint the README carries at
-# the SHA we pin (ARG RFD4_SHA in tools/rfd4/Dockerfile.modal), so
-# FIRST_AUTHOR is Corley and PAPER_YEAR is 2026. The third is not: all 14
-# entries that map already has are persistent identifiers (DOI suffixes,
-# bioRxiv dated ids, arXiv ids) and this preprint is a PDF on the project's
-# own domain with none of the three. Whether that guard grows an affordance
-# for a citation with no persistent identifier is open with Leo; scope §9
-# item 10 records all three, and the registration step owns the file.
+# The citation lives in ``tools/rfd4/meta.py``, not here, which is the house
+# split -- see tools/rfantibody/meta.py for the shape. That file is reached
+# without the registry: tests/test_citations_name_the_right_model.py::
+# test_every_tool_meta_is_covered_here globs ``tools/*/meta.py`` ON DISK, so
+# its three map entries (FIRST_AUTHOR, PAPER_YEAR, REQUIRED_URL_TOKENS) had
+# to land in the same commit as the file. Leo settled all three on
+# 2026-11-05: Corley, 2026, and the preprint PDF the README carries at the
+# SHA we pin (ARG RFD4_SHA in tools/rfd4/Dockerfile.modal). The URL-token
+# entry is the first in that map that is a path rather than a persistent
+# identifier; its own comment in the test file carries the caveat.
 
 # Mirrors of run_pipeline.py's own constants. Duplicated rather than
 # imported: run_pipeline.py imports ``gemmi`` and ``requests`` at module
@@ -254,8 +274,9 @@ adapter = ToolAdapter(
             description=(
                 "Hotspot-conditioned binder design against one chain of "
                 "your uploaded structure. Sequence and all-atom structure "
-                "are generated together; designs are scored through our own "
-                "Boltz-2 chain. A100-80GB."
+                "are generated together, so a design arrives complete "
+                "rather than as a backbone still needing a sequence step. "
+                "Runs on our GPUs."
             ),
             requires_pdb=True,
             long_running=True,
@@ -264,17 +285,18 @@ adapter = ToolAdapter(
     validate=validate,
     build_payload=build_payload,
     requires_pdb=True,
-    # NEITHER TEMPLATE EXISTS YET -- they are the later steps' files, and
-    # nothing renders them while the adapter is out of the registry. Naming
-    # them here is the house shape (tools/proteina/__init__.py landed in
-    # c03aa1df naming a form template that arrived three weeks later in
-    # ee9c1121); the difference is that proteina also called register(), and
-    # the guards that now punish that did not exist yet.
+    # Both templates exist now -- templates/tools/rfd4_results.html came with
+    # step 5 and templates/tools/rfd4_form.html with step 7 -- but nothing
+    # renders either while the adapter is out of the registry, so neither is
+    # exercised by a request yet. The form is covered unregistered by the
+    # template-source guards that read the templates tree off disk, named in
+    # the comment above rfd4's entry in tests/test_hotspot_picker.py's
+    # PICKER_FORM_TEMPLATES; the rendered-page guards arm at 7A.
     form_template="tools/rfd4_form.html",
     results_partial="tools/rfd4_results.html",
 )
 
-# NOT REGISTERED. ``register(adapter)`` is the one line a later step adds,
-# once the two templates above exist and the registry copy has landed. See
-# the module docstring for what demands it and the step table in
-# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8 for which step.
+# NOT REGISTERED. ``register(adapter)`` is one line of step 7A's commit --
+# not the whole of it. See the module docstring for the three registry-coupled
+# edits that have to land in the same commit, and the step table in
+# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8 for the step.
