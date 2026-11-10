@@ -131,6 +131,29 @@ The designs themselves are intact and retrievable: three PDBs in Storage
 Every other score field is null, which is expected: this pipeline streamed ipTM
 and the filter verdict and nothing else.
 
+These designs were exported for the customer with the same builders the
+owner-only download routes call (`shared/exports.py::candidates_to_zip`,
+`::candidates_to_csv` over `shared/jobs.py::page_ordered_records`), and the
+numbering in that output is worth stating because it looks like an off-by-one
+and is not one. The CSV's `rank` column is a 1-based **position**, assigned by
+the exporter (`shared/exports.py:221`, `{"rank": i + 1}`), so it reads 1/2/3;
+the tool's own 0-based rank is carried in the same row as `source_rank`
+(`shared/exports.py:260`), so it reads 0/1/2, and so do the filenames. A row
+therefore pairs `rank` 1 with `design_0_complex.pdb`.
+
+There is no mismatch between what a customer reads and what they open, on
+either surface:
+
+- **The page** labels a design from its own rank, not from a position:
+  `design_<rank>` at `templates/tools/esmfold2_design_results.html:180`. It
+  reads `design_0` and the file it links is `design_0_complex.pdb`. They agree.
+- **The CSV** names the file in `pdb_key` in the same row as the `rank` that
+  row carries, so the row is self-describing; `rank` is a position, which is
+  the documented intent of that column (`shared/exports.py:213-221`).
+
+No change is proposed here. Recorded so a future reader does not "fix" the
+1-based position into a second 0-based column.
+
 ## 5. C - was the refund real?
 
 **Yes, and it was complete.** Verified from the ledger, not from the code path.
@@ -212,11 +235,12 @@ real problem.
 The signal that survives needs no heartbeat at all: **`status = running` past
 the tool's own Modal session cap.** That cap is computable from `started_at`,
 `now` and `gpu/modal_client.py::preset_gpu_seconds(tool, preset)`
-(`:378-380`), the central table of per-tool, per-preset session seconds; for
+(`:391-393`), the central table of per-tool, per-preset session seconds; for
 this pair it returns 5400 s, 1h30m, matching this tool's own `_MAX_SESSION_S`
-(`gpu/modal_client.py:294`). Calling the whole table a maintained mirror would
-be too strong - its own comment at `:285-293` records that these two rows have
-almost no live reader - so an alarm built on it should re-check the row it uses
+(`tools/esmfold2_design/modal_app.py:145`). Calling the whole table a
+maintained mirror would be too strong - its own comment at
+`gpu/modal_client.py:282-293` records that these two rows have almost no
+live reader - so an alarm built on it should re-check the row it uses
 against that tool's `modal_app.py`. This row
 was **4h36m** past that when the sweeper found it. The cap is 15 minutes short
 of the orchestrator ceiling the run is actually killed at
