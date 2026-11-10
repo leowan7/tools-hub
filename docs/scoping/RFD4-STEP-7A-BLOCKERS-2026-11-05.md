@@ -114,9 +114,13 @@ cheap fix is plausibly in rfd4's own container — subject to the deploy-trigger
 cost in §4, which is what makes it not cheap after all.
 
 The pinned test
-(`tests/test_rfd4_adapter.py:176` `test_an_extra_polymer_chain_passes_the_gates_the_container_refuses`)
-already asserts all three slugs answer `READY` hub-side, and its docstring at
-`:196-198` reached the same conclusion about the siblings' containers. This report
+(`tests/test_rfd4_adapter.py:211`, named
+`test_an_extra_polymer_chain_passes_the_gates_and_the_container_crops` since the
+2026-11-10 crop landed; it was `..._the_container_refuses` when this report was
+written)
+already asserts all three slugs answer `READY` hub-side, its docstring at
+`:223-229` records the two gates that make them answer so, and `:234-237`
+reached the same conclusion about the siblings' containers. This report
 is independent first-hand confirmation of that from the sibling repo's code, not a
 re-reading of the test.
 
@@ -359,8 +363,12 @@ is a thing the hub currently tells them about for `rfantibody` only via containe
 logs (`docker/rfantibody/run_pipeline.py:1421-1426` for the kept/dropped chain
 lists, `:1447` for the preprocessed-target line), not via the UI. Also: `resolve_target_chain`'s docstring opens
 *"MULTI-CHAIN TARGETS ARE REFUSED"* and is cited from three other places
-(`tools/rfd4/__init__.py:126-131`, `shared/pipeline_normalize.py:707-708`,
-`tests/test_rfd4_adapter.py:179-182`); all four move together or the claims rot.
+(`tools/rfd4/__init__.py`, `shared/pipeline_normalize.py:707-708`,
+`tests/test_rfd4_adapter.py`); all four move together or the claims rot.
+**Superseded 2026-11-10:** that docstring now opens *"A RUN STILL DESIGNS
+AGAINST ONE CHAIN"* and records the crop. `shared/pipeline_normalize.py` and
+`templates/tools/rfd4_results.html` were updated in the same change, both to
+say that the single-chain rule is about the FIELD and not the upload.
 
 ### 4.3 Recommendation for §9 item 11
 
@@ -390,6 +398,14 @@ rules field, three new strings and a divergence from the two paid siblings.
 
 **This recommendation requires a code change in `tools/**`, which this session was
 told not to touch.** Reporting it rather than doing it, as instructed.
+
+**ACCEPTED AND IMPLEMENTED 2026-11-10.** Leo took 4.2: the container crops, with
+no hub-side refusal and no preflight change. The crop lives in
+`tools/rfd4/run_pipeline.py::load_target` -- it runs on the PDB text before
+`pdb_to_cif`, because `resolve_target_chain` receives a mapping and has no access
+to the file -- and the mmCIF path still refuses. Scope §9 item 11 is CLOSED. The
+merge still needs the idle-fleet window this section argued for. Everything above
+is the 2026-11-05 reasoning, kept as the record of the decision.
 
 ---
 
