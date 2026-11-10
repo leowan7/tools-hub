@@ -377,10 +377,16 @@ def _zero_design_payload(case: str, monkeypatch, tmp_path) -> dict:
         result_file = _arrange_consolidated(
             rp, tmp_path, monkeypatch,
             upload_exc=RuntimeError("upload failed: HTTP 503"),
-            folds=case.endswith("-upload"),
+            folds="-upload" in case,
+            exit_code=1 if case.endswith("-exit") else 0,
+        )
+        # "-invalid": every record fails pre-validation (empty sequence).
+        records = (
+            [{"name": r["name"], "sequence": ""} for r in _RECORDS]
+            if case.endswith("-invalid") else list(_RECORDS)
         )
         with pytest.raises(SystemExit):
-            rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time() - 60)
+            rp._run_batch(dict(_PAYLOAD), records, time.time() - 60)
         return json.loads(result_file.read_text())
     if case.startswith("esmfold"):
         written, payload, records = _esmfold_batch(
@@ -461,8 +467,12 @@ _CASES = [
     ("iggm-empty", "unclassified"),
     ("af2-nofold", "tool_error"),
     ("af2-upload", "infra_crash"),
+    ("af2-upload-exit", "infra_crash"),
+    ("af2-invalid", "tool_error"),
     ("colabfold-nofold", "tool_error"),
     ("colabfold-upload", "infra_crash"),
+    ("colabfold-upload-exit", "infra_crash"),
+    ("colabfold-invalid", "tool_error"),
 ]
 
 

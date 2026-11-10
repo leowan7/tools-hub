@@ -1260,41 +1260,21 @@ def _run_batch(
     with tempfile.TemporaryDirectory(prefix="colabfold_batch_", dir="/tmp") as _td:
         workdir = Path(_td)
         # try/finally, not a trailing call: _fail() -> sys.exit(1) on a
-        # timeout or a zero-design exit, and the zero-record path returns
-        # early — all three would unwind through the TemporaryDirectory and
-        # take the tree with them. The finally runs before teardown on every
-        # path, including the silent zero-candidate 'success'.
+        # timeout, a zero-design exit or the zero-record path would unwind
+        # through the TemporaryDirectory and take the tree with them. The
+        # finally runs before teardown on every path.
         try:
             fasta_path = workdir / "batch.fasta"
             record_map, n_failures = _write_consolidated_fasta(records, fasta_path)
             if not record_map:
-                _write_result(
-                    {
-                        "status": "COMPLETED",
-                        "tier": "batch",
-                        "designs_total": designs_total,
-                        "designs_folded": 0,
-                        "designs_completed": 0,
-                        "n_failures": n_failures,
-                        "designs": [],
-                        "num_recycles": num_recycles,
-                        "use_templates": use_templates,
-                        "runtime_seconds": int(time.time() - start),
-                        "provider_job_id": os.environ.get("JOB_ID", ""),
-                    }
+                _fail(
+                    "pipeline",
+                    "no_designs",
+                    f"none of {designs_total} designs folded ({n_failures} "
+                    f"failures) — every record failed pre-validation, "
+                    f"nothing to fold.",
+                    runtime_seconds=int(time.time() - start),
                 )
-                send_heartbeat(
-                    webhook_url, job_id,
-                    stage="complete",
-                    designs_completed=0,
-                    designs_total=designs_total,
-                )
-                logger.info(
-                    "batch pipeline ok — 0/%d designs folded "
-                    "(all records failed pre-validation), %d failures",
-                    designs_total, n_failures,
-                )
-                return
 
             send_heartbeat(
                 webhook_url, job_id,
@@ -1446,22 +1426,15 @@ def _run_batch(
                     "%d delivered",
                     exit_code, n_folded, designs_total, len(designs_out),
                 )
-                if not designs_out:
-                    if n_folded:
-                        detail = (
-                            f"{n_folded} of {designs_total} designs folded but 0 "
-                            f"uploaded, and colabfold_batch consolidated exited "
-                            f"{exit_code} — the delivery hop failed, not the "
-                            f"folds; see the per-design upload warnings in the "
-                            f"run log, and this job's raw archive for the "
-                            f"structures"
-                        )
-                    else:
-                        detail = (
-                            f"colabfold_batch consolidated exited {exit_code} "
-                            "with zero completed designs."
-                        )
-                    _fail("tool-invocation", "exit", detail)
+                # A run that folded something and delivered nothing falls
+                # through to the "storage" guard after the finally.
+                if not designs_out and not n_folded:
+                    _fail(
+                        "tool-invocation",
+                        "exit",
+                        f"colabfold_batch consolidated exited {exit_code} "
+                        "with zero completed designs.",
+                    )
 
             # Account for records colabfold skipped silently or that failed
             # post-fold processing.
