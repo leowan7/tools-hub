@@ -821,10 +821,14 @@ def test_a_design_that_copies_the_target_still_yields_a_sequence():
 
 
 def test_a_non_standard_residue_blocks_the_sequence():
-    """``X`` is not foldable, and a wrong sequence is worse than no key."""
+    """``X`` is not foldable, and a wrong sequence is worse than no key.
+
+    SEP (phosphoserine), not MSE: _AA3TO1 maps MSE to M deliberately -- see
+    ``test_selenomethionine_reads_as_methionine``.
+    """
     text = _MINIMAL_HEAD + (
         "ATOM 1 CA GLY A 1 1 A 1\n"
-        "ATOM 2 CA MSE B 1 1 B 1\n"
+        "ATOM 2 CA SEP B 1 1 B 1\n"
     )
     assert run_pipeline._designed_sequence(text, "G") == ""
 
@@ -867,3 +871,81 @@ def test_the_uploaded_entry_carries_the_sequence_only_when_it_is_certain(
         path, 0, upload_endpoint="https://hub/u", job_token="t",
     )
     assert set(bare) == {"rank", "name", "pdb_key"}
+
+
+def test_the_target_chain_sequence_comes_off_a_loaded_target(tmp_path, results):
+    """``main`` pairs these two, and the pair is what the shapes have to match.
+
+    ``load_target``'s third return is ``atom_names_by_residue``'s
+    ``(chain, residue) -> atom names`` map, NOT atom_site rows: handing it to
+    ``chain_sequences`` indexes a tuple with a string. This test folds the
+    real pairing main uses, so that mistake cannot come back silently.
+    """
+    cif_path, mapping, atoms = load_target(LYSOZYME, tmp_path)
+    chain = resolve_target_chain(mapping, "")
+    seq = run_pipeline.target_chain_sequence(
+        cif_path.read_text(errors="replace"), chain
+    )
+    assert len(seq) == len(mapping.polymer_entries(chain))
+    assert set(seq) <= set("ACDEFGHIKLMNPQRSTVWYX")
+    # The shape main must not pass.
+    with pytest.raises(TypeError):
+        run_pipeline.chain_sequences(atoms)
+
+
+def test_an_unreadable_target_yields_no_sequence_instead_of_raising():
+    assert run_pipeline.target_chain_sequence("data_X\n", "A") == ""
+
+
+def test_a_calcium_ion_is_not_read_as_a_residue():
+    """A calcium HETATM has label_atom_id CA and label_comp_id CA.
+
+    So the CA atom filter alone admits it, and it lands in whatever author
+    chain it shares an id with as an X. One X in the target sequence is
+    enough to make ``_designed_sequence`` match nothing and drop the
+    sequence from every design in the run, which silently empties the
+    second-opinion fold panel. The null ``label_seq_id`` is what rejects it.
+    """
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1" + _EOL
+        + "ATOM 2 CA ALA A 1 2 A 2" + _EOL
+        + "HETATM 3 CA CA B . . A 3" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "GA"}
+
+
+def test_selenomethionine_reads_as_methionine():
+    """MSE is routine in deposited crystal structures.
+
+    It is the standard residue for folding purposes, so mapping it to X would
+    cost the whole run its sequences for the reason above. _AA3TO1 carries it.
+    """
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA MSE A 1 1 A 1" + _EOL
+        + "ATOM 2 CA GLY A 1 2 A 2" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "MG"}
+    # Still fails closed on a residue that is NOT a standard one in disguise.
+    odd = _MINIMAL_HEAD + "ATOM 1 CA XYZ A 1 1 A 1" + _EOL
+    assert run_pipeline.chain_sequences(read_atom_site(odd)) == {"A": "X"}
+
+
+def test_insertion_codes_order_by_code_not_by_amino_acid():
+    """Antibody numbering writes 52, 52A, 52B at one auth_seq_id.
+
+    Ordering the (position, residue) pairs as whole tuples broke that tie on
+    the one-letter code, so the sequence came out alphabetised at that
+    position -- a wrong sequence, which on a binder chain would be folded and
+    billed. The order here is (auth_seq_id, insertion code).
+    """
+    head = _MINIMAL_HEAD.replace(
+        "_atom_site.auth_seq_id" + _EOL,
+        "_atom_site.auth_seq_id" + _EOL + "_atom_site.pdbx_PDB_ins_code" + _EOL,
+    )
+    text = head + (
+        "ATOM 1 CA TRP A 1 1 A 52 ?" + _EOL
+        + "ATOM 2 CA GLY A 1 2 A 52 A" + _EOL
+        + "ATOM 3 CA ALA A 1 3 A 52 B" + _EOL
+        + "ATOM 4 CA CYS A 1 4 A 53 ?" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "WGAC"}

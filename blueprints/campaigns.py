@@ -1160,11 +1160,15 @@ def compute_campaign_refold(campaign_id):
             seqs_with_src.append((cs, cand.get("_source_job_id")))
 
     # Same pre-spawn funding gate as the single-job route; see the comment
-    # there (blueprints/jobs.py::job_refold). Counted on the sequences found,
-    # which is at most ``n``.
-    gate = refold_gate(ctx.user_id, dest_tool, len(seqs_with_src), detail)
+    # there (blueprints/jobs.py::job_refold). Counted on the entries the loop
+    # below can actually spawn, so it does not charge for the ones it skips:
+    # that loop drops a falsy source job id, which is tested here, and one
+    # whose ``get_job`` misses, which is not -- so this count is still an
+    # upper bound, by at most the number of unreadable source jobs.
+    fundable = sum(1 for _, src_job_id in seqs_with_src if src_job_id)
+    gate = refold_gate(ctx.user_id, dest_tool, fundable, detail)
     if gate is not None:
-        return gate
+        return gate  # a page plus 402; see refold_gate
 
     campaign_label = f"validation-of-campaign-{campaign_id[:8]}"
     src_cache: dict = {}

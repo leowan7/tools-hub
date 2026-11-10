@@ -1377,7 +1377,7 @@ def job_refold(job_id: str):
         url_for("jobs.job_detail", job_id=job_id),
     )
     if gate is not None:
-        return gate
+        return gate  # a page plus 402; see refold_gate
 
     # Spawn one job per sequence. The shared campaign_label lets
     # /jobs/compare and future C4 campaign work group them later.

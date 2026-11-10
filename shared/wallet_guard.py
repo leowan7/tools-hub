@@ -264,9 +264,9 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
       records inside ONE batched boltz2 process, and the refold path spawns
       one job per design (shared/refold.py::DESTINATION_TOOLS states it,
       and ``job_refold``'s loop does it), so each fold pays the process
-      fixed cost itself and
-      the right row is §7C.4's "n=1, one design" -- $0.09-$0.11, taken at
-      its slow end. Eight designs therefore need $0.88 at this gate, not
+      fixed cost itself and the right row is §7C.4's "n=1, one design"
+      -- $0.09-$0.11, at its slow end rounded to the cent. Eight designs
+      therefore need $0.88 at this gate, not
       $0.31. Batching them into one job would be cheaper and is not what
       this chain does.
     """
@@ -295,9 +295,12 @@ def refold_start_usd(dest_tool: str, n_folds: int) -> Decimal:
     (blueprints/jobs.py::_spawn_refold_job), so every fold pays Boltz-2's
     per-process fixed cost itself: the applicable row is scope
     docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §7C.4's "n=1, one
-    design", 74-93 GPU-s = $0.09-$0.11 at $0.0012138 per customer GPU-second,
-    taken at its slow end. The batched $0.21-$0.31 figure in the same table
-    is for eight records in ONE process and does not apply here.
+    design", which that table prices at $0.09-$0.11 for 74-93 GPU-s at
+    $0.0012138 per customer GPU-second. $0.11 is that band's slow end as the
+    doc states it, rounded to the cent (93 s works out at $0.1129, so the
+    gate asks a third of a cent less per fold than the slowest measured
+    fold would cost). The batched $0.21-$0.31 figure in the same table is
+    for eight records in ONE process and does not apply here.
 
     colabfold and esmfold return $0, so this gate never refuses them. That is
     a gap, not a judgement that they are free: no measured per-fold anchor
@@ -325,6 +328,12 @@ def refold_gate(user_id: str, dest_tool: str, n_folds: int, back_url: str):
     deliberately omitted, because the customer did not come from a tool form
     and a "go back to the boltz2 form" link would send them somewhere they
     never were. ``back_url`` is the job or campaign they are on.
+
+    Returned with status 402, not 200, because both callers are
+    ``@idempotent()`` and shared/idempotency.py:758-770 releases the claimed
+    key only for a status >= 400 -- naming this very hazard, a refusal
+    replayed to a customer who topped up in another tab. A 200 would be
+    stored for ``DEFAULT_TTL_SECONDS``.
     """
     need = refold_start_usd(dest_tool, n_folds)
     if need <= 0:
@@ -340,7 +349,7 @@ def refold_gate(user_id: str, dest_tool: str, n_folds: int, back_url: str):
         next_url=back_url,
         gate_reason=REASON_WALLET_EMPTY if balance <= 0 else REASON_INSUFFICIENT,
         tool_slug=dest_tool,
-    )
+    ), 402
 
 
 def _esmfold2_seeds(params: dict) -> int:

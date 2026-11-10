@@ -584,6 +584,12 @@ _AA3TO1 = {
     "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K",
     "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W",
     "TYR": "Y", "VAL": "V",
+    # Modified residues that are the standard one for folding purposes, and
+    # routine in deposited structures. Without these a target chain holding
+    # one yields an X that the design file's chain does not have, which makes
+    # ``_designed_sequence`` match nothing and drop the sequence from every
+    # design. Anything else still becomes X and still fails closed.
+    "MSE": "M", "SEC": "C", "PYL": "K",
 }
 
 
@@ -597,16 +603,30 @@ def chain_sequences(rows: Iterable[dict[str, str]]) -> dict[str, str]:
     a foldable sequence reject an ``X`` rather than guess
     (``_designed_sequence`` below).
 
-    Altloc rows duplicate a CA, so residues are deduplicated on their author
-    key the way ``mapping_from_atom_site`` does.
+    Altloc rows duplicate a CA, so residues are deduplicated -- on their
+    author key here, where ``mapping_from_atom_site`` uses its own wider key.
+
+    Non-polymer rows are dropped on null ``label_seq_id``, the same test
+    ``atom_names_by_residue`` above uses: a calcium ion is an ``_atom_site``
+    row whose ``label_atom_id`` AND ``label_comp_id`` are both ``CA``, so the
+    atom filter alone lets it into the chain it shares an author id with
+    (pinned by
+    tests/test_rfd4_pipeline.py::test_a_calcium_ion_is_not_read_as_a_residue).
+
+    Residues are ordered by (``auth_seq_id``, insertion code), so antibody
+    numbering like 52/52A/52B keeps its order; ordering on the tuple as a
+    whole would have broken that tie on the amino-acid letter.
     """
     seen: set[tuple[str, str, str]] = set()
-    per_chain: dict[str, list[tuple[int, str]]] = {}
+    per_chain: dict[str, list[tuple[int, str, str]]] = {}
     for row in rows:
         if row["label_atom_id"].strip() != "CA":
             continue
+        if not _cif_opt(row.get("label_seq_id", "")):
+            continue
         ch = row["auth_asym_id"]
-        key = (ch, row["auth_seq_id"], _cif_opt(row.get("pdbx_PDB_ins_code", "")))
+        ins = _cif_opt(row.get("pdbx_PDB_ins_code", ""))
+        key = (ch, row["auth_seq_id"], ins)
         if key in seen:
             continue
         seen.add(key)
@@ -616,9 +636,12 @@ def chain_sequences(rows: Iterable[dict[str, str]]) -> dict[str, str]:
         except ValueError as exc:
             raise ValueError(f"non-integer auth_seq_id in chain {ch}: {exc}") from exc
         per_chain.setdefault(ch, []).append(
-            (pos, _AA3TO1.get(row["label_comp_id"].upper(), "X"))
+            (pos, ins, _AA3TO1.get(row["label_comp_id"].upper(), "X"))
         )
-    return {ch: "".join(aa for _, aa in sorted(res)) for ch, res in per_chain.items()}
+    return {
+        ch: "".join(aa for _, _, aa in sorted(res, key=lambda r: (r[0], r[1])))
+        for ch, res in per_chain.items()
+    }
 
 
 def load_target(
@@ -1048,6 +1071,25 @@ def new_design_stream() -> dict[str, Any]:
     return {"taken": set(), "designs": [], "next_rank": 0, "beat_at": time.monotonic()}
 
 
+def target_chain_sequence(cif_text: str, chain: str) -> str:
+    """The target chain's one-letter sequence, or ``""`` when it has none.
+
+    Takes the CIF TEXT, not ``load_target``'s ``atoms``: those are
+    ``atom_names_by_residue``'s ``(chain, residue) -> atom names`` pairs, a
+    shape ``chain_sequences`` cannot read. Pinned together with
+    ``load_target`` by
+    tests/test_rfd4_pipeline.py::test_the_target_chain_sequence_comes_off_a_loaded_target.
+
+    ``chain`` is an author chain id, which is what ``resolve_target_chain``
+    returns and what ``chain_sequences`` keys on.
+    """
+    try:
+        return chain_sequences(read_atom_site(cif_text)).get(chain, "")
+    except ValueError as exc:
+        logger.warning("target: sequence read failed (%s)", exc)
+        return ""
+
+
 def _designed_sequence(cif_text: str, target_sequence: str) -> str:
     """The binder chain's one-letter sequence, or ``""`` when it is not certain.
 
@@ -1321,9 +1363,14 @@ def main() -> None:
 
             stream = new_design_stream()
 
-            # Read once from the target's own atom_site rows, so each design
-            # file only has to be told which sequence is NOT the binder.
-            target_seq = chain_sequences(atoms).get(chain, "")
+            # Read once, so each design file only has to be told which
+            # sequence is NOT the binder. NOT from ``atoms``: that is
+            # ``atom_names_by_residue``'s residue -> atom-name map
+            # (``load_target``'s third return), whose keys are tuples, so
+            # ``chain_sequences`` would index a tuple with a string.
+            target_seq = target_chain_sequence(
+                cif_path.read_text(errors="replace"), chain
+            )
             if not target_seq:
                 logger.warning(
                     "target chain %s yielded no CA sequence; designs will carry "
