@@ -332,8 +332,8 @@ about: dict = {
     # than "no run ever".
     "output_summary": (
         "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
-        "RF3 score for ligand / motif, force-field energy where applicable), "
-        "a self-consistency re-fold RMSD, and downloadable structures. The "
+        "RF3 score for ligand / motif), a self-consistency re-fold RMSD, "
+        "and downloadable structures. The "
         "ligand and motif variants score on RF3 only."
     ),
     "paper_citation": paper_citation,

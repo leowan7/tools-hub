@@ -311,6 +311,19 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # for AI Binder Sprint runs that go through the webhook flow.
     ("bindcraft", "pilot"):         7200,
     ("bindcraft", "full"):          14400,
+    # rfantibody: these two rows are hand-written. Nothing in this file
+    # derives them, and the measured runs are recorded elsewhere -- the
+    # TOOL_SPECS["rfantibody"] comment at shared/wallet_estimates.py:331
+    # names 474 s for job e29a462d, ~834 s for 4 designs at ~115 aa, and
+    # 2489 s for 4 designs on 1JFF at 412 aa. That last run EXCEEDS the
+    # 1800 pilot row, so despite the "upper bounds" wording at the head of
+    # this map the pilot row is not one. It is also not what prices an
+    # rfantibody run: the hold comes from that ToolSpec (1200 s per
+    # 2-design baseline), not from here. And it does not size a campaign
+    # chunk: _campaign_container_seconds returns the
+    # _RFANTIBODY_CAMPAIGN_CONTAINER_S override (36000, defined at
+    # shared/compute_campaigns.py:507 and mapped for rfantibody at :513)
+    # and returns it at :563-565, before it would ever read this row.
     ("rfantibody", "pilot"):        1800,
     ("rfantibody", "full"):         3600,
     ("boltzgen", "pilot"):          3600,

@@ -406,8 +406,9 @@ def recover_stuck_job_result(
     to receive that ground truth under ``"exit_verdict"``: ``"failed"`` is a
     confirmed crash and ``"failed_unconfirmed"`` is a fault we could not pin
     down — which, per ``_probe_modal``'s bullet, includes our own poll channel
-    wedging. Neither may be billed off designs rebuilt from Storage, and ``timeout_stuck_job``
-    skips the keep for both
+    wedging. Neither may be billed off designs rebuilt from Storage, so
+    ``timeout_stuck_job`` keeps the designs for both but passes
+    ``reclassify=False``, leaving the refunded class
     (tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut::
     test_crashed_pipeline_with_partial_designs_is_not_billed and
     ::test_an_unconfirmed_modal_failure_is_not_billed).
