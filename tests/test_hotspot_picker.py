@@ -39,6 +39,19 @@ PICKER_FORM_TEMPLATES = [
     REPO_ROOT / "templates" / "tools" / "bindcraft_form.html",
     REPO_ROOT / "templates" / "tools" / "pxdesign_form.html",
     REPO_ROOT / "templates" / "tools" / "rfdiffusion_form.html",
+    # rfd4's form is listed here while the slug is still out of the adapter
+    # registry (registration is step 7A of
+    # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8). This list is
+    # read off disk by path, so it reaches the template without a registry or
+    # a rendered request. It is not the only such guard -- several modules
+    # rglob the templates tree and so reach this file too
+    # (tests/test_template_endpoints.py, test_no_prerun_numbers_logged_in.py,
+    # test_min_topup_single_source.py, test_hotspot_picker_runtime.py,
+    # test_derived_verdicts.py) -- but it is the only one that reads the
+    # template's picker markup and its vendored-script tags (lines 111-121).
+    # test_hotspot_picker_runtime.py asserts the call-site scan and the
+    # chainPrefixed flag instead. The rendered-page guards arm at 7A.
+    REPO_ROOT / "templates" / "tools" / "rfd4_form.html",
 ]
 
 
@@ -87,10 +100,10 @@ def test_boltzgen_form_loads_picker_assets():
     ids=lambda p: p.stem,
 )
 def test_all_binder_forms_ship_picker(template_path):
-    """Every binder-design form (boltzgen, rfantibody, bindcraft, pxdesign)
-    must ship the 3D hotspot picker block, vendored NGL, and the picker
-    JS so the pattern is consistent across tools. Regressions on any one
-    form should trip this test.
+    """Every binder-design form listed in ``PICKER_FORM_TEMPLATES`` must ship
+    the 3D hotspot picker block, vendored NGL, and the picker JS so the
+    pattern is consistent across tools. Regressions on any one form should
+    trip this test.
     """
     assert template_path.exists(), f"Missing template: {template_path}"
     html = template_path.read_text(encoding="utf-8")
