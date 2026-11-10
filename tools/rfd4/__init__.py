@@ -18,18 +18,27 @@ docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8. The two templates
 named at the bottom of this file now exist, and so does the copy a guard
 reads off the slug without the registry (tools/rfd4/meta.py, the two lede
 maps in blueprints/tools.py, the ``_tool_label`` entry in shared/email.py).
-What 7A still has to land in ONE commit with the ``register`` call was
-measured 2026-11-05 on a throwaway worktree: the ``_TOOL_CATEGORIES`` band
-in shared/tools_catalog.py, the ``_FACTS`` row in shared/tool_chooser.py and
-the GPU-table row in README.md. Those three are gated by exact-identity
-guards that read the live registry -- test_no_tool_lands_in_other,
-test_every_fact_slug_is_a_real_catalog_slug and
-test_readme_tool_table_matches_the_live_registry -- so each one turns the
-suite red WHILE the slug is unregistered and green only once it is.
+Three registry-coupled edits were measured 2026-11-05 on a throwaway
+worktree as having to land in ONE commit with the ``register`` call,
+because each was gated by an exact-identity guard that reads the live
+registry. Two of the three have since landed AHEAD of registration, with
+their guards taught the difference between an unregistered slug and a typo:
+the ``_TOOL_CATEGORIES`` band in shared/tools_catalog.py (the size identity
+in test_no_tool_lands_in_other now subtracts
+tests/test_tool_categories.py::UNREGISTERED_SLUGS, and
+test_the_unregistered_exception_list_is_still_true fails the moment rfd4
+registers) and the ``_FACTS`` row in shared/tool_chooser.py
+(test_every_fact_slug_is_a_real_catalog_slug now accepts the NAMED
+tests/test_tool_categories.py::UNREGISTERED_SLUGS set -- deliberately
+not any slug that merely carries a band, which would have retired the
+typo shape that test exists for). The GPU-table row in README.md is
+the one still waiting:
+test_readme_tool_table_matches_the_live_registry asserts set equality
+against ``tools.base.all_adapters()``, so that row turns the suite red
+while the slug is unregistered and green only once it is.
 rfd4 has no shared/result_columns.py entry and no score-legend row by
 design: nothing in a run of it measures how well a binder holds.
-Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
-that row complete, so registering ahead of them turns the suite red. The
+The
 scope document's step table records 66 failing ids, measured on step 3's
 branch; re-running the same experiment on this base on 2026-11-05 gave 49.
 THE 49 IS NOT RECORDED ANYWHERE IN THIS REPOSITORY: it was measured in a
