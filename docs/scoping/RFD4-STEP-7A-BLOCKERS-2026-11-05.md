@@ -343,7 +343,13 @@ of the three options.
 The behaviour becomes what `rfantibody` already does, which is also what the
 customer almost certainly wants.
 
-**Modal redeploy: yes, all nine apps — and not rfd4.** `tools/rfd4/run_pipeline.py`
+**Modal redeploy: yes — and, on this base, not rfd4 itself.** SUPERSEDED
+2026-11-10: #505 (merged, main `613aa2e2`) added rfd4's matrix row, so the fleet
+is **ten** apps and the crop now deploys itself. The paragraph below is the
+2026-11-05 reading, kept because §4.3's recommendation rests on it; read "nine"
+as "the nine that existed then".
+
+`tools/rfd4/run_pipeline.py`
 matches `tools/**` and no negation covers it (the three negations are `meta.py`,
 `example/**` and `__init__.py`). The workflow's matrix is the nine apps named in its
 header: mpnn, af2, colabfold, esmfold, boltz2, esmfold2_design, iggm, proteina,
@@ -354,7 +360,8 @@ the change itself.
 That is the decisive cost, and it carries a hard constraint: §8 of the scope doc
 says **merge only when the fleet is idle**. Per the house rule
 (`gpu-redeploy-only-when-idle`), that means checking `tool_jobs` for
-pending/running rows across all nine before the merge, not just rfd4's.
+pending/running rows across all nine before the merge, not just rfd4's -- ten as
+of #505, rfd4's own rows now among them.
 
 **What else it affects.** The container is the only place that knows the file's
 real chain list, so cropping there is where the information already is — no new
@@ -656,7 +663,7 @@ is how a 24-failure dependency goes missing. Not created here, as instructed.
 | Is there a live money bug on the two paid tools? | **No.** | §1 |
 | Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit (no `failure_class` guard; PR #504 adds one), and the metered seconds of container start, refunded. No cushioned hold: rfd4 is live-charging, so submit opens a $0 anchor. | §2 |
 | §9 item 11 recommendation | Crop in the container, on an idle fleet, in step 6's redeploy window. | §4.3 |
-| Does that redeploy the nine apps? | Crop-in-container: **yes, all nine, and not rfd4**. Refuse hub-side: **no**. | §4.1, §4.2 |
+| Does that redeploy the fleet? | Crop-in-container: **yes**. On this base, nine apps and not rfd4; as of #505, all **ten** including rfd4. Refuse hub-side: **no**. | §4.1, §4.2 |
 | §9 item 10 recommendation | `("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina")`, guard shape unchanged, zero weakening for the other fourteen. | §5.4 |
 | Project page / PDF today | **200 / 200.** Yesterday's 503 was transient; the domain is GitHub Pages. | §5.1 |
 | Does `rfd4_form.html` exist? | **No.** Flag gate spares production; the suite breaks via `all_tools_app`. Step 7 owns it. | §6 |
