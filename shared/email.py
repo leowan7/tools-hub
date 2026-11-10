@@ -1620,8 +1620,9 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # Failed jobs that consumed no GPU time, or whose failure class is
         # refunded, get their wallet hold released
         # (shared/jobs.py::_settle_wallet_hold_for_completed_job), billing the
-        # user nothing. A refunded run can still carry GPU seconds, which
-        # debit the Workspace cap, not the wallet. Surface that reassurance in
+        # user nothing. A refunded run can still carry GPU seconds; they
+        # debit neither the wallet nor the Workspace cap
+        # (shared/jobs.py::_charge_workspace_for_completed_job). Surface that reassurance in
         # the email body for jobs that actually carried a hold; free smoke
         # runs skip the message since no charge was ever possible.
         # ``failure_notice`` makes the decision. It also covers 'timeout'

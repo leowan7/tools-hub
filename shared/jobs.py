@@ -2567,6 +2567,11 @@ def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
     """
     if job.status not in ("succeeded", "failed"):
         return
+    # Leo 2026-11-10: a refunded run never counts toward the Workspace cap.
+    # Same classes _settle_wallet_hold_for_completed_job releases in full
+    # (tests/test_workspace_completion.py::TestChargeGating::test_skipped_when_failure_class_refunded).
+    if job.failure_class in _REFUNDED_FAILURE_CLASSES:
+        return
     if not job.gpu_seconds_used or job.gpu_seconds_used <= 0:
         return
 

@@ -192,6 +192,9 @@ change the price (§3).
    `gpu_seconds_used` (`:2554-2557`). The string `failure_class` does not appear
    anywhere in `:2539-2620`, so a fully refunded run still eats Workspace cap. This is the known defect recorded as memory item
    #345 (`refunded-run-debits-workspace-cap`); it is not new to rfd4.
+   *Update 2026-11-10:* Leo decided a refunded run never debits the cap; PR #504
+   adds the `_REFUNDED_FAILURE_CLASSES` guard to that function. Line numbers
+   above predate it.
 3. **No cushioned hold is placed, so the balance does not dip by a reserved
    amount.** `rfd4` is in `_LIVE_ALL_PRESETS` (`shared/wallet_guard.py:104`), so
    `live_charging_enabled` (`:123-129`) is True on every preset and submit takes the
@@ -635,7 +638,7 @@ is how a 24-failure dependency goes missing. Not created here, as instructed.
 |---|---|---|
 | Do `rfantibody`/`bindcraft` strand the customer? | **No.** rfantibody crops twice; bindcraft hands the chain selector to upstream. rfd4 is the odd one out. | §1 |
 | Is there a live money bug on the two paid tools? | **No.** | §1 |
-| Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit (no `failure_class` guard), and the metered seconds of container start, refunded. No cushioned hold: rfd4 is live-charging, so submit opens a $0 anchor. | §2 |
+| Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit (no `failure_class` guard; PR #504 adds one), and the metered seconds of container start, refunded. No cushioned hold: rfd4 is live-charging, so submit opens a $0 anchor. | §2 |
 | §9 item 11 recommendation | Crop in the container, on an idle fleet, in step 6's redeploy window. | §4.3 |
 | Does that redeploy the nine apps? | Crop-in-container: **yes, all nine, and not rfd4**. Refuse hub-side: **no**. | §4.1, §4.2 |
 | §9 item 10 recommendation | `("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina")`, guard shape unchanged, zero weakening for the other fourteen. | §5.4 |

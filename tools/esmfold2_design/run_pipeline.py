@@ -639,8 +639,7 @@ def _fail_preflight(check: str, detail: str, tier: str, job_id: str) -> int:
     must not be told to change their seed over it.
 
     ``runtime_seconds`` is deliberately absent: every caller runs before any
-    GPU work, and shared/jobs.py::_charge_workspace_for_completed_job debits
-    the Workspace cap by whatever a FAILED arm reports.
+    GPU work, so there is no GPU time to report.
     """
     logger.error("pipeline FAILED at preflight/%s: %s", check, detail)
     _write_result(
