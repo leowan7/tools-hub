@@ -25,15 +25,15 @@ a run with one surviving design must still COMPLETE. Without the positive
 control a guard that fired unconditionally would pass the failure half just as
 well.
 
-A refunded run still debits the Workspace GPU-time cap for the seconds it used
-(Leo, 2026-09-24), so every guard here passes ``runtime_seconds``.
-``_interpret_pipeline_return`` (``gpu/modal_client.py``) reads that key off
-the FAILED arm as the job's ``gpu_seconds_used`` — ``result`` is ``None`` on
-that arm, so the payload-scan fallback in ``shared/jobs.py::complete_job``
-cannot recover it — and ``_charge_workspace_for_completed_job``
-(``shared/jobs.py``) charges any failed job that carries it, whatever its
-failure class, and returns without charging when it is absent or zero.
-``test_zero_design_run_refunds_the_wallet_and_debits_the_cap`` drives each
+Every guard here passes ``runtime_seconds`` so the job records the GPU time
+it burned. ``_interpret_pipeline_return`` (``gpu/modal_client.py``) reads that
+key off the FAILED arm as the job's ``gpu_seconds_used`` — ``result`` is
+``None`` on that arm, so the payload-scan fallback in
+``shared/jobs.py::complete_job`` cannot recover it. A refunded run never
+debits the Workspace cap (Leo, 2026-11-10):
+``_charge_workspace_for_completed_job`` (``shared/jobs.py``) returns before
+charging for a class in ``_REFUNDED_FAILURE_CLASSES``.
+``test_zero_design_run_refunds_the_wallet_and_leaves_the_cap`` drives each
 guard's payload through both halves.
 
 ``_assert_failed`` reads the bucket back off each guard's own payload rather
@@ -100,7 +100,7 @@ def _assert_failed(
     runtime = payload.get("runtime_seconds")
     assert isinstance(runtime, int) and runtime > 0, (
         f"runtime_seconds={runtime!r}: a zero-design run must still report "
-        "the GPU time it burned, or the Workspace cap is not debited for it"
+        "the GPU time it burned"
     )
     # The bucket comes from the guard, not from this file.
     from shared.jobs import classify_terminal_state, is_billed_failure_class
@@ -377,10 +377,16 @@ def _zero_design_payload(case: str, monkeypatch, tmp_path) -> dict:
         result_file = _arrange_consolidated(
             rp, tmp_path, monkeypatch,
             upload_exc=RuntimeError("upload failed: HTTP 503"),
-            folds=case.endswith("-upload"),
+            folds="-upload" in case,
+            exit_code=1 if case.endswith("-exit") else 0,
+        )
+        # "-invalid": every record fails pre-validation (empty sequence).
+        records = (
+            [{"name": r["name"], "sequence": ""} for r in _RECORDS]
+            if case.endswith("-invalid") else list(_RECORDS)
         )
         with pytest.raises(SystemExit):
-            rp._run_batch(dict(_PAYLOAD), list(_RECORDS), time.time() - 60)
+            rp._run_batch(dict(_PAYLOAD), records, time.time() - 60)
         return json.loads(result_file.read_text())
     if case.startswith("esmfold"):
         written, payload, records = _esmfold_batch(
@@ -461,8 +467,12 @@ _CASES = [
     ("iggm-empty", "unclassified"),
     ("af2-nofold", "tool_error"),
     ("af2-upload", "infra_crash"),
+    ("af2-upload-exit", "infra_crash"),
+    ("af2-invalid", "tool_error"),
     ("colabfold-nofold", "tool_error"),
     ("colabfold-upload", "infra_crash"),
+    ("colabfold-upload-exit", "infra_crash"),
+    ("colabfold-invalid", "tool_error"),
 ]
 
 
@@ -510,7 +520,7 @@ def test_poll_route_still_falls_back_to_pipeline_without_a_bucket(monkeypatch):
 
 
 @pytest.mark.parametrize(("case", "failure_class"), _CASES)
-def test_zero_design_run_refunds_the_wallet_and_debits_the_cap(
+def test_zero_design_run_refunds_the_wallet_and_leaves_the_cap(
     case, failure_class, monkeypatch, tmp_path
 ):
     """Guard payload -> modal_client -> real complete_job: both money halves.
@@ -585,7 +595,8 @@ def test_zero_design_run_refunds_the_wallet_and_debits_the_cap(
         f"wallet: released={released} settled={settled}; a refunded class "
         "must release the hold in full and never settle it"
     )
-    assert [c["gpu_seconds"] for c in charges] == [smoke["runtime_seconds"]], (
-        f"Workspace cap charges {charges}; the run's GPU time "
-        f"({smoke['runtime_seconds']}s) must be debited exactly once"
+    assert row["gpu_seconds_used"] == smoke["runtime_seconds"], row
+    assert charges == [], (
+        f"Workspace cap charges {charges}; a refunded run must not debit "
+        "the cap (Leo, 2026-11-10)"
     )

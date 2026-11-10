@@ -121,10 +121,9 @@ _MASK_REQUIRED = {"cdr_design", "fr_design", "affinity_maturation"}
 # ``_REFUNDED_FAILURE_CLASSES``, and
 # ``shared/jobs.py::_settle_wallet_hold_for_completed_job`` calls
 # ``release_hold`` for it -- so the customer is not billed and Ranomics pays
-# for the GPU. The Workspace cap is a separate counter and is still debited:
-# ``shared/jobs.py::_charge_workspace_for_completed_job`` gates on
-# ``status in ("succeeded", "failed")`` and ``gpu_seconds_used > 0`` alone and
-# never reads the failure class (#345, not changed here).
+# for the GPU. The Workspace cap is not debited either:
+# ``shared/jobs.py::_charge_workspace_for_completed_job`` returns before
+# charging for a class in ``_REFUNDED_FAILURE_CLASSES`` (Leo, 2026-11-10).
 _SEQUENCE_ONLY_PRESETS = frozenset({"affinity_maturation", "inverse_design"})
 
 
