@@ -581,7 +581,10 @@ class TestAnOutageIsNotFrozenIntoTheJobOnDisk:
             ).status_code
             == 200
         )
-        assert fetched == [("1ABC", "A", ["H", "L"])], (
+        # The resolver is handed every antigen chain SAbDab lists plus the
+        # accession being analysed, so it can pin the answer to this target's
+        # chain; see tests/test_scout_wrong_chain.py.
+        assert fetched == [("1ABC", ["A"], ["H", "L"], "P00001")], (
             "the coordinate fetch was not attempted with this binder's own "
             f"identifiers, so a missing contact_residues proves nothing: {fetched}"
         )

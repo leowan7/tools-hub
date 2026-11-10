@@ -37,17 +37,21 @@
    Those are additive — the hub defines no disabled state, and Scout disables
    the Analyze button for the duration of a run.
 
-   Known issue, deliberately not fixed here. Roughly 14 rules below use
+   Contrast, resolved 2026-11-05. Roughly 14 rules below use
    `var(--text-tertiary)` for hint and citation text — `.upload-secondary`,
    `.control-hint`, `.dim-desc`, `.rec-citation`, `.score-ref`, `.no-flags`
-   and others. Against `--bg-surface` the hub's `#4F5B6B` gives **2.66:1**,
-   below WCAG AA (4.5:1) and below the 3:1 UI floor; the source stylesheet's
-   own `--text-tertiary` was `#8A95A6`, which gives 6.05:1. Until this file
-   existed those elements were unstyled and inherited `--text-primary` at
-   14.7:1, so restoring the design is what makes the shortfall visible. The
-   token is the hub's site-wide value (35 uses in style.css), so changing it —
-   or moving these rules to `--text-secondary` — is a design-system decision,
-   not a Scout one. Flagged rather than silently taken.
+   and others. The hub token was `#4F5B6B`, which gave **2.66:1** against
+   `--bg-surface` — below WCAG AA (4.5:1) and below the 3:1 UI floor. The
+   site-wide token is now `#74869D` (static/style.css:29), measured 4.92:1 on
+   `--bg-surface` and 4.50:1 on `--bg-elevated`. It is 3.98:1 on
+   `--bg-hover`, so tertiary text on a hovered row is still AA for large text
+   only; nothing in either stylesheet enforces that it stays off `--bg-hover`.
+   The `#4F5B6B` literals that remain in this file (the select chevron SVG
+   below) and in static/js/hotspot_picker.js are not text and were left.
+   One rule below uses the token as a BACKGROUND, not a text colour:
+   `.btn-primary:disabled` fills with `var(--text-tertiary)` under
+   `var(--bg-deep)` text, so the disabled Analyze button is now a lighter
+   grey and its label contrast went up with the same change.
 
    Loaded by templates/scout/index.html and templates/scout/feasibility.html
    via their head_extra blocks. Kept out of style.css on purpose: that file is

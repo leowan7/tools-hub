@@ -20,7 +20,13 @@
   --border-subtle:  #151F2E;
   --text-primary:   #E8E6E1;
   --text-secondary: #8A95A6;
-  --text-tertiary:  #4F5B6B;
+  /* Measured 2026-11-05 against the backgrounds above: 5.13:1 on
+     --bg-deep, 4.92:1 on --bg-surface, 4.50:1 on --bg-elevated --
+     WCAG AA (4.5:1) for normal text on all three. On --bg-hover it is
+     3.98:1, which is AA for large text only; nothing enforces that
+     tertiary text stays off --bg-hover. The previous #4F5B6B read
+     2.66:1 on --bg-surface. */
+  --text-tertiary:  #74869D;
   --accent:         #2B9E7E;
   --accent-dim:     #1B6B5A;
   --accent-glow:    rgba(43, 158, 126, 0.12);

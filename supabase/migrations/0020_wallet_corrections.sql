@@ -312,12 +312,19 @@ GROUP BY user_id;
 -- View: tool_jobs_p90  (per-tool p90 GPU seconds for the estimator)
 -- ---------------------------------------------------------------------------
 --
--- shared/wallet_estimates._historical_p90_seconds reads this view to
--- price a job from real history once a tool has at least
--- MIN_HISTORICAL_RUNS (20) succeeded runs in the lookback window. No
--- migration ever created it, so the estimator always fell back to the
--- per-tool spec defaults. The estimator only ever queries
--- lookback_days = 30, so the view exposes that single window.
+-- CORRECTION 2026-11-05: nothing reads this view. The paragraph below was
+-- true of an earlier draft of the estimator; the shipped
+-- shared/wallet_estimates._historical_p90_seconds SELECTs the tool_jobs
+-- table directly (shared/wallet_estimates.py:1104, the .table("tool_jobs")
+-- call in _historical_p90_seconds) and computes the
+-- percentile in Python. The only remaining mentions of the view are two
+-- descriptive comments, shared/wallet_estimates.py:1045 and :1231. The
+-- view is left in place rather than dropped: removing it is a schema
+-- change on an applied migration, not a comment fix.
+--
+-- Original intent: price a job from real history once a tool has at least
+-- MIN_HISTORICAL_RUNS (20) succeeded runs in the lookback window, over the
+-- single lookback_days = 30 window the estimator queries.
 
 CREATE OR REPLACE VIEW public.tool_jobs_p90
 WITH (security_invoker = on) AS
