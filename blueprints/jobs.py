@@ -1365,11 +1365,15 @@ def job_refold(job_id: str):
         # rare (e.g. partially failed runs that completed early).
         return redirect(url_for("jobs.job_detail", job_id=job_id))
 
-    # Fund the chain before it starts. Each spawned job passes its own
-    # wallet gate, and boltz2's start minimum is $0, so without this a
-    # balance drained by the source run buys structures with no scores --
-    # the hole scope section 7C.4 names, closed here rather than by giving
-    # boltz2 a non-zero minimum that would refuse standalone folds.
+    # Fund the chain before it starts. Nothing downstream does:
+    # ``_spawn_refold_job`` below calls ``create_job`` and
+    # ``modal_client.submit`` and no wallet helper at all -- no preflight, no
+    # hold -- and boltz2's start minimum is $0. So without this gate a balance
+    # drained by the source run buys structures with no scores: the hole scope
+    # section 7C.4 names, closed here rather than by giving boltz2 a non-zero
+    # minimum that would refuse standalone folds. This is a START MINIMUM, not
+    # worst-case funding; settlement still happens against boltz2's own cap
+    # (shared/wallet_estimates.py::compute_hard_cap).
     # ``len(seqs)``, not the requested ``n``: that is how many jobs the loop
     # below actually spawns.
     gate = refold_gate(

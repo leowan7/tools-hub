@@ -28,6 +28,7 @@ from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
 from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
+    REASON_WALLET_FROZEN,
     get_or_create_wallet,
     live_due_usd,
     open_live_run,
@@ -329,25 +330,47 @@ def refold_gate(user_id: str, dest_tool: str, n_folds: int, back_url: str):
     and a "go back to the boltz2 form" link would send them somewhere they
     never were. ``back_url`` is the job or campaign they are on.
 
+    A frozen wallet is refused whatever the balance AND whatever the
+    destination costs, which is the order shared/wallet.py::wallet_preflight
+    uses (its frozen branch precedes every cost comparison).
+    ``_spawn_refold_job`` does not go through ``requires_wallet``, so this
+    gate is the only wallet check the refold path has: a balance comparison
+    alone would let a frozen wallet spawn the chain, and a frozen test placed
+    after the ``need <= 0`` exit would leave colabfold and esmfold -- the two
+    destinations with no per-fold figure -- bypassing it entirely.
+
+    A wallet that cannot be READ is refused the same way, for the same
+    reason and with the same reason code as shared/wallet.py:586-594: a
+    missing service client or a raising Supabase read both return ``None``
+    (shared/wallet.py:276-277, 292-294), and treating that as "not frozen"
+    would let a transient DB error during the POST spawn the chain on an
+    account whose freeze simply could not be seen.
+
     Returned with status 402, not 200, because both callers are
     ``@idempotent()`` and shared/idempotency.py:758-770 releases the claimed
     key only for a status >= 400 -- naming this very hazard, a refusal
     replayed to a customer who topped up in another tab. A 200 would be
     stored for ``DEFAULT_TTL_SECONDS``.
     """
+    # One wallet read. An unreadable wallet counts as frozen, and the frozen
+    # test is NOT behind the ``need <= 0`` exit: a $0 destination still has to
+    # pass both.
+    wallet = get_or_create_wallet(user_id)
+    frozen = not wallet or bool(wallet.get("wallet_frozen"))
+    wallet = wallet or {}
     need = refold_start_usd(dest_tool, n_folds)
-    if need <= 0:
+    balance = Decimal(str(wallet.get("balance_usd") or 0))
+    if not frozen and (need <= 0 or balance >= need):
         return None
-    balance = _balance(user_id)
-    if balance >= need:
-        return None
-    wallet = get_or_create_wallet(user_id) or {}
+    reason = REASON_WALLET_FROZEN if frozen else (
+        REASON_WALLET_EMPTY if balance <= 0 else REASON_INSUFFICIENT
+    )
     return render_template(
         "wallet/topup.html",
         wallet=wallet,
         min_topup_usd=MIN_TOPUP_USD,
         next_url=back_url,
-        gate_reason=REASON_WALLET_EMPTY if balance <= 0 else REASON_INSUFFICIENT,
+        gate_reason=reason,
         tool_slug=dest_tool,
     ), 402
 

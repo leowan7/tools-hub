@@ -1157,7 +1157,9 @@ def _upload_design(
     allow-list; ``sequence`` is NOT, deliberately. That allowlist runs on one
     path only, the mid-run heartbeat (webhooks/modal.py:353), and a terminal
     COMPLETED payload reaches ``complete_job`` unfiltered
-    (webhooks/modal.py:144-151, :173-180), which is where the refold reads it
+    (webhooks/modal.py:145-151 passes ``payload.get("output")`` straight into
+    ``_apply_terminal``, whose ``complete_job`` call is webhooks/modal.py:188),
+    which is where the refold reads it
     from -- ``job_refold`` refuses a source job that is not ``succeeded``
     (blueprints/jobs.py::job_refold). So the sequence survives where it is
     used and is absent from the live/partial snapshot, which is the same

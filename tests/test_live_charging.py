@@ -1770,3 +1770,58 @@ def test_wallet_history_explains_an_absorbed_row(monkeypatch):
                                       total_count=1, tx_annotations={})
     assert both.count(hint) == 1
     assert hint not in charge_only
+
+
+def test_a_frozen_wallet_cannot_start_a_refold_chain(monkeypatch):
+    """The refold gate is the ONLY wallet check on the spawn path.
+
+    ``_spawn_refold_job`` does not go through ``requires_wallet``, so a
+    balance comparison alone would let a frozen wallet (chargeback dispute)
+    spawn the whole chain. shared/wallet.py::wallet_preflight refuses frozen
+    before it looks at the balance; this gate now matches that order.
+    """
+    import shared.wallet_guard as wg
+
+    seen = {}
+    monkeypatch.setattr(
+        wg, "render_template", lambda *a, **kw: seen.update(kw) or "PAGE"
+    )
+
+    def wallet(balance, frozen):
+        monkeypatch.setattr(
+            wg, "get_or_create_wallet",
+            lambda _uid: {"balance_usd": balance, "wallet_frozen": frozen},
+        )
+
+    # Funded and not frozen: the chain may start.
+    wallet("5.00", False)
+    assert wg.refold_gate("u", "boltz2", 8, "/back") is None
+
+    # Funded but frozen: refused, and the page says why -- the arm
+    # templates/wallet/topup.html already has.
+    wallet("5.00", True)
+    page, status = wg.refold_gate("u", "boltz2", 8, "/back")
+    assert (page, status) == ("PAGE", 402)
+    assert seen["gate_reason"] == "wallet_frozen"
+
+    # Not frozen, short of the $0.88 the eight folds need.
+    wallet("0.50", False)
+    assert wg.refold_gate("u", "boltz2", 8, "/back")[1] == 402
+    assert seen["gate_reason"] == "insufficient_balance"
+
+    # A destination with no per-fold figure is never refused for MONEY...
+    wallet("0.00", False)
+    assert wg.refold_gate("u", "colabfold", 8, "/back") is None
+    # ...but a frozen wallet is still refused there. The frozen test must not
+    # sit behind the ``need <= 0`` exit, or colabfold and esmfold -- the two
+    # destinations ``_REFOLD_PER_FOLD_USD`` has no figure for -- bypass it and
+    # a chargeback-frozen wallet spawns up to MAX_REFOLD_N GPU jobs.
+    wallet("5.00", True)
+    assert wg.refold_gate("u", "colabfold", 8, "/back")[1] == 402
+    assert seen["gate_reason"] == "wallet_frozen"
+    # A wallet that cannot be read is refused too, on every destination: a
+    # transient DB error must not be the way a frozen account starts GPU work.
+    monkeypatch.setattr(wg, "get_or_create_wallet", lambda _uid: None)
+    for dest in ("boltz2", "colabfold"):
+        assert wg.refold_gate("u", dest, 8, "/back")[1] == 402
+        assert seen["gate_reason"] == "wallet_frozen"

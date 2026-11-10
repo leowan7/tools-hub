@@ -1159,20 +1159,17 @@ def compute_campaign_refold(campaign_id):
         if cs is not None:
             seqs_with_src.append((cs, cand.get("_source_job_id")))
 
-    # Same pre-spawn funding gate as the single-job route; see the comment
-    # there (blueprints/jobs.py::job_refold). Counted on the entries the loop
-    # below can actually spawn, so it does not charge for the ones it skips:
-    # that loop drops a falsy source job id, which is tested here, and one
-    # whose ``get_job`` misses, which is not -- so this count is still an
-    # upper bound, by at most the number of unreadable source jobs.
-    fundable = sum(1 for _, src_job_id in seqs_with_src if src_job_id)
-    gate = refold_gate(ctx.user_id, dest_tool, fundable, detail)
-    if gate is not None:
-        return gate  # a page plus 402; see refold_gate
-
-    campaign_label = f"validation-of-campaign-{campaign_id[:8]}"
+    # Resolve the source jobs BEFORE the funding gate, so the gate counts
+    # exactly what will spawn. Both skips below -- a falsy source job id and
+    # a ``get_job`` that misses -- used to happen after the count, which made
+    # the gate ask for folds that never happen: a false refusal on a money
+    # gate. No extra reads: these are the same lookups the spawn loop made,
+    # moved earlier, with the same local ``src_cache`` deduping repeats.
+    # (``get_job`` itself has no cache -- shared/jobs.py::get_job queries on
+    # every call -- so the dict is what keeps this at one read per distinct
+    # source job.)
     src_cache: dict = {}
-    spawned: list[str] = []
+    spawnable: list[tuple] = []
     for cs, src_job_id in seqs_with_src:
         if not src_job_id:
             continue
@@ -1182,6 +1179,17 @@ def compute_campaign_refold(campaign_id):
             if src_job is None:
                 continue
             src_cache[src_job_id] = src_job
+        spawnable.append((cs, src_job))
+
+    # Same pre-spawn funding gate as the single-job route; see the comment
+    # there (blueprints/jobs.py::job_refold).
+    gate = refold_gate(ctx.user_id, dest_tool, len(spawnable), detail)
+    if gate is not None:
+        return gate  # a page plus 402; see refold_gate
+
+    campaign_label = f"validation-of-campaign-{campaign_id[:8]}"
+    spawned: list[str] = []
+    for cs, src_job in spawnable:
         jid = _spawn_refold_job(
             ctx, dest_adapter, dest_tool, cs, src_job, campaign_label,
             antigen_storage_path=campaign.target_storage_path,

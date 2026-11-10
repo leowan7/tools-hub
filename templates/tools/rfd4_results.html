@@ -109,11 +109,23 @@
     {% endif %}
   </p>
 {% endif %}
+{# The fold needs a per-design `sequence`, which tools/rfd4/run_pipeline.py's
+   ``_designed_sequence`` writes only when the binder chain is certain, and
+   which a recovered run never carries (the heartbeat allowlist drops it). So
+   the sentence that tells the customer to click the fold button is rendered
+   only when a design can actually be folded -- otherwise the buttons below
+   redirect back to this page with nothing to show for it
+   (blueprints/jobs.py::job_refold's empty-``seqs`` return). #}
+{% set foldable = (recovered or raw_designs or []) | selectattr('sequence') | list %}
 <p class="subtitle">
   These designs carry no confidence score of their own — RFD4 generates
-  backbones and sequences, it does not judge them. Use <strong>Re-fold with
-  Boltz-2 (cofold)</strong> below to fold the top designs against your target
-  and get a confidence number for each, then compare them side by side.
+  backbones and sequences, it does not judge them.
+  {% if foldable %}Use <strong>Re-fold with Boltz-2 (cofold)</strong> below to
+  fold the top designs against your target and get a confidence number for
+  each, then compare them side by side.{% else %}Scoring them means folding
+  each one against your target, and these designs did not come back with the
+  binder sequence that needs, so download the structures and fold them
+  yourself.{% endif %}
 </p>
 
 {# `gpu_seconds=` below is passed runtime_seconds, not gpu_seconds: that is the
