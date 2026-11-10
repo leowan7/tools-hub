@@ -612,8 +612,13 @@ def crop_pdb_to_chain(pdb_text: str, chain: str) -> str | None:
     a residue quietly missing
     (``test_a_truncated_coordinate_record_survives_the_crop``).
 
-    WHAT SURVIVES THE CROP: the named chain's coordinate records, byte for byte
-    as uploaded, ``ATOM`` and ``HETATM`` alike. WHAT IS DROPPED: every
+    WHAT SURVIVES THE CROP: the named chain's coordinate records, ``ATOM`` and
+    ``HETATM`` alike, each line's 80 columns unaltered -- not byte for byte,
+    because ``splitlines()`` plus ``"\n".join`` rewrites a CRLF upload as LF.
+    That cannot reach a design: ``_parse_atoms`` splits on lines and slices
+    fixed columns (tools/rfd4/numbering.py:566-575), so it never sees a
+    terminator, and the cropped text is a temporary handed straight to
+    ``pdb_to_cif``. WHAT IS DROPPED: every
     coordinate record carrying a different chain id -- the other polymer chains
     and, with them, their ligands, glycans and waters, because in PDB format
     those normally carry the chain id of the chain they sit on, which is the
@@ -1366,6 +1371,20 @@ def main() -> None:
                 # routes the run to resolve_target_chain's "no target chain was
                 # named" refusal instead. A job_spec without the key reads as
                 # NOT named, so the refusing direction is the default.
+                #
+                # "Named" means the field arrived non-empty, not that the
+                # customer typed it. templates/tools/rfd4_form.html:177 renders
+                # it pre-filled "A" (the `or default` in _prefill.html:18-20
+                # makes an empty prefill fall back to "A" too), so the ordinary
+                # dimer customer who never touches the box DOES get cropped to
+                # chain A -- and that is the intended read, because the box
+                # visibly holds "A" when they submit. What this gate rules out
+                # is the invisible substitution: the field carries no
+                # `required`, so clearing the box posts "" and only `validate`
+                # then puts "A" in its place. That cleared box is the one
+                # reachable blank path, and it is what
+                # tests/test_rfd4_adapter.py::test_a_blank_chain_field_is_stamped_as_not_named
+                # pins.
                 requested_chain = ""
             cif_path, mapping, atoms = load_target(
                 target_path, workdir, requested_chain
