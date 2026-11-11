@@ -609,7 +609,7 @@ _AA3TO1 = {
     # The design CIF is written by upstream RFD4, and while the repo does
     # record that upstream renumbers the target chain 1-based from the first
     # present residue
-    # (docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:208-210), nothing in it
+    # (docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:209-210), nothing in it
     # shows how that writer treats a ``HETATM`` ``SEC``/``PYL`` residue. If
     # the two disagree, ``_designed_sequence`` finds no match and carries no
     # sequence, which is the fail-closed arm. Upgrade path: adding
