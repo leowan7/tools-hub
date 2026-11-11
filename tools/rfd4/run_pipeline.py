@@ -603,9 +603,14 @@ _AA3TO1 = {
     # are ``target_chain_sequence`` and ``_designed_sequence`` below), so a
     # short read is consistent on both sides AS LONG AS both
     # files mark the residue the same way. That is UNVERIFIED for the design
-    # file: the target CIF is written by ``numbering.pdb_to_cif``, whose rule
-    # is ``_is_polymer``, but the design CIF is written by upstream RFD4 and
-    # nothing in this repo shows how that writer assigns ``label_seq_id``. If
+    # file. A PDB upload's target CIF is written by ``numbering.pdb_to_cif``,
+    # whose rule is ``_is_polymer`` -- a CIF upload is used as it arrived
+    # (``load_target`` below, the ``is_cif`` arm) and is written by neither.
+    # The design CIF is written by upstream RFD4, and while the repo does
+    # record that upstream renumbers the target chain 1-based from the first
+    # present residue
+    # (docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:208-210), nothing in it
+    # shows how that writer treats a ``HETATM`` ``SEC``/``PYL`` residue. If
     # the two disagree, ``_designed_sequence`` finds no match and carries no
     # sequence, which is the fail-closed arm. Upgrade path: adding
     # ``SEC``/``PYL`` to ``_MODRES_EQUIV`` would close it for files this
@@ -1302,9 +1307,8 @@ def _designed_sequence(cif_text: str, target_sequence: str) -> str:
     tests/test_rfd4_pipeline.py::test_naming_one_chain_of_a_dimer_crops_instead_of_refusing),
     and the cases the crop declines or cannot reach -- an mmCIF upload, a
     multi-chain upload with no chain named -- are still refused by
-    ``resolve_target_chain`` above
-    (``tools/rfd4/run_pipeline.py:906-937``). The crop keeps the target
-    chain's own
+    ``resolve_target_chain`` above (its ``_fail`` branches). The crop keeps
+    the target chain's own
     HETATM records and drops every other chain's ligands and waters
     (tests/test_rfd4_pipeline.py::test_the_crop_drops_other_chains_glycans_and_keeps_the_targets_own),
     which does not change what this function compares: non-polymer rows carry
