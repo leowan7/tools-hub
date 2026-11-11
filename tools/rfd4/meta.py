@@ -341,9 +341,9 @@ EXAMPLE: dict | None = {
     # test_recorded_cost_is_what_this_tool_would_charge carries the 217 in
     # its ``_EXAMPLE_GPU_SECONDS`` table and recomputes this, so it fails
     # rather than going stale if the rate card or the tool's GPU class
-    # moves. That guard walks the slugs the registry hands the app, so it
-    # will start reading this entry at step 7A and not before. It is the charge a
-    # customer would have paid, not what this validation run cost us.
+    # moves. That guard walks the slugs the registry hands the app, which
+    # has carried rfd4 since step 7A, so it reads this entry. It is the
+    # charge a customer would have paid, not what this validation run cost us.
     "cost_usd": "0.38",
     "runtime": "4 minutes",
     # Read by components/worked_example.html:92 into the stub job's

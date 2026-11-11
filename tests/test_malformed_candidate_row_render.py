@@ -45,13 +45,14 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 _JOB_ID = "fc9d14d7-ada8-40f3-995c-56a67e4087a2"
 
-# mpnn is the fourteenth adapter and reads result["sequences"], not
+# mpnn is the one registered adapter that reads result["sequences"], not
 # candidates/designs, so a malformed CANDIDATE row cannot reach its template
 # and a "the good rows still render" assertion would have nothing to find.
 # Its own key carries the identical defect and is covered separately by
 # ``test_a_malformed_sequence_row_cannot_500_the_mpnn_page``.
 # Asserted against the live registry below rather than trusted, so a
-# fifteenth tool fails here instead of silently escaping the sweep.
+# sixteenth tool fails here instead of silently escaping the sweep -- which
+# is what rfd4 did at step 7A, where the count below went 13 -> 14.
 _NOT_CANDIDATE_BEARING = {"mpnn"}
 
 
@@ -175,7 +176,9 @@ def test_the_sweep_covers_every_candidate_bearing_adapter(all_tools_app):
     """The tool list is derived, so a new adapter cannot escape the sweep."""
     _flask_app, slugs = all_tools_app
     assert _NOT_CANDIDATE_BEARING <= set(slugs)
-    assert len(_candidate_bearing(slugs)) == 13
+    # 14 since step 7A registered rfd4, which bears candidates like the
+    # other thirteen.
+    assert len(_candidate_bearing(slugs)) == 14
 
 
 @pytest.mark.parametrize("bad", BAD_ROWS)

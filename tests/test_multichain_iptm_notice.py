@@ -251,12 +251,37 @@ _POINTS_AT_FURNITURE = re.compile(
 
 @pytest.fixture(scope="module")
 def flask_app(isolate_supabase_module):
+    """Every tool flag on -- production state for the live tools.
+
+    ``shared/feature_flags.py`` is fail-closed, and since rfd4's registration
+    ``public.help_tool_guide`` 404s a tool whose flag is off. With no
+    FLAG_TOOL_* set, every ``/help/tools/<slug>`` page in the sweep below
+    404s and the floor in
+    test_no_general_page_states_iptm_as_the_binder_pair empties -- which is
+    what that floor exists to catch. Restores the environment on teardown:
+    this fixture is module-scoped, so monkeypatch is not available, and
+    leaking an "on" flag would silence other modules' fail-closed checks.
+    """
     os.environ.setdefault("SESSION_SECRET_KEY", "test-secret")
     from app import create_app
+    from tools import base as _tool_base
+
+    saved = {}
+    for adapter in _tool_base.all_adapters():
+        name = "FLAG_TOOL_" + adapter.slug.upper().replace("-", "_")
+        saved[name] = os.environ.get(name)
+        os.environ[name] = "on"
 
     app = create_app()
     app.config["TESTING"] = True
-    return app
+    try:
+        yield app
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
 
 
 # ---------------------------------------------------------------------------

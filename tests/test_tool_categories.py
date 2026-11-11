@@ -13,6 +13,7 @@ anonymous visitors into ``/login?next=``.
 # visible here. Without it this test iterates an empty registry and
 # passes vacuously -- green while the bug ships. The explicit count
 # assertion below keeps that failure mode from coming back silently.
+import ast
 import pathlib
 import re
 
@@ -51,8 +52,10 @@ KNOWN_LOGIN_WALLED_ROUTES = {"/scout/", "/developability"}
 # throw away the "an adapter is unregistered" half of the alarm below for
 # every OTHER slug. ``test_the_unregistered_exception_list_is_still_true``
 # fails the moment one of these registers, so the exception cannot outlive
-# the gap it covers.
-UNREGISTERED_SLUGS = {"rfd4"}
+# the gap it covers. Empty today -- rfd4, its only ever entry, registered
+# in the commit that added its README row, and both consumers below are
+# written to hold on an empty set.
+UNREGISTERED_SLUGS: set[str] = set()
 
 # Matches the href of a tool-catalog card on either page. The homepage
 # uses ``home-catalog-card``, /tools uses ``catalog-card``; both put the
@@ -192,6 +195,42 @@ def test_the_unregistered_exception_list_is_still_true():
     assert not not_on_disk, (
         f"{not_on_disk} name no tools/<slug>/__init__.py, so they are "
         f"misspellings, not unregistered tools"
+    )
+
+
+def test_app_imports_every_registering_tool_package():
+    """Every package that calls ``register`` must be imported by app.py.
+
+    ``tools.base._REGISTRY`` is filled only by those import side effects, so
+    a package that registers but is never imported by app.py is absent from
+    the running app while still looking registered to any test file that
+    imports it directly -- the registry is process-global and pytest shares
+    one process, so a sibling test file's ``import tools.<slug>`` hides the
+    omission from every other assertion in this suite. Read off app.py's
+    source rather than off the live registry for that reason.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    tree = ast.parse((repo_root / "app.py").read_text(encoding="utf-8"))
+    imported = {
+        alias.name.split(".", 1)[1]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name.startswith("tools.") and alias.name.count(".") == 1
+    }
+
+    registering = {
+        init.parent.name
+        for init in (repo_root / "tools").glob("*/__init__.py")
+        if re.search(
+            r"^register\(adapter\)$", init.read_text(encoding="utf-8"), re.M
+        )
+    }
+    assert registering, "no tools/*/__init__.py calls register(adapter)"
+    assert registering <= imported, (
+        f"packages calling register(adapter) that app.py never imports, so "
+        f"their adapters are missing from the running app: "
+        f"{sorted(registering - imported)}"
     )
 
 

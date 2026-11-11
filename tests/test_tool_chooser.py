@@ -348,8 +348,8 @@ def test_every_fact_slug_is_a_real_catalog_slug():
 
     ``_build_tools_catalog`` reads the live adapter registry, so a slug whose
     adapter is written but not yet registered is absent from it while being a
-    perfectly real tool -- ``rfd4`` is in that state (tools/rfd4/__init__.py
-    defines the adapter and calls no ``register``).
+    perfectly real tool -- ``rfd4`` was in that state until step 7A called
+    ``register`` on it, and the shared exception set is empty today.
 
     The exception is the NAMED set, not "anything with a ``_TOOL_CATEGORIES``
     band". Accepting any banded slug would retire the typo this test exists
@@ -498,8 +498,10 @@ def test_worked_example_flag_matches_the_files_on_disk():
         # macro's own `{% if ex and adapter.results_partial %}`
         # (templates/components/worked_example.html): an EXAMPLE and a
         # result.json on disk still render no anchor without a registered
-        # adapter that has a results partial. rfd4 is where the two diverge --
-        # it ships both files and no ``register`` call.
+        # adapter that has a results partial. rfd4 was where the two diverged
+        # while it shipped both files and no ``register`` call; step 7A
+        # registered it, so the clause is now carried by the expression below
+        # rather than by a live example.
         adapter = tool_chooser._adapter_by_slug().get(slug)
         expected = bool(
             meta is not None

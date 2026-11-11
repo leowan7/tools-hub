@@ -165,42 +165,41 @@ def test_build_payload_carries_every_key_main_reads():
     assert payload["parameters"]["n_designs_total"] == 16
 
 
-def test_the_adapter_is_built_and_the_flag_is_off(monkeypatch):
-    """The gate: the contract exists and rfd4 is unreachable twice over.
+def test_the_adapter_is_registered_and_the_flag_is_off(monkeypatch):
+    """The gate: rfd4 routes, and only the flag keeps it off a customer.
 
-    ``register(adapter)`` is deliberately NOT in tools/rfd4/__init__.py yet.
-    It is one line, and it is the line that makes every guard iterating
-    ``tools.base.all_adapters()`` demand a complete registry row: the two
-    templates the adapter names, the catalog band, the result columns, the
-    score legends, the email label. Those are later steps, and most of them
-    are customer-visible copy. Measured both directions on the branch that
-    wrote this file and recorded in the step table of
-    docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md.
+    Registration removed the first of the two independent gates this test
+    used to pin. What is left:
 
-    So two independent gates hold, and both are pinned here:
-
-      * NOT IN THE REGISTRY. blueprints/tools.py::_require_tool reads
-        ``tool_base.get(slug)`` and 404s a None in its first arm
-        before it looks at the flag, so no env var reaches the form.
+      * IN THE REGISTRY. ``tools/rfd4/__init__.py`` calls
+        ``register(adapter)``, so ``blueprints/tools.py::_require_tool``
+        passes its first arm (``tool_base.get(slug)`` is not None) and
+        reaches the flag check instead of 404ing.
       * FLAG OFF. shared/feature_flags.py::tool_enabled is fail-closed on
-        an unset env var.
+        an unset env var, which is what keeps the tool invisible.
 
-    The step that lands the templates and the registry copy adds
-    ``register(adapter)`` and flips the registry assertion below. The flag
-    assertions stay, because the flag is what gates reach once a tool is
-    registered.
+    ``get`` is read through ``import app`` rather than this file's line 15
+    (``from tools import rfd4 as adapter_mod``) because the registry is what
+    the running app sees. That is a readability choice, NOT a guard: line 15
+    has already registered the adapter by the time this runs, and the
+    registry is process-global, so this assertion stays green even with
+    app.py's import deleted -- measured by deleting it. The guard that the
+    import exists is the source-level one,
+    tests/test_tool_categories.py::test_app_imports_every_registering_tool_package,
+    which does go red on that deletion (also measured).
     """
+    import app  # noqa: F401, PLC0415  (populates tools.base._REGISTRY)
+
     from shared.feature_flags import flag_name, tool_enabled
     from tools.base import ToolAdapter, get
 
     assert isinstance(adapter_mod.adapter, ToolAdapter)
     assert adapter_mod.adapter.slug == "rfd4"
 
-    assert get("rfd4") is None, (
-        "rfd4 is in the adapter registry. If that is intended, this is the "
-        "step that lands tools/rfd4_form.html, tools/rfd4_results.html and "
-        "the registry copy -- update this assertion and expect every "
-        "all_adapters() guard to demand them."
+    assert get("rfd4") is adapter_mod.adapter, (
+        "rfd4 is not the registered adapter -- register(adapter) is missing "
+        "from tools/rfd4/__init__.py. A missing app.py import does NOT reach "
+        "here; test_app_imports_every_registering_tool_package catches that"
     )
 
     assert flag_name("rfd4") == "FLAG_TOOL_RFD4"

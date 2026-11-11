@@ -86,11 +86,10 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
 # A slug may carry its band before it carries a ``register(adapter)``
 # call: ``_build_tools_catalog`` reads the live registry, so an entry for
 # an unregistered slug renders nothing and only takes effect at
-# registration. ``rfd4`` is in that state today
-# (tools/rfd4/__init__.py defines the adapter and never registers it);
-# tests/test_tool_categories.py::UNREGISTERED_SLUGS names it, and
-# test_no_tool_lands_in_other fails the moment it IS registered, so the
-# exception cannot outlive the gap.
+# registration. ``rfd4`` was in that state until step 7A registered it;
+# no slug is today, and tests/test_tool_categories.py::UNREGISTERED_SLUGS
+# -- the exception list that named it -- is empty, which
+# test_the_unregistered_exception_list_is_still_true keeps honest.
 _TOOL_CATEGORIES: dict[str, str] = {
     "rfdiffusion": "Make new binders for my target",
     "bindcraft": "Make new binders for my target",

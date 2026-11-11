@@ -11,55 +11,35 @@ is what fails if the two ever drift apart.
 Single modality in release 1: hotspot-conditioned protein binders against
 one target chain.
 
-NOT REGISTERED YET, AND BEHIND ``FLAG_TOOL_RFD4``. This module builds the
-adapter and exports it as ``adapter``; the ``tools.base.register`` call
-that puts it in the registry belongs to step 7A of
-docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8. The two templates
-named at the bottom of this file now exist, and so does the copy a guard
-reads off the slug without the registry (tools/rfd4/meta.py, the two lede
-maps in blueprints/tools.py, the ``_tool_label`` entry in shared/email.py).
-Three registry-coupled edits were measured 2026-11-05 on a throwaway
-worktree as having to land in ONE commit with the ``register`` call,
-because each was gated by an exact-identity guard that reads the live
-registry. Two of the three have since landed AHEAD of registration, with
-their guards taught the difference between an unregistered slug and a typo:
-the ``_TOOL_CATEGORIES`` band in shared/tools_catalog.py (the size identity
-in test_no_tool_lands_in_other now subtracts
-tests/test_tool_categories.py::UNREGISTERED_SLUGS, and
-test_the_unregistered_exception_list_is_still_true fails the moment rfd4
-registers) and the ``_FACTS`` row in shared/tool_chooser.py
-(test_every_fact_slug_is_a_real_catalog_slug now accepts the NAMED
-tests/test_tool_categories.py::UNREGISTERED_SLUGS set -- deliberately
-not any slug that merely carries a band, which would have retired the
-typo shape that test exists for). The GPU-table row in README.md is
-the one still waiting:
-test_readme_tool_table_matches_the_live_registry asserts set equality
-against ``tools.base.all_adapters()``, so that row turns the suite red
-while the slug is unregistered and green only once it is.
+REGISTERED, AND BEHIND ``FLAG_TOOL_RFD4``, WHICH IS OFF. This module
+builds the adapter, exports it as ``adapter`` and calls
+``tools.base.register`` at the bottom of the file. ``tools.base._REGISTRY``
+is populated only by the ``import tools.<slug>`` side effects in app.py, so
+that import is half of the registration;
+tests/test_tool_categories.py::test_app_imports_every_registering_tool_package
+is what fails if it is dropped.
+
+Registration was measured 2026-11-05 as coupling rfd4 to three
+exact-identity guards that read the live registry. Two landed ahead of it
+-- the ``_TOOL_CATEGORIES`` band in shared/tools_catalog.py and the
+``_FACTS`` row in shared/tool_chooser.py, both excused through
+tests/test_tool_categories.py::UNREGISTERED_SLUGS, which this step empties.
+The third, the GPU-table row in README.md, could not:
+tests/test_tool_categories.py::test_readme_tool_table_matches_the_live_registry
+asserts set equality against ``tools.base.all_adapters()``, so that row had
+to land in the same commit as the ``register`` call and does.
+
 rfd4 has no shared/result_columns.py entry and no score-legend row by
 design: nothing in a run of it measures how well a binder holds.
-The
-scope document's step table records 66 failing ids, measured on step 3's
-branch; re-running the same experiment on this base on 2026-11-05 gave 49.
-THE 49 IS NOT RECORDED ANYWHERE IN THIS REPOSITORY: it was measured in a
-throwaway worktree and no file here holds the run, so a reader cannot check
-it. The 66 is checkable (that scope document, the step table).
-NO CAUSE IS OFFERED FOR THE DROP, because the obvious one does not add up:
-the scope document attributes 47 of the 66 to the two missing templates
-(docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md, the per-banner tally -- 24
-TemplateNotFound on rfd4_form.html and 23 on rfd4_results.html), and only
-rfd4_results.html had landed at this base, which predicts 43 rather than 49.
-Both figures are recorded as measurements and neither is a bound on 7A's own
-work: both were taken with nothing but the registration applied, and
-reconciling them would need the experiment re-run twice, which no decision
-here depends on.
 
-So the slug is unreachable for two independent reasons:
-``blueprints/tools.py::_require_tool`` 404s a slug ``tools.base.get`` does
-not know (its first arm, before the flag is read), and
-``shared/feature_flags.py::tool_enabled`` is fail-closed on the unset env
-var. Both are pinned by tests/test_rfd4_adapter.py::
-test_the_adapter_is_built_and_the_flag_is_off.
+ONE gate now stands between the slug and a customer, where two did before.
+``blueprints/tools.py::_require_tool`` no longer 404s it on the registry
+arm, so ``shared/feature_flags.py::tool_enabled`` -- fail-closed on the
+unset env var -- is the only refusal left. Both arms are pinned by
+tests/test_rfd4_adapter.py::
+test_the_adapter_is_registered_and_the_flag_is_off -- the registry arm
+against a missing ``register(adapter)`` call, not against a missing app.py
+import, which only the source-level guard named above catches.
 
 Customer-visible copy below is provisional and Leo's to approve; the scope
 doc's steps 7-8 own it.
@@ -74,6 +54,7 @@ from tools.base import (
     ToolAdapter,
     parse_hotspot_residues,
     parse_target_chains,
+    register,
 )
 
 # The citation lives in ``tools/rfd4/meta.py``, not here, which is the house
@@ -321,18 +302,13 @@ adapter = ToolAdapter(
     validate=validate,
     build_payload=build_payload,
     requires_pdb=True,
-    # Both templates exist now -- templates/tools/rfd4_results.html came with
-    # step 5 and templates/tools/rfd4_form.html with step 7 -- but nothing
-    # renders either while the adapter is out of the registry, so neither is
-    # exercised by a request yet. The form is covered unregistered by the
-    # template-source guards that read the templates tree off disk, named in
-    # the comment above rfd4's entry in tests/test_hotspot_picker.py's
-    # PICKER_FORM_TEMPLATES; the rendered-page guards arm at 7A.
+    # Both templates exist -- templates/tools/rfd4_results.html came with
+    # step 5 and templates/tools/rfd4_form.html with step 7. The form is
+    # also covered unregistered by the template-source guards that read the
+    # templates tree off disk, named in the comment above rfd4's entry in
+    # tests/test_hotspot_picker.py's PICKER_FORM_TEMPLATES.
     form_template="tools/rfd4_form.html",
     results_partial="tools/rfd4_results.html",
 )
 
-# NOT REGISTERED. ``register(adapter)`` is one line of step 7A's commit --
-# not the whole of it. See the module docstring for the three registry-coupled
-# edits that have to land in the same commit, and the step table in
-# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8 for the step.
+register(adapter)
