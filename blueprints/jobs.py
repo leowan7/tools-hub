@@ -59,6 +59,8 @@ from shared.storage import (
     output_exists,
     presigned_input_url,
 )
+from shared.refold_scores import cofold_scores_for_source
+from shared.tools_catalog import designs_against_a_target
 from tools import base as tool_base
 
 logger = logging.getLogger(__name__)
@@ -754,6 +756,19 @@ def job_detail(job_id: str):
                 continue
             if other.slug in NON_PDB_INPUT_TOOLS:
                 continue
+            # APPLICABILITY, added 2026-11-11 on Leo's ruling. The handoff
+            # ports a target structure plus its chain and hotspots, so the
+            # only tools it can usefully land on are the ones that DESIGN
+            # against a target. Every adapter used to be offered, which put
+            # the five tools that consume a finished design rather than a
+            # target -- colabfold, esmfold, boltz2, opendde, mpnn -- in this
+            # list as well, where they duplicated the second-opinion fold
+            # panel that sits directly above on the same page
+            # (shared/refold.py::DESTINATION_TOOLS is three of those five).
+            # The predicate reads the catalog band, not a list kept here;
+            # see shared/tools_catalog.py::designs_against_a_target.
+            if not designs_against_a_target(other.slug):
+                continue
             if not tool_enabled(other.slug):
                 continue
             send_target_tools.append({
@@ -772,6 +787,23 @@ def job_detail(job_id: str):
         from shared.jobs import resolve_user_email_and_meta  # noqa: PLC0415
         _email, user_meta = resolve_user_email_and_meta(ctx.user_id)
         share_allowed = _share_allowed(user_meta)
+
+    # D5 — per-design cofold scores, carried back onto a source job's own
+    # table. Only rfd4 consumes them today: it is the one enabled tool whose
+    # designs arrive with no number of their own, so its score comes entirely
+    # from the Boltz-2 refolds the customer spawns below.
+    #
+    # ``succeeded`` only, because that is the only source state a refold can
+    # exist for: ``job_refold`` below refuses a source job in any other
+    # status. ``ctx.user_id`` is both the viewer and the owner here -- this
+    # route is @login_required and ``get_job`` above 404s a job this user does
+    # not own, so there is no shared-viewer id to confuse it with, and the
+    # scores cannot reach a page belonging to anyone else.
+    refold_scores = (
+        cofold_scores_for_source(ctx.user_id, job.id)
+        if job.tool == "rfd4" and job.status == "succeeded"
+        else {}
+    )
 
     return render_template(
         "job_detail.html",
@@ -793,6 +825,7 @@ def job_detail(job_id: str):
         run_notices=run_notices(job),
         stopped_for_balance=stopped_for_balance(job),
         kept_designs=kept_designs(job),
+        refold_scores=refold_scores,
     )
 
 
