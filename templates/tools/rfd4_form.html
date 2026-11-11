@@ -177,12 +177,15 @@
             <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              One chain (<code>A</code>), and one only. Name the chain
-              carrying the face you want gripped.
-              <code>A,B</code> is refused here rather than quietly designing
-              against half of it (tools/rfd4/__init__.py::validate).
-              For a target that only makes sense as two chains together, use
-              Proteina instead.
+              {# "will be rejected" is a claim about behaviour:
+                 tools/rfd4/__init__.py:172 refuses a target_chain naming
+                 more than one chain ("This tool designs against one target
+                 chain..."). Wording is Leo's, 2026-11-11, kept verbatim. #}
+              Choose only a single target chain from your structure file.
+              Multiple target chains will be rejected by RFD4-Proteina. For
+              multi-chain target, use
+              <a href="{{ url_for('tools.tool_form', tool='proteina') }}">Proteina-Complexa</a>
+              instead
             </div>
 
             <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
@@ -190,13 +193,14 @@
                    required
                    style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-              Residues the binder should grip, in your file's own numbering.
-              At least one is required: this run conditions the model on the
-              patch you name, and there is nothing to design against without
-              it. Plain numbers, read against the chain you named above
-              (<code>54,56,115</code>). Up to 64.
-              Click residues in the 3D viewer below to toggle them in and out
-              of this list.
+              {# Wording is Leo's, 2026-11-11, kept verbatim -- including
+                 "is require". The 64-hotspot ceiling it drops is still
+                 enforced (tools/rfd4/__init__.py:187, _MAX_HOTSPOTS = 64),
+                 so a reader naming more now meets it only at submit. #}
+              Residues the binder should target. Please confirm that residue
+              numbers match your structure file accordingly. At least one is
+              require. Click residues in the 3D viewer below to toggle them in
+              and out of this list.
             </div>
             {% include "tools/_hotspot_scout_hint.html" %}
 
@@ -221,7 +225,7 @@
             </div>
             {% endcall %}
 
-            {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues") %}
+            {% call form_section("Design", "{num_designs#design}, {binder_length_min} to {binder_length_max} residues", open=true) %}
             <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
             {# pre_value, not a bare value=: the adapter stores this NESTED,
                as the two-element list binder_length=[min, max]
