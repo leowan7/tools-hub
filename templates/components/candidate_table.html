@@ -155,10 +155,45 @@
                  and (candidates | map(attribute='_source_tool', default='')
                                  | map('default', '', true)
                                  | unique(true) | list | length) > 1 %}
+{# Does ANY row in this table have a structure to show? The per-row test is
+   ``has_pdb`` at the row cells below -- ``(pdb_key and not is_example) or
+   pdb_content_b64`` -- and this is the same test lifted to the table, so the
+   two cannot disagree about a row. Where it is false the 3D and Structure
+   columns are dropped entirely rather than drawn as a column of em dashes:
+   that is every row on a worked-example page for a tool whose example ships
+   no inline bytes -- the ``example`` sentinel suppresses the job-scoped URL,
+   so a recorded ``pdb_key`` alone buys nothing. boltzgen is the exception:
+   its example DOES carry ``pdb_content_b64``, and it keeps both columns.
+   The other case is a real job whose rows carry no structure at all. #}
+{% set has_structures = (((candidates | selectattr('pdb_key') | list | length) > 0)
+                         and not is_example)
+                        or ((candidates | selectattr('pdb_content_b64') | list | length) > 0) %}
+{# The design's own name, shown ONLY where this table would otherwise have no
+   column of its own content: a tool with no score columns renders #, star
+   and nothing else. Narrow on purpose. Measured, not assumed: rendering all
+   fifteen /tools/<slug> pages and diffing the candidate-table headers before
+   and after, rfd4 is the only page that gains this column. The other call
+   site reaches it too: targets/detail.html:570 passes ``columns_for(tool)``
+   for a single-tool pool (shared/target_results.py:787), which is [] for a
+   tool with no entry, so an rfd4 target pool gains the name column as well.
+   Those rows are a real job, so they keep their structure columns. #}
+{% set show_name = (not multi_tool)
+                   and (columns | length == 0)
+                   and ((candidates | selectattr('name') | list | length) > 0) %}
 {# Fixed cells are #, star, 3D, PDB = 4; multi-tool replaces `columns` with
    Tool, Score and Pctile. Computed once because both the viewer rows and the
-   group header rows have to span it, and they drifted apart once already. #}
-{% set span = 7 if multi_tool else (columns | length + 4) %}
+   group header rows have to span it, and they drifted apart once already.
+   The two conditional columns move it in both directions. Dropping either
+   term is caught by
+   test_viewer_row_spans_the_header_count_on_a_worked_example_too
+   (tests/test_target_table_render.py) -- verified by mutation, each term
+   removed in turn. The older
+   test_viewer_row_spans_exactly_the_header_count next to it does NOT catch
+   either: it renders the multi-tool shape, where show_name is off and
+   has_structures is on. #}
+{% set span = (7 if multi_tool else (columns | length + 4))
+              + (1 if show_name else 0)
+              - (0 if has_structures else 2) %}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
@@ -632,6 +667,10 @@
            well as the optional lab handoff, so naming one consumer in the
            tooltip made the other invisible. #}
         <th style="width:2rem;" title="Star to shortlist">★</th>
+        {# NO data-col, for the reason the multi-tool block below gives: the
+           attribute is what binds the click-to-sort handler, and sortTable
+           orders rows numerically on td[data-val]. A name is not a number. #}
+        {% if show_name %}<th>Design</th>{% endif %}
         {% if multi_tool %}
         {# NO data-col on any of these three.
 
@@ -737,8 +776,10 @@
           </th>
         {% endfor %}
         {% endif %}
+        {% if has_structures %}
         <th style="width:4.5rem;">3D</th>
         <th style="width:4.5rem;">Structure</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
@@ -926,6 +967,9 @@
           <td class="star-cell">
             <button class="star-btn" data-idx="{{ idx }}" data-job="{{ src_job }}" data-ref-idx="{{ src_idx }}" title="Star to shortlist">&#9734;</button>
           </td>
+          {% if show_name %}
+          <td style="font-family:var(--font-mono);font-size:.8rem;word-break:break-all;">{{ cand.get('name') or '—' }}</td>
+          {% endif %}
 
           {% if multi_tool %}
             {% set row_tool = cand.get('_source_tool') or '—' %}
@@ -1125,6 +1169,7 @@
           {% endfor %}
           {% endif %}
 
+          {% if has_structures %}
           <td>
             {% if has_pdb %}
               <button class="view3d-btn btn-secondary"
@@ -1172,6 +1217,7 @@
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
           </td>
+          {% endif %}
         </tr>
 
         <tr class="viewer-row" id="viewer-row-{{ idx }}" style="display:none;">
