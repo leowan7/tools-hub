@@ -42,8 +42,10 @@ Usage:
 {% macro about_panel(adapter, about) %}
   {# TWO grid children, and the second one is deliberate. Every tool form
      lays its page out as a two-column grid whose right column is capped
-     around 360px (.rfd4-layout and its twelve per-tool siblings; mpnn uses
-     the shared .tool-form-layout instead), and the rail
+     around 360px: .rfd4-layout and twelve more per-tool copies all say
+     ``minmax(0, 360px)``, proteina says ``minmax(0, 22rem)`` in its own
+     .proteina-layout, and mpnn is the fifteenth, using the shared
+     .tool-form-layout. All fifteen are a two-column grid. The rail
      wrapper is the child that fills it. Anything emitted here WITHOUT an
      explicit placement lands in the left column under the form, which is
      why this was one child for so long. Inline layout only — no new class

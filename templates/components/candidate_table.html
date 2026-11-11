@@ -160,9 +160,11 @@
    pdb_content_b64`` -- and this is the same test lifted to the table, so the
    two cannot disagree about a row. Where it is false the 3D and Structure
    columns are dropped entirely rather than drawn as a column of em dashes:
-   that is every row on a worked-example page (the ``example`` sentinel
-   suppresses the job-scoped URL, and no example ships inline bytes), and it
-   is also a real job whose rows carry no structure at all. #}
+   that is every row on a worked-example page for a tool whose example ships
+   no inline bytes -- the ``example`` sentinel suppresses the job-scoped URL,
+   so a recorded ``pdb_key`` alone buys nothing. boltzgen is the exception:
+   its example DOES carry ``pdb_content_b64``, and it keeps both columns.
+   The other case is a real job whose rows carry no structure at all. #}
 {% set has_structures = (((candidates | selectattr('pdb_key') | list | length) > 0)
                          and not is_example)
                         or ((candidates | selectattr('pdb_content_b64') | list | length) > 0) %}
@@ -170,16 +172,25 @@
    column of its own content: a tool with no score columns renders #, star
    and nothing else. Narrow on purpose. Measured, not assumed: rendering all
    fifteen /tools/<slug> pages and diffing the candidate-table headers before
-   and after, rfd4 is the only page that gains this column. #}
+   and after, rfd4 is the only page that gains this column. The other call
+   site reaches it too: targets/detail.html:570 passes ``columns_for(tool)``
+   for a single-tool pool (shared/target_results.py:787), which is [] for a
+   tool with no entry, so an rfd4 target pool gains the name column as well.
+   Those rows are a real job, so they keep their structure columns. #}
 {% set show_name = (not multi_tool)
                    and (columns | length == 0)
                    and ((candidates | selectattr('name') | list | length) > 0) %}
 {# Fixed cells are #, star, 3D, PDB = 4; multi-tool replaces `columns` with
    Tool, Score and Pctile. Computed once because both the viewer rows and the
    group header rows have to span it, and they drifted apart once already.
-   The two conditional columns move it in both directions; miss either and
-   tests/test_target_table_render.py (viewer colspan == header cell count)
-   fails. #}
+   The two conditional columns move it in both directions. Dropping either
+   term is caught by
+   test_viewer_row_spans_the_header_count_on_a_worked_example_too
+   (tests/test_target_table_render.py) -- verified by mutation, each term
+   removed in turn. The older
+   test_viewer_row_spans_exactly_the_header_count next to it does NOT catch
+   either: it renders the multi-tool shape, where show_name is off and
+   has_structures is on. #}
 {% set span = (7 if multi_tool else (columns | length + 4))
               + (1 if show_name else 0)
               - (0 if has_structures else 2) %}
