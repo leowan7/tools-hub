@@ -579,14 +579,146 @@ def atom_names_by_residue(
     return {k: tuple(v) for k, v in out.items()}
 
 
+def crop_pdb_to_chain(pdb_text: str, chain: str) -> str | None:
+    """Drop every coordinate record outside author chain ``chain``.
+
+    Returns the cropped PDB text, or ``None`` for "do not crop", on which the
+    caller keeps the whole upload. ``None`` comes back in two cases. First,
+    ``chain`` carries no polymer atom by the test below: an unknown chain name,
+    or one naming a water-only or plain-ligand chain, then
+    reaches ``resolve_target_chain`` and gets that function's specific refusal
+    instead of a cropped file with no polymer residue in it. Second, NO OTHER
+    chain carries one either -- there is nothing to crop, and a single-chain
+    upload must reach ``pdb_to_cif`` exactly as it does today, waters and
+    ligands on their own chain ids included.
+
+    The polymer test here is the condition ``_is_polymer`` puts on a residue's
+    atoms: an atom named ``CA``, on an ``ATOM`` record or on a ``HETATM``
+    record whose resname is in ``_MODRES_EQUIV``
+    (tools/rfd4/numbering.py:138-148, :174-177). It reads the three column
+    slices the parser reads, ``line[:6]``, ``line[12:16]`` and ``line[17:20]``
+    (tools/rfd4/numbering.py:568, :637, :643). The ``_MODRES_EQUIV`` half is
+    not decoration: without it a protein chain plus a free modified amino acid
+    on its own chain id -- MSE, SEP, PCA and the rest carry a ``CA`` -- was
+    left uncropped while ``_polymer_chains`` still listed that id, so the run
+    was funded and then refused in this container, which is the defect this
+    function exists to close
+    (``test_a_modified_residue_ligand_on_its_own_chain_is_cropped_away``).
+
+    A coordinate record too short to hold coordinates is KEPT whatever chain
+    it claims: ``pdb_to_cif`` raises on such a line
+    (tools/rfd4/numbering.py:571-575) and ``load_target`` turns that into a
+    refusal, so a truncated upload is still refused rather than converted with
+    a residue quietly missing
+    (``test_a_truncated_coordinate_record_survives_the_crop``).
+
+    WHAT SURVIVES THE CROP: the named chain's coordinate records, ``ATOM`` and
+    ``HETATM`` alike, each line's 80 columns unaltered -- not byte for byte,
+    because ``splitlines()`` plus ``"\n".join`` rewrites a CRLF upload as LF.
+    That cannot reach a design: ``_parse_atoms`` splits on lines and slices
+    fixed columns (tools/rfd4/numbering.py:566-575), so it never sees a
+    terminator, and the cropped text is a temporary handed straight to
+    ``pdb_to_cif``. WHAT IS DROPPED: every
+    coordinate record carrying a different chain id -- the other polymer chains
+    and, with them, their ligands, glycans and waters, because in PDB format
+    those normally carry the chain id of the chain they sit on, which is the
+    reason ``pdb_to_cif`` splits them into their own asym
+    (tools/rfd4/numbering.py:944-950). Non-coordinate records are left alone;
+    ``pdb_to_cif`` reads only ``ATOM``/``HETATM`` and stops at ``ENDMDL``
+    (tools/rfd4/numbering.py:566-570), so no other record reaches upstream's
+    numbering either way.
+
+    Net of those two, nothing outside the target chain reaches upstream, which
+    is the direction the sibling normalizers take with ``keep_hetatm=False,
+    keep_waters=False`` (``shared/pipeline_normalize.py::normalize_for_rfd4``,
+    and the identical preset in ``normalize_for_rfdiffusion`` /
+    ``normalize_for_bindcraft`` / ``normalize_for_rfantibody``). It is NOT
+    identical to them in one respect, deliberately: a water or ligand sharing
+    the TARGET chain's id survives here, as it already does for a single-chain
+    upload today (``test_a_single_polymer_chain_is_picked_even_with_non_polymer
+    _chains``). Keeping one shape for cropped and uncropped uploads is the
+    reason. A single-chain upload is left alone entirely, by the
+    ``other_polymer_chain`` test below -- waters and ligands on their own chain
+    ids reach upstream exactly as they do today
+    (``test_a_single_chain_upload_is_not_cropped_at_all``). ``shared/`` is not importable in the rfd4
+    container (``tools/rfd4/modal_app.py``), so the sibling behaviour is matched
+    by contract, not by calling it.
+
+    RESIDUE NUMBERING IS NOT TOUCHED, matching the ``renumber_residues=False``
+    of the rfdiffusion / proteina / rfantibody / bindcraft / rfd4 presets
+    (``normalize_for_pxdesign`` and ``normalize_for_boltzgen`` do renumber, so
+    this is those five, not a house-wide rule) and the reason given there --
+    numbering is
+    load-bearing, because a hotspot resolves through ``label_seq_id``.
+    ``pdb_to_cif`` counts ``label_seq_id`` per asym from 1 over that asym's own
+    polymer residues (tools/rfd4/numbering.py:957-966), and the crop changes
+    neither the named chain's polymer residues nor their file order, so every
+    ``label_seq_id`` in the kept chain is the same before and after
+    (``test_cropping_a_dimer_leaves_the_kept_chains_label_numbering_identical``).
+    """
+    kept: list[str] = []
+    has_polymer_atom = False
+    other_polymer_chain = False
+    in_first_model = True
+    for line in pdb_text.splitlines():
+        record = line[:6]
+        if record in ("ATOM  ", "HETATM"):
+            if len(line) < 54:
+                # Too short for `pdb_to_cif`, which raises on it; keep it so
+                # that refusal still fires instead of dropping the residue.
+                kept.append(line)
+                continue
+            is_polymer_atom = (
+                in_first_model
+                and line[12:16].strip() == "CA"
+                and (
+                    record == "ATOM  "
+                    or line[17:20].strip().upper() in numbering._MODRES_EQUIV
+                )
+            )
+            if line[21:22].strip() != chain:
+                if is_polymer_atom:
+                    other_polymer_chain = True
+                continue
+            if is_polymer_atom:
+                has_polymer_atom = True
+        elif line.startswith("ENDMDL"):
+            in_first_model = False
+        kept.append(line)
+    if not has_polymer_atom or not other_polymer_chain:
+        return None
+    return "\n".join(kept) + "\n"
+
+
 def load_target(
-    path: Path, work_dir: Path
+    path: Path, work_dir: Path, requested_chain: str = ""
 ) -> tuple[Path, numbering.ResidueMapping, dict[tuple[str, int], tuple[str, ...]]]:
     """Resolve an uploaded PDB or CIF to (cif path for upstream, mapping, atoms).
 
     The sniff is the presence of an ``_atom_site.`` tag or a ``data_`` block
     header, which is what distinguishes an mmCIF from a PDB regardless of the
     filename the customer uploaded under.
+
+    WHERE THE CROP HAPPENS, and why here rather than in
+    ``resolve_target_chain``. Leo's decision of 2026-11-10 (scope doc section 9
+    item 11) is that the CONTAINER crops a multi-chain upload to the named
+    target chain, with no hub-side refusal and no preflight change. The crop
+    runs on the PDB TEXT, before ``pdb_to_cif``, so upstream receives the one
+    file shape single-chain runs have always sent: one polymer entity, one
+    asym, every ``_entity``/``_entity_poly_seq``/``_struct_asym`` row consistent
+    with the atoms, all emitted by the same writer. Cropping after conversion
+    would mean re-emitting those four categories by hand from parsed rows,
+    which is a second CIF writer and a second chance to disagree with the
+    first. ``resolve_target_chain`` is handed a mapping, not the file, and
+    keeps the refusals for what genuinely cannot proceed.
+
+    A CIF upload is NOT cropped: there is no CIF writer in this container, and
+    the four hub paths that stage a target convert a ``.cif``/``.mmcif``
+    upload to PDB bytes before staging (``blueprints/tools.py:1773``, ``:2193``,
+    ``blueprints/prep.py:132``, ``shared/pdb_intake.py:563``), so the customer
+    path is the PDB path. Those four are cited, not enumerated: I did not prove
+    no fifth entry point exists. A multi-chain CIF reaching this function is still
+    refused by ``resolve_target_chain``.
     """
     try:
         text = path.read_text(errors="replace")
@@ -600,6 +732,11 @@ def load_target(
         cif_path = path
         cif_text = text
     else:
+        picked = (requested_chain or "").strip()
+        if picked:
+            cropped = crop_pdb_to_chain(text, picked)
+            if cropped is not None:
+                text = cropped
         try:
             cif_text, mapping = numbering.pdb_to_cif(text)
         except numbering.NumberingError as exc:
@@ -643,15 +780,39 @@ def _polymer_chains(mapping: numbering.ResidueMapping) -> list[str]:
 def resolve_target_chain(mapping: numbering.ResidueMapping, requested: str) -> str:
     """The one author chain this run designs against.
 
-    MULTI-CHAIN TARGETS ARE REFUSED. Scope §4.2 proposes "multi-chain allowed",
-    but no committed artefact shows upstream accepting one: the two-chain spec
-    variants that were run (V1, V5) failed upstream's
-    ``index_group_molecule_must_be_connected`` invariant, and V2-V4 are marked
-    UNVERIFIED by the scope doc itself. A refusal before the GPU starts costs
-    the customer nothing; a guess costs them a run that designs against one
-    protomer of a dimer while looking entirely successful, which is the shape
-    recorded for proteina in ``proteina-hotspot-chain-semantics``. Lifting this
-    will need a measured two-chain run.
+    A RUN STILL DESIGNS AGAINST ONE CHAIN. Scope §4.2 proposes "multi-chain
+    allowed"; what the six free-CPU variants measured is narrower, and that row
+    carries the detail. Of the five naming two target chains, V1 and V5 carry
+    committed ``index_group_molecule_must_be_connected`` tracebacks; V2 returned
+    rc 1 with no CIF but had its result JSON overwritten by the V5/V7 sweep, so
+    reading V2 as the same invariant failure is inference from an exit code, not
+    a trace. V3 and V7 returned 0 and BUILT a CIF -- and those two are exactly
+    the ones whose second chain is UNINDEXED (V3 both chains, V7 chain B only),
+    which makes the measured rule **at most one indexed target chain** rather
+    than one chain outright. An unindexed chain is not a conditioned target, so
+    neither run is a two-chain target accepted upstream. Lifting this rule needs
+    a run upstream accepts with two INDEXED chains; none exists, and the
+    mechanism is UNVERIFIED.
+
+    WHAT CHANGED 2026-11-10 (Leo's decision, scope doc section 9 item 11): a
+    multi-chain upload with a target chain NAMED is no longer refused. The
+    customer case this blocked is the ordinary one -- upload a crystal dimer,
+    name the antigen chain -- and nothing hub-side mirrored the refusal, so the
+    run took a wallet hold, started the GPU and died in the container with the
+    customer paying the start minimum for zero designs. ``load_target`` now
+    crops the upload to the named chain before converting it, so by the time
+    this function runs on a PDB upload there is one polymer chain left; see
+    ``load_target``'s docstring for what the crop keeps and why it is not in
+    this function. The refusals below remain for what genuinely cannot proceed:
+    no polymer chain at all, a named chain the upload does not hold, a
+    multi-chain upload with NO chain named (there is nothing to pick on the
+    customer's behalf -- a guess costs them a run that designs against one
+    protomer while looking entirely successful, the shape recorded for proteina
+    in ``proteina-hotspot-chain-semantics``), and a chain split across asym
+    units. The named-chain-plus-others branch stays reachable on an mmCIF upload,
+    which this container cannot crop because it has no CIF writer; a PDB
+    reaches it only if ``crop_pdb_to_chain`` declined the file, so its message
+    names no file format.
     """
     chains = _polymer_chains(mapping)
     if not chains:
@@ -666,18 +827,24 @@ def resolve_target_chain(mapping: numbering.ResidueMapping, requested: str) -> s
             )
         others = [c for c in chains if c != picked]
         if others:
+            # The customer input that reaches here is an mmCIF upload: no CIF
+            # writer in this container to re-emit consistent entity rows. A
+            # PDB reaches it only if `crop_pdb_to_chain` declined the file --
+            # see its `None` cases -- so the message names no file format,
+            # which would be wrong for one of the two.
             _fail(
                 "input", "chain",
-                f"the upload holds more than one polymer chain ({', '.join(chains)}); "
-                "RFD4-Proteina here accepts a single-chain target only. Crop the "
-                "structure to one chain and resubmit.",
+                f"the upload holds more than one polymer chain ({', '.join(chains)}) "
+                f"and could not be cropped to chain {picked}. Crop the structure "
+                f"to chain {picked} and resubmit it as PDB.",
             )
     elif len(chains) > 1:
         _fail(
             "input", "chain",
             f"the upload holds {len(chains)} polymer chains ({', '.join(chains)}) "
-            "and no target chain was named; this tool accepts a single-chain "
-            "target only.",
+            "and no target chain was named; name the chain to design against "
+            "and resubmit as PDB, and the file will be cropped to that chain. "
+            "An mmCIF is not cropped, so crop it yourself or convert it first.",
         )
     else:
         picked = chains[0]
@@ -1194,8 +1361,35 @@ def main() -> None:
         try:
             out_dir = workdir / "out"
             target_path = download_target(input_url, workdir / "target_upload")
-            cif_path, mapping, atoms = load_target(target_path, workdir)
-            chain = resolve_target_chain(mapping, str(job_spec.get("target_chain") or ""))
+            requested_chain = str(job_spec.get("target_chain") or "")
+            if not job_spec.get("target_chain_named"):
+                # The customer left the chain field blank and
+                # tools/rfd4/__init__.py::validate substituted "A". Cropping on
+                # that would turn a dimer into a run against whichever protomer
+                # is chain A, looking entirely successful -- the shape recorded
+                # for proteina in proteina-hotspot-chain-semantics. Blanking it
+                # routes the run to resolve_target_chain's "no target chain was
+                # named" refusal instead. A job_spec without the key reads as
+                # NOT named, so the refusing direction is the default.
+                #
+                # "Named" means the field arrived non-empty, not that the
+                # customer typed it. templates/tools/rfd4_form.html:177 renders
+                # it pre-filled "A" (the `or default` in _prefill.html:18-20
+                # makes an empty prefill fall back to "A" too), so the ordinary
+                # dimer customer who never touches the box DOES get cropped to
+                # chain A -- and that is the intended read, because the box
+                # visibly holds "A" when they submit. What this gate rules out
+                # is the invisible substitution: the field carries no
+                # `required`, so clearing the box posts "" and only `validate`
+                # then puts "A" in its place. That cleared box is the one
+                # reachable blank path, and it is what
+                # tests/test_rfd4_adapter.py::test_a_blank_chain_field_is_stamped_as_not_named
+                # pins.
+                requested_chain = ""
+            cif_path, mapping, atoms = load_target(
+                target_path, workdir, requested_chain
+            )
+            chain = resolve_target_chain(mapping, requested_chain)
             n_res = validate_sizes(mapping, chain, binder_length)
             contig = build_contig(mapping, chain, binder_length)
             asym = mapping.polymer_entries(chain)[0].label_asym_id

@@ -114,9 +114,13 @@ cheap fix is plausibly in rfd4's own container — subject to the deploy-trigger
 cost in §4, which is what makes it not cheap after all.
 
 The pinned test
-(`tests/test_rfd4_adapter.py:176` `test_an_extra_polymer_chain_passes_the_gates_the_container_refuses`)
-already asserts all three slugs answer `READY` hub-side, and its docstring at
-`:196-198` reached the same conclusion about the siblings' containers. This report
+(`tests/test_rfd4_adapter.py:211`, named
+`test_an_extra_polymer_chain_passes_the_gates_and_the_container_crops` since the
+2026-11-10 crop landed; it was `..._the_container_refuses` when this report was
+written)
+already asserts all three slugs answer `READY` hub-side, its docstring at
+`:223-229` records the two gates that make them answer so, and `:234-237`
+reached the same conclusion about the siblings' containers. This report
 is independent first-hand confirmation of that from the sibling repo's code, not a
 re-reading of the test.
 
@@ -339,7 +343,13 @@ of the three options.
 The behaviour becomes what `rfantibody` already does, which is also what the
 customer almost certainly wants.
 
-**Modal redeploy: yes, all nine apps — and not rfd4.** `tools/rfd4/run_pipeline.py`
+**Modal redeploy: yes — and, on this base, not rfd4 itself.** SUPERSEDED
+2026-11-10: #505 (merged, main `613aa2e2`) added rfd4's matrix row, so the fleet
+is **ten** apps and the crop now deploys itself. The paragraph below is the
+2026-11-05 reading, kept because §4.3's recommendation rests on it; read "nine"
+as "the nine that existed then".
+
+`tools/rfd4/run_pipeline.py`
 matches `tools/**` and no negation covers it (the three negations are `meta.py`,
 `example/**` and `__init__.py`). The workflow's matrix is the nine apps named in its
 header: mpnn, af2, colabfold, esmfold, boltz2, esmfold2_design, iggm, proteina,
@@ -350,7 +360,8 @@ the change itself.
 That is the decisive cost, and it carries a hard constraint: §8 of the scope doc
 says **merge only when the fleet is idle**. Per the house rule
 (`gpu-redeploy-only-when-idle`), that means checking `tool_jobs` for
-pending/running rows across all nine before the merge, not just rfd4's.
+pending/running rows across all nine before the merge, not just rfd4's -- ten as
+of #505, rfd4's own rows now among them.
 
 **What else it affects.** The container is the only place that knows the file's
 real chain list, so cropping there is where the information already is — no new
@@ -359,8 +370,12 @@ is a thing the hub currently tells them about for `rfantibody` only via containe
 logs (`docker/rfantibody/run_pipeline.py:1421-1426` for the kept/dropped chain
 lists, `:1447` for the preprocessed-target line), not via the UI. Also: `resolve_target_chain`'s docstring opens
 *"MULTI-CHAIN TARGETS ARE REFUSED"* and is cited from three other places
-(`tools/rfd4/__init__.py:126-131`, `shared/pipeline_normalize.py:707-708`,
-`tests/test_rfd4_adapter.py:179-182`); all four move together or the claims rot.
+(`tools/rfd4/__init__.py`, `shared/pipeline_normalize.py:707-708`,
+`tests/test_rfd4_adapter.py`); all four move together or the claims rot.
+**Superseded 2026-11-10:** that docstring now opens *"A RUN STILL DESIGNS
+AGAINST ONE CHAIN"* and records the crop. `shared/pipeline_normalize.py` and
+`templates/tools/rfd4_results.html` were updated in the same change, both to
+say that the single-chain rule is about the FIELD and not the upload.
 
 ### 4.3 Recommendation for §9 item 11
 
@@ -390,6 +405,14 @@ rules field, three new strings and a divergence from the two paid siblings.
 
 **This recommendation requires a code change in `tools/**`, which this session was
 told not to touch.** Reporting it rather than doing it, as instructed.
+
+**ACCEPTED AND IMPLEMENTED 2026-11-10.** Leo took 4.2: the container crops, with
+no hub-side refusal and no preflight change. The crop lives in
+`tools/rfd4/run_pipeline.py::load_target` -- it runs on the PDB text before
+`pdb_to_cif`, because `resolve_target_chain` receives a mapping and has no access
+to the file -- and the mmCIF path still refuses. Scope §9 item 11 is CLOSED. The
+merge still needs the idle-fleet window this section argued for. Everything above
+is the 2026-11-05 reasoning, kept as the record of the decision.
 
 ---
 
@@ -640,7 +663,7 @@ is how a 24-failure dependency goes missing. Not created here, as instructed.
 | Is there a live money bug on the two paid tools? | **No.** | §1 |
 | Does a stranded rfd4 run bill the start minimum? | **No.** `live_start_usd` is a balance gate; bucket `"input"` is unclassified ⇒ full refund. Residual: Workspace-cap debit (no `failure_class` guard; PR #504 adds one), and the metered seconds of container start, refunded. No cushioned hold: rfd4 is live-charging, so submit opens a $0 anchor. | §2 |
 | §9 item 11 recommendation | Crop in the container, on an idle fleet, in step 6's redeploy window. | §4.3 |
-| Does that redeploy the nine apps? | Crop-in-container: **yes, all nine, and not rfd4**. Refuse hub-side: **no**. | §4.1, §4.2 |
+| Does that redeploy the fleet? | Crop-in-container: **yes**. On this base, nine apps and not rfd4; as of #505, all **ten** including rfd4. Refuse hub-side: **no**. | §4.1, §4.2 |
 | §9 item 10 recommendation | `("assets/paper/RFD4-Proteina.pdf", "RosettaCommons/RFD4-Proteina")`, guard shape unchanged, zero weakening for the other fourteen. | §5.4 |
 | Project page / PDF today | **200 / 200.** Yesterday's 503 was transient; the domain is GitHub Pages. | §5.1 |
 | Does `rfd4_form.html` exist? | **No.** Flag gate spares production; the suite breaks via `all_tools_app`. Step 7 owns it. | §6 |
