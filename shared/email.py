@@ -562,13 +562,12 @@ def _tool_label(slug: str) -> str:
         "opendde": "OpenDDE co-folding",
         "proteina": "Proteina-Complexa",
         "pxdesign": "PXDesign",
-        # Ahead of its registration, so the coverage guard does not reach
-        # it yet: rfd4 is registered by step 7A of
-        # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md. An unregistered
-        # key costs nothing here -- the guard checks that every
-        # registered slug HAS a label, not that every label has a slug --
-        # and this is the map a worker reads with no registry imported,
-        # which is exactly the path that emailed raw slugs before.
+        # Written ahead of rfd4's registration, which landed at step 7A of
+        # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md; the coverage guard
+        # reaches this key now and cost nothing while it did not -- the guard
+        # checks that every registered slug HAS a label, not that every label
+        # has a slug. This is the map a worker reads with no registry
+        # imported, which is exactly the path that emailed raw slugs before.
         "rfd4": "RFD4-Proteina",
         "rfantibody": "RFantibody",
         "rfdiffusion": "RFdiffusion",

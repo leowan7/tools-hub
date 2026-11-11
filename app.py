@@ -158,6 +158,7 @@ import tools.opendde     # noqa: F401 — import to register adapter (OpenDDE co
 import tools.proteina    # noqa: F401 — import to register adapter (Proteina-Complexa)
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
+import tools.rfd4        # noqa: F401 — import to register adapter (RFD4-Proteina)
 import tools.rfdiffusion # noqa: F401 — import to register adapter
 from scout import scout_bp
 from blueprints.public import public_bp

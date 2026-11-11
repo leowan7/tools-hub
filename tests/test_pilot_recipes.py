@@ -848,7 +848,7 @@ class TestHotspotDeflection:
         carded = {s for s in slugs if pilots[s] and self._carded(client, s)}
         assert carded == {
             "bindcraft", "boltzgen", "iggm", "pxdesign", "rfantibody",
-            "rfdiffusion",
+            "rfd4", "rfdiffusion",
         }, sorted(carded)
         for slug in slugs:
             expected = bool(pilots[slug]) and (

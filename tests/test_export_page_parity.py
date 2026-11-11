@@ -36,11 +36,13 @@ JOB_ID = "0f6be32f-e971-41f7-b7ec-33fbf795addd"
 
 # Every tool whose page renders the shared candidate table from its example.
 # Listed so the audit cannot pass by rendering nothing.
-# `rfd4` is absent on purpose: `_render_partial` resolves the partial through
-# `tool_base.get(slug)` (tests/test_worked_examples.py:190), which returns None
-# until the adapter is registered. Adding it here is part of the registration
-# step, not of this file. Its table is covered meanwhile by
-# tests/test_rfd4_results_and_exports.py, which injects the adapter itself.
+# `rfd4` is absent because this tuple was written while the adapter was
+# unregistered: `_render_partial` resolves the partial through
+# `tool_base.get(slug)` (tests/test_worked_examples.py:190), which returned
+# None then and answers now that step 7A has registered it. Its table is
+# covered by tests/test_rfd4_results_and_exports.py, which runs this file's
+# own helpers over the registered adapter; folding rfd4 into this tuple is a
+# later change, not part of the registration step.
 TABLE_TOOLS = (
     "af2", "bindcraft", "boltz2", "boltzgen", "esmfold2-design", "iggm",
     "opendde", "proteina", "pxdesign", "rfantibody", "rfdiffusion",

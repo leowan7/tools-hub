@@ -371,7 +371,8 @@ def _require_tool(tool_slug: str):
 #      below no longer mentions the slug at all, and the map has an
 #      entry for every slug the registry carries, so it should never
 #      fire. Counting the entries is not the check -- the map may hold a
-#      row ahead of its registration, as rfd4's does -- the check is
+#      row ahead of its registration, as rfd4's did before step 7A -- the
+#      check is
 #      tests/test_public_tool_pages.py::TestRenderedLedeRules, which
 #      renders each registered page and reads the lede back.
 #
@@ -586,11 +587,14 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     "proteina": "Hard-Target Binder Design",
     # 23 characters, counted by hand, well inside the 65-char SERP cap this
     # map exists for. NO test measures that cap: the lede-shape guard counts
-    # words, not characters (MAX_PHRASE_WORDS,
-    # tests/test_public_tool_pages.py:1010), and the one guard that reads the
-    # rendered <title> only looks for the word "free" (:1136-1157). The cap is
-    # a convention this map keeps by hand, and nothing will start enforcing it
-    # at step 7A either. Says the mechanism, not a rank: "Best Binder
+    # words, not characters (TestRenderedLedeRules.MAX_PHRASE_WORDS in
+    # tests/test_public_tool_pages.py), and the one guard that reads the
+    # rendered <title> only looks for the word "free"
+    # (test_no_lede_or_title_advertises_the_run_as_free in the same file).
+    # Cited by symbol, not line: the line numbers that stood here were
+    # falsified by this very commit, which added three lines above them.
+    # The cap is a convention this map keeps by hand, and step 7A's
+    # registration did not start enforcing it either. Says the mechanism, not a rank: "Best Binder
     # Generator" is the line Leo refused on 2026-11-05.
     "rfd4": "One-Model Binder Design",
 }
