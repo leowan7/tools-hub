@@ -606,13 +606,12 @@ _AA3TO1 = {
     # file. A PDB upload's target CIF is written by ``numbering.pdb_to_cif``,
     # whose rule is ``_is_polymer`` -- a CIF upload is used as it arrived
     # (``load_target`` below, the ``is_cif`` arm) and is written by neither.
-    # The design CIF is written by upstream RFD4, and the repo does record
-    # one thing about its numbering -- "the output CIF renumbers the target
-    # chain 1-based from the input's first present residue"
-    # (docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:209-210, of a recorded
-    # RFD4-Proteina run; the doc says "the output CIF", it does not name the
-    # writer) -- but nothing in it shows how that writer treats a ``HETATM``
-    # ``SEC``/``PYL`` residue. If
+    # The design CIF is written by upstream RFD4, and nothing in this repo
+    # shows how that writer treats a ``HETATM`` ``SEC``/``PYL`` residue. (The
+    # one numbering fact the repo does record about an upstream CIF,
+    # docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:209-210, is about the
+    # conditioning CIF that ``write_condition_spec_cifs.py`` writes, :201-203,
+    # not about a design, so it is not evidence here either way.) If
     # the two disagree, ``_designed_sequence`` finds no match and carries no
     # sequence, which is the fail-closed arm. Upgrade path: adding
     # ``SEC``/``PYL`` to ``_MODRES_EQUIV`` would close it for files this
