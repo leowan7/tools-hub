@@ -183,8 +183,9 @@ _FACTS: dict[str, _Facts] = {
     # "You have a target structure and want a binder that arrives whole.
     # RFD4-Proteina writes the sequence and the all-atom structure in a single
     # model, so there is no separate sequence-design step to run afterwards."
-    # -- tools/rfd4/meta.py::comparison_one_liner. The same claim is the
-    # adapter's own blurb (tools/rfd4/__init__.py, ToolAdapter(blurb=...)).
+    # -- tools/rfd4/meta.py::comparison_one_liner. The adapter blurb in
+    # tools/rfd4/__init__.py no longer makes this claim (rewritten
+    # 2026-11-11), so comparison_one_liner is the one source quoted here.
     #
     # target-structure, not target-sequence: ``requires_pdb=True`` on the
     # adapter AND on its one preset (tools/rfd4/__init__.py), and
