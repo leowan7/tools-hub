@@ -375,10 +375,11 @@ class TestGenuinelyDeadJobStillTimesOut:
         assert outcome == "timed_out"
         stored = store.rows[row["id"]]
         assert stored["status"] == "timeout"
-        # The crash verdict vetoes the keep, so nothing is resurrected and
-        # the class stays the refunded one (the ``exit_verdict not in
-        # ("failed", "failed_unconfirmed")`` gate in
+        # The crash verdict vetoes the BILL, not the designs: both designs
+        # are kept and stay visible, and the class stays the refunded one
+        # (the ``reclassify=`` argument in
         # shared/jobs.py::timeout_stuck_job).
+        assert len(stored["result"]["candidates"]) == 2
         assert stored["failure_class"] == "no_progress_timeout"
         release.assert_called_once()
         settle.assert_not_called()
@@ -424,8 +425,8 @@ class TestGenuinelyDeadJobStillTimesOut:
         #   * status="failed" with no integer exit code is a reported
         #     failure with the evidence missing, not an absence of failure.
         #
-        # Both must land where the confirmed crash lands: timed out,
-        # refunded, nothing resurrected.
+        # Both must land where the confirmed crash lands: timed out and
+        # refunded, with the designs they delivered still shown.
         partials = [
             {"rank": 1, "pdb_key": "design_001.cif", "iptm": 0.7},
             {"rank": 2, "pdb_key": "design_002.cif", "iptm": 0.6},
@@ -455,6 +456,7 @@ class TestGenuinelyDeadJobStillTimesOut:
         assert outcome == "timed_out"
         stored = store.rows[row["id"]]
         assert stored["status"] == "timeout"
+        assert len(stored["result"]["candidates"]) == 2
         assert stored["failure_class"] == "no_progress_timeout"
         release.assert_called_once()
         settle.assert_not_called()
@@ -470,9 +472,8 @@ class TestGenuinelyDeadJobStillTimesOut:
         # finished, i.e. that WE ended it.
         #
         # That is exactly the case Leo rejected in option B, so it must not
-        # be billed. It is not a crash either, so the designs it already
-        # streamed are kept and stay visible -- the two halves come apart
-        # here, and only here.
+        # be billed. The designs it already streamed are kept and stay
+        # visible, as they are on the two failure verdicts above.
         partials = [
             {"rank": 1, "pdb_key": "design_001.cif", "iptm": 0.7},
             {"rank": 2, "pdb_key": "design_002.cif", "iptm": 0.6},
@@ -503,12 +504,81 @@ class TestGenuinelyDeadJobStillTimesOut:
         assert outcome == "timed_out"
         stored = store.rows[row["id"]]
         assert stored["status"] == "timeout"
-        # Kept: the designs are in the result, not discarded as they are on
-        # the crash verdicts above.
+        # Kept: the designs are in the result, as they are on the crash
+        # verdicts above.
         assert len(stored["result"]["candidates"]) == 2
         assert stored["result"]["partial"] is True
         # Not billed: the class stays the refunded one even though designs
-        # were kept, which no other path does.
+        # were kept.
+        assert stored["failure_class"] == "no_progress_timeout"
+        release.assert_called_once()
+        settle.assert_not_called()
+
+    def test_a_failed_verdict_still_shows_the_designs_it_delivered(
+        self, patched_service_client, store
+    ):
+        # The 2026-11-05 incident, job e3703b7a
+        # (docs/qa/ESMFOLD2-STALL-2026-11-05.md). An esmfold2-design run
+        # asked for 3 designs, produced all 3 and uploaded them to Storage
+        # inside 11 minutes, then went silent with no terminal webhook. Six
+        # hours later the sweeper swept it and the customer was shown
+        # NOTHING. Which of the two failure verdicts the probe returned was
+        # not logged and is no longer recoverable (see the write-up); both
+        # used to skip the keep outright instead of only withholding the
+        # bill. This test polls "error", so it pins the unconfirmed verdict;
+        # the confirmed-crash verdict is pinned by
+        # ::test_crashed_pipeline_with_partial_designs_is_not_billed above,
+        # which now asserts its designs are kept too.
+        #
+        # The progress counters cannot rescue this: this pipeline never
+        # filled them, so ``_completion_signal`` reads ``designs_total: 0``
+        # and returns "unknown" (shared/job_recovery.py::_completion_signal),
+        # which is why recovery refused and this path ran at all. The
+        # delivered designs were on the row the whole time.
+        partials = [
+            {"rank": i + 1, "pdb_key": f"design_{i}_complex.pdb",
+             "iptm": score}
+            for i, score in enumerate((0.9033, 0.8608, 0.8291))
+        ]
+        row = _row(
+            status="running",
+            tool="esmfold2-design",
+            gpu_seconds_used=655,
+            modal_function_call_id="fc-e3703b7a",
+            inputs={
+                "_wallet": {"hold_tx_id": "hold-1", "gpu_class": "h100"},
+                "_partial_candidates": partials,
+                "_progress": {
+                    "stage": "folding",
+                    "designs_completed": 0,
+                    "designs_total": 0,
+                },
+                "parameters": {"n_designs_total": 3},
+            },
+        )
+        store.rows[row["id"]] = row
+
+        with patch(
+            "gpu.modal_client.ModalClient.poll",
+            return_value={"status": "error", "result": None,
+                          "error": "call not found"},
+        ), patch(
+            "shared.job_recovery._list_prefix_names",
+            return_value=[p["pdb_key"] for p in partials],
+        ), patch("shared.wallet.settle_hold") as settle, patch(
+            "shared.wallet.release_hold"
+        ) as release:
+            outcome = timeout_stuck_job(row["id"])
+
+        assert outcome == "timed_out"
+        stored = store.rows[row["id"]]
+        assert stored["status"] == "timeout"
+        # All three delivered designs reach the customer, with their scores.
+        kept = stored["result"]["candidates"]
+        assert len(kept) == 3
+        assert stored["result"]["partial"] is True
+        # And the refund stands: an unanswerable probe is not evidence the
+        # run finished, so we do not charge for it.
         assert stored["failure_class"] == "no_progress_timeout"
         release.assert_called_once()
         settle.assert_not_called()

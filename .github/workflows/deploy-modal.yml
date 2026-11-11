@@ -12,13 +12,37 @@ name: Deploy Modal apps
 #   - iggm             (tools/iggm/modal_app.py)
 #   - proteina         (tools/proteina/modal_app.py)
 #   - opendde          (tools/opendde/modal_app.py)
+#   - rfd4             (tools/rfd4/modal_app.py)
 #
 # Prerequisites:
 #   - Repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set.
 #   - Each tools/<tool>/modal_app.py exists at HEAD.
+#   - rfd4 only: this job depends on the `rfd4-proteina-weights` Volume
+#     existing, because its declaration omits `create_if_missing` on purpose
+#     (tools/rfd4/modal_app.py, `weights =
+#     modal.Volume.from_name("rfd4-proteina-weights")`). The Volume DOES
+#     exist: seeded 2026-10-30 at rung 2 of the validation ladder, recorded in
+#     docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md sections 5.6 and 11, and
+#     re-confirmed against the live Modal workspace by the hub lead on
+#     2026-11-10. `modal run tools/rfd4/seed_volumes.py` is what creates and
+#     seeds it, and it is idempotent, but it does not need running again.
+#     Nothing in this repo enforces or can check any of that -- no test here
+#     reaches the Modal account.
+#
+#     Standing risk, NOT a merge prerequisite: nothing stops the Volume being
+#     deleted -- the scope doc line above says to delete it if RFD4 is dropped
+#     -- and this row would then go red with no create_if_missing to save it.
+#     That red would not be cosmetic. ALERTING.md records that a red Actions
+#     suite on main's HEAD makes Railway SKIP the same-commit deploy ("This
+#     guard can deadlock with the Wait-for-CI gate"), and its refusal-rate
+#     section rejects a fail path for exactly that reason -- it "would redden
+#     main's check suite and block Railway deploys". So dropping RFD4 means
+#     dropping this row in the same commit as the Volume.
+#     NOT verified here: whether Railway's gate reads every check run on the
+#     commit or only pytest.yml. Nothing in this repo settles that.
 #
 # Matrix strategy: one job per app so a single-app failure does not abort the
-# other three. `fail-fast: false` is required so prod deploys are attempted
+# others. `fail-fast: false` is required so prod deploys are attempted
 # independently.
 
 on:
@@ -29,7 +53,7 @@ on:
       # Dockerfile.modal COPYs them and no modal_app.py add_local_*s them (the
       # only tools-side file any image gets is that app's own run_pipeline.py),
       # so an edit there cannot change a container. Excluding them stops
-      # web-tier-only PRs from redeploying all nine GPU images. The meta.py
+      # web-tier-only PRs from redeploying all ten GPU images. The meta.py
       # importers are tools/pxdesign/__init__.py and
       # tools/rfdiffusion/__init__.py, both re-exporting for templates.
       #
@@ -39,7 +63,7 @@ on:
       # package (FunctionInfoType.FILE).
       #
       # tests/test_deploy_paths_exclusions.py is what keeps that true, three
-      # ways. (1) It runs Modal's own loader over each of the nine apps in a
+      # ways. (1) It runs Modal's own loader over each of the ten apps in a
       # subprocess and fails if the resulting upload set — entrypoint mount,
       # spec mounts, every image mount layer and build-context mount, and every
       # layer's DockerfileSpec.context_files — contains any __init__.py.
@@ -109,7 +133,7 @@ on:
       #
       # "Four" is how many images the fixture CHANGES, not how many redeploy.
       # The matrix below has no per-path routing, so any entry here that fires
-      # redeploys all nine apps; the other five just rebuild identically. That
+      # redeploys all ten apps; the other six just rebuild identically. That
       # is the matrix's shape, not something these three entries introduce.
       #
       # These three sit AFTER every negation and are unaffected by the ordering
@@ -120,7 +144,7 @@ on:
       # contiguous under the 'tools/**' it qualifies.
       #
       # Listed file-by-file, not as 'static/example/**': the other two fixtures
-      # there are docs-only, and a glob would rebuild all nine GPU images to
+      # there are docs-only, and a glob would rebuild all ten GPU images to
       # ship a file no image contains — the same waste the negations above
       # exist to prevent. Safe to keep tight because
       # tests/test_deploy_trigger_covers_dockerfile_copies.py fails if any
@@ -156,6 +180,7 @@ jobs:
           - iggm
           - proteina
           - opendde
+          - rfd4
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

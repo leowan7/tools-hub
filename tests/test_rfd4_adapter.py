@@ -79,6 +79,40 @@ def test_validate_accepts_a_whole_form_and_stamps_the_scaling_key():
     assert inputs["parameters"]["n_designs_total"] == 16
 
 
+def test_a_blank_chain_field_is_stamped_as_not_named():
+    """The default "A" must not look to the container like a customer's pick.
+
+    ``validate`` substitutes "A" for a blank field for its own gates, and
+    ``run_pipeline.main`` crops only on a chain the customer named: cropping on
+    the substituted default would design against whichever protomer of a dimer
+    happens to be chain A. With ``target_chain_named`` False the run reaches
+    ``resolve_target_chain``'s refusal instead
+    (``tests/test_rfd4_pipeline.py::test_a_two_chain_target_with_no_chain_named_is_refused``).
+    """
+    named, err = adapter_mod.validate(_form(), {})
+    assert err is None
+    assert named["target_chain_named"] is True
+
+    inputs, err = adapter_mod.validate(_form(target_chain=""), {})
+    assert err is None, err
+    assert inputs["target_chain"] == "A"
+    assert inputs["target_chain_named"] is False
+
+    # A whitespace-only field never reaches the container at all: `or "A"`
+    # keeps the spaces and `parse_target_chains` strips them to nothing.
+    assert adapter_mod.validate(_form(target_chain="   "), {})[1] == (
+        "Target chain is required."
+    )
+
+    # An absent key reads as not named too. blueprints/targets.py sends it
+    # as "" rather than omitting it (:104, :213); both land here.
+    absent = dict(_form())
+    del absent["target_chain"]
+    inputs, err = adapter_mod.validate(absent, {})
+    assert err is None, err
+    assert inputs["target_chain_named"] is False
+
+
 def test_validate_defaults_match_the_container_defaults():
     inputs, err = adapter_mod.validate(
         {"target_chain": "A", "hotspot_residues": "56"}, {}
@@ -124,48 +158,48 @@ def test_build_payload_carries_every_key_main_reads():
     inputs, err = adapter_mod.validate(_form(), {})
     assert err is None
     payload = adapter_mod.build_payload(inputs, "https://example.invalid/t.cif")
-    for key in ("preset", "target_chain", "hotspot_residues", "binder_length",
+    for key in ("preset", "target_chain", "target_chain_named",
+                "hotspot_residues", "binder_length",
                 "nsamples", "parameters"):
         assert key in payload, key
     assert payload["parameters"]["n_designs_total"] == 16
 
 
-def test_the_adapter_is_built_and_the_flag_is_off(monkeypatch):
-    """The gate: the contract exists and rfd4 is unreachable twice over.
+def test_the_adapter_is_registered_and_the_flag_is_off(monkeypatch):
+    """The gate: rfd4 routes, and only the flag keeps it off a customer.
 
-    ``register(adapter)`` is deliberately NOT in tools/rfd4/__init__.py yet.
-    It is one line, and it is the line that makes every guard iterating
-    ``tools.base.all_adapters()`` demand a complete registry row: the two
-    templates the adapter names, the catalog band, the result columns, the
-    score legends, the email label. Those are later steps, and most of them
-    are customer-visible copy. Measured both directions on the branch that
-    wrote this file and recorded in the step table of
-    docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md.
+    Registration removed the first of the two independent gates this test
+    used to pin. What is left:
 
-    So two independent gates hold, and both are pinned here:
-
-      * NOT IN THE REGISTRY. blueprints/tools.py::_require_tool reads
-        ``tool_base.get(slug)`` and 404s a None in its first arm
-        before it looks at the flag, so no env var reaches the form.
+      * IN THE REGISTRY. ``tools/rfd4/__init__.py`` calls
+        ``register(adapter)``, so ``blueprints/tools.py::_require_tool``
+        passes its first arm (``tool_base.get(slug)`` is not None) and
+        reaches the flag check instead of 404ing.
       * FLAG OFF. shared/feature_flags.py::tool_enabled is fail-closed on
-        an unset env var.
+        an unset env var, which is what keeps the tool invisible.
 
-    The step that lands the templates and the registry copy adds
-    ``register(adapter)`` and flips the registry assertion below. The flag
-    assertions stay, because the flag is what gates reach once a tool is
-    registered.
+    ``get`` is read through ``import app`` rather than this file's line 15
+    (``from tools import rfd4 as adapter_mod``) because the registry is what
+    the running app sees. That is a readability choice, NOT a guard: line 15
+    has already registered the adapter by the time this runs, and the
+    registry is process-global, so this assertion stays green even with
+    app.py's import deleted -- measured by deleting it. The guard that the
+    import exists is the source-level one,
+    tests/test_tool_categories.py::test_app_imports_every_registering_tool_package,
+    which does go red on that deletion (also measured).
     """
+    import app  # noqa: F401, PLC0415  (populates tools.base._REGISTRY)
+
     from shared.feature_flags import flag_name, tool_enabled
     from tools.base import ToolAdapter, get
 
     assert isinstance(adapter_mod.adapter, ToolAdapter)
     assert adapter_mod.adapter.slug == "rfd4"
 
-    assert get("rfd4") is None, (
-        "rfd4 is in the adapter registry. If that is intended, this is the "
-        "step that lands tools/rfd4_form.html, tools/rfd4_results.html and "
-        "the registry copy -- update this assertion and expect every "
-        "all_adapters() guard to demand them."
+    assert get("rfd4") is adapter_mod.adapter, (
+        "rfd4 is not the registered adapter -- register(adapter) is missing "
+        "from tools/rfd4/__init__.py. A missing app.py import does NOT reach "
+        "here; test_app_imports_every_registering_tool_package catches that"
     )
 
     assert flag_name("rfd4") == "FLAG_TOOL_RFD4"
@@ -173,44 +207,41 @@ def test_the_adapter_is_built_and_the_flag_is_off(monkeypatch):
     assert tool_enabled("rfd4") is False
 
 
-def test_an_extra_polymer_chain_passes_the_gates_the_container_refuses():
-    """PINS A KNOWN GAP, so neither side can move without this going red.
+def test_an_extra_polymer_chain_passes_the_gates_and_the_container_crops():
+    """PINS BOTH SIDES, so neither can move without this going red.
 
-    ``tools/rfd4/run_pipeline.py::resolve_target_chain`` ``_fail``s when the
-    upload holds any polymer chain besides the one named -- "the upload holds
-    more than one polymer chain (...); RFD4-Proteina here accepts a
-    single-chain target only." Nothing hub-side mirrors that refusal:
+    THE GATES ARE UNCHANGED, by Leo's decision of 2026-11-10 (section 9 item 11
+    of docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md): no hub-side refusal, no
+    preflight change. The first half below asserts READY for a two-chain upload
+    with one chain named, which is the behaviour today, and asserts it for
+    ``rfantibody`` and ``bindcraft`` alongside because they answer the same way
+    -- so a red here on the preflight half means the house convention moved, not
+    that rfd4 grew a bug. The two reasons the gates say READY, for a reader
+    checking whether the convention still holds:
 
-      * ``validate`` above never opens ``files``, so the chain count is not
-        a thing it can see.
+      * ``validate`` in tools/rfd4/__init__.py never opens ``files``, so the
+        chain count is not a thing it can see.
       * ``shared/pdb_preflight.py::_multi_chain_block`` returns None on
-        ``len(chain_ids) <= 1``, and ``chain_ids`` is the list of chains
-        NAMED ON THE FORM rather than the chains present in the file. So
-        rfd4's ``multi_chain_supported=False`` /
-        ``multi_chain_container_ready=False`` in
-        shared/pdb_preflight_rules.py are inert for this input.
+        ``len(chain_ids) <= 1``, and ``chain_ids`` is the list of chains NAMED
+        ON THE FORM rather than the chains present in the file. So rfd4's
+        ``multi_chain_supported=False`` / ``multi_chain_container_ready=False``
+        in shared/pdb_preflight_rules.py are inert for this input.
 
-    MEASURED, NOT ASSUMED: this asserts READY, which is the behaviour today,
-    and ``rfantibody`` and ``bindcraft`` are asserted alongside because they
-    answer the same way. The preflight is therefore behaving to house
-    convention and this is not an rfd4 preflight bug -- what diverges is the
-    container, where the siblings' pipeline crops to the named chain and
-    rfd4's refuses the file.
+    THE CONTAINER NOW CROPS, which is the half that changed. It used to
+    ``_fail`` in ``resolve_target_chain`` on any polymer chain besides the one
+    named -- after the wallet hold and the GPU start, so the customer paid the
+    start minimum and received zero designs. The second half asserts the crop
+    on the same fixture: the gates let it through and the container keeps the
+    named chain and drops the rest, which is what the siblings' normalizers
+    already do (``shared/pipeline_normalize.py``).
 
-    NEITHER FIX WAS STEP 3'S. Refusing hub-side invents customer-visible
-    refusal copy (``_multi_chain_block``'s existing wording says the chains
-    "were named", which is false for this input) and would make rfd4 the
-    only tool refusing a file its siblings accept; cropping in the container
-    edits ``tools/rfd4/run_pipeline.py``, which the deploy workflow's trigger
-    paths match un-negated, so it would redeploy all nine GPU images.
-    Recorded as section 9 item 11 of
-    docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md and as a blocker for the
-    registration step.
-
-    WHEN THIS GOES RED, the gap has been closed or has regressed. Read that
-    scope item before editing the assertion.
+    WHEN THIS GOES RED, one of the two halves has drifted. Read that scope item
+    before editing either assertion.
     """
     from shared.pdb_preflight import VerdictKind, preflight_for_tool
+
+    from tools.rfd4 import numbering
+    from tools.rfd4.run_pipeline import _polymer_chains, crop_pdb_to_chain
 
     # The suite's own builders rather than a hand-rolled body: a PDB that
     # _parse_structure accepts is fiddlier than it looks, and a broken
@@ -238,11 +269,17 @@ def test_an_extra_polymer_chain_passes_the_gates_the_container_refuses():
         assert verdict.kind is VerdictKind.READY, (
             f"{slug}: a two-chain upload with one chain named now gets "
             f"{verdict.kind} ({verdict.reason!r}) where it used to get "
-            f"READY. If that is the intended fix, see section 9 item 11 of "
-            f"docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md -- and check "
-            f"whether the refusal copy says the chains \"were named\", "
-            f"which is false for this input."
+            f"READY. The 2026-11-10 decision is that the gates stay as they "
+            f"are and the container crops; see section 9 item 11 of "
+            f"docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md."
         )
+
+    # And the container side of the same input: cropped, not refused.
+    whole_text = two_chains.decode()
+    assert _polymer_chains(numbering.pdb_to_cif(whole_text)[1]) == ["A", "B"]
+    cropped = crop_pdb_to_chain(whole_text, "A")
+    assert cropped is not None
+    assert _polymer_chains(numbering.pdb_to_cif(cropped)[1]) == ["A"]
 
 
 def test_the_wallet_actually_reads_the_stamped_key_off_the_job_spec():

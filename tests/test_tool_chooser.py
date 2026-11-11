@@ -344,11 +344,29 @@ def test_multi_chain_answer_excludes_the_tools_that_are_refused():
 # ---------------------------------------------------------------------------
 
 def test_every_fact_slug_is_a_real_catalog_slug():
-    """A typo'd slug would silently make an answer unreachable."""
+    """A typo'd slug would silently make an answer unreachable.
+
+    ``_build_tools_catalog`` reads the live adapter registry, so a slug whose
+    adapter is written but not yet registered is absent from it while being a
+    perfectly real tool -- ``rfd4`` was in that state until step 7A called
+    ``register`` on it, and the shared exception set is empty today.
+
+    The exception is the NAMED set, not "anything with a ``_TOOL_CATEGORIES``
+    band". Accepting any banded slug would retire the typo this test exists
+    for: a ``_FACTS`` row and a ``_TOOL_CATEGORIES`` row are written in one
+    commit and copied from each other, so one misspelling reaches both and
+    would satisfy both guards -- ``_TOOL_CATEGORIES`` keys are checked in only
+    one direction (tests/test_tool_categories.py::test_every_adapter_has_a_category
+    asserts every registered adapter has a band, never that every band names a
+    real tool). Importing the set shared with that module keeps the two
+    exception lists from drifting apart.
+    """
+    from tests.test_tool_categories import UNREGISTERED_SLUGS
     from shared.tools_catalog import _build_tools_catalog
 
     catalog = {e["slug"] for e in _build_tools_catalog()}
-    unknown = set(tool_chooser._FACTS) - catalog
+    known = catalog | UNREGISTERED_SLUGS
+    unknown = set(tool_chooser._FACTS) - known
     assert not unknown, f"chooser names slugs the catalog does not have: {unknown}"
 
 
@@ -476,10 +494,20 @@ def test_worked_example_flag_matches_the_files_on_disk():
         from shared.tool_meta import meta_for
 
         meta = meta_for(slug)
+        # The adapter clause mirrors ``has_example``'s third gate, which is the
+        # macro's own `{% if ex and adapter.results_partial %}`
+        # (templates/components/worked_example.html): an EXAMPLE and a
+        # result.json on disk still render no anchor without a registered
+        # adapter that has a results partial. rfd4 was where the two diverged
+        # while it shipped both files and no ``register`` call; step 7A
+        # registered it, so the clause is now carried by the expression below
+        # rather than by a live example.
+        adapter = tool_chooser._adapter_by_slug().get(slug)
         expected = bool(
             meta is not None
             and getattr(meta, "EXAMPLE", None)
             and _example_result(slug) is not None
+            and getattr(adapter, "results_partial", None)
         )
         assert tool_chooser.has_example(slug) is expected, slug
 

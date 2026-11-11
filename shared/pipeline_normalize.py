@@ -705,7 +705,10 @@ def normalize_for_rfd4(
     would map cleanly and point at the wrong residue.
 
     ONE chain, unlike proteina: tools/rfd4/__init__.py::validate refuses a
-    second, mirroring tools/rfd4/run_pipeline.py::resolve_target_chain.
+    second chain NAMED in this field. A multi-chain FILE is not refused -- as
+    of 2026-11-10 tools/rfd4/run_pipeline.py::load_target crops it to the named
+    chain in the container, so this normalizer's single-chain assumption is
+    about the field, not the upload.
     ``target_chain`` is still passed through as given rather than asserted
     here -- this is a dry run for a panel, and the chain-count refusal
     belongs to the adapter.

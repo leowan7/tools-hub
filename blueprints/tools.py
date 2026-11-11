@@ -368,8 +368,13 @@ def _require_tool(tool_slug: str):
 #      interpolated the raw slug — "ESMFold2 design is a free
 #      esmfold2-design tool online" — so the tools added after the map
 #      was written leaked a slug on an indexable page. The fallback
-#      below no longer mentions the slug at all, and the map now covers
-#      all 14 so it should never fire.
+#      below no longer mentions the slug at all, and the map has an
+#      entry for every slug the registry carries, so it should never
+#      fire. Counting the entries is not the check -- the map may hold a
+#      row ahead of its registration, as rfd4's did before step 7A -- the
+#      check is
+#      tests/test_public_tool_pages.py::TestRenderedLedeRules, which
+#      renders each registered page and reads the lede back.
 #
 # ``seo_phrase`` is a compact noun phrase completing "is a ..." and
 # must NOT end in a subordinate clause: "...against a target you
@@ -509,6 +514,25 @@ _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
         "search generates is re-folded against your target before the search "
         "builds on it"
     ),
+    # NOT a comparative claim. Upstream's benchmark does put this model
+    # above the generators already on the hub, and Leo's decision of
+    # 2026-11-05 was that no customer-facing surface may say so: the
+    # figures are the authors' own and no rfd4 run here has produced a
+    # binder for a customer. The differentiator this lede sells is the
+    # mechanism instead -- one model for sequence and structure, which is
+    # the Hugging Face model card's own description, quoted at section 1
+    # of docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md.
+    #
+    # AND NOT a scoring promise. Every other binder lede in this map
+    # leans on a confidence number somewhere; this tool delivers none
+    # (templates/tools/rfd4_results.html's header comment records why),
+    # so the lede sells completeness and stops there.
+    "rfd4": (
+        "no-install online all-atom binder design tool",
+        "Sequence and all-atom structure come out of the same model, so a "
+        "design arrives complete instead of as a backbone still waiting "
+        "for a sequence step"
+    ),
 }
 
 def _preview_seo_phrases(slug: str) -> tuple[str, str]:
@@ -561,6 +585,18 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     # short name that precedes it.
     "opendde": "Protein, DNA, RNA, Ligand",
     "proteina": "Hard-Target Binder Design",
+    # 23 characters, counted by hand, well inside the 65-char SERP cap this
+    # map exists for. NO test measures that cap: the lede-shape guard counts
+    # words, not characters (TestRenderedLedeRules.MAX_PHRASE_WORDS in
+    # tests/test_public_tool_pages.py), and the one guard that reads the
+    # rendered <title> only looks for the word "free"
+    # (test_no_lede_or_title_advertises_the_run_as_free in the same file).
+    # Cited by symbol, not line: the line numbers that stood here were
+    # falsified by this very commit, which added three lines above them.
+    # The cap is a convention this map keeps by hand, and step 7A's
+    # registration did not start enforcing it either. Says the mechanism, not a rank: "Best Binder
+    # Generator" is the line Leo refused on 2026-11-05.
+    "rfd4": "One-Model Binder Design",
 }
 
 def _preview_title_phrase(slug: str) -> str:
@@ -715,6 +751,14 @@ def _related_tool_cards(slug: str) -> list[dict]:
 # (stored key, form field, label shown when the stored key is absent).
 # iggm: tools/iggm/__init__.py:334-337 vs templates/tools/iggm_form.html:93,116,122.
 _CLONE_RENAMES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    # rfd4's validate() stores the design count as ``nsamples`` -- the key
+    # run_pipeline.parse_num_designs reads (tools/rfd4/__init__.py:217) --
+    # while templates/tools/rfd4_form.html asks for it as ``num_designs``.
+    # Without this row a clone of a 2-design pilot run refills the box with
+    # the form's hard-coded 8 and _clone_missing reports nothing.
+    "rfd4": (
+        ("nsamples", "num_designs", "Number of designs"),
+    ),
     "iggm": (
         ("antibody_fasta", "fasta", "Antibody FASTA"),
         ("antigen_chain", "target_chain", "Antigen chain"),

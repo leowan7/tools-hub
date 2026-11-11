@@ -6,9 +6,18 @@ separate slug, separate image, separate weights Volume.
 Deploy:
     modal deploy tools/rfd4/modal_app.py
 
-Not deployed by anything yet. ``rfd4`` is absent from the deploy matrix in
-``.github/workflows/deploy-modal.yml``, and scope doc §8 adds it at step 6;
-until then this file is built by no workflow and reachable by no customer.
+``rfd4`` is in the deploy matrix in ``.github/workflows/deploy-modal.yml``,
+pinned by tests/test_deploy_paths_exclusions.py::
+test_deploy_matrix_is_the_ten_known_apps. That job depends on the
+``rfd4-proteina-weights`` Volume existing, because the declaration below
+omits ``create_if_missing`` on purpose; ``modal run
+tools/rfd4/seed_volumes.py`` is what creates and seeds it. The Volume does
+exist -- seeded 2026-10-30 at rung 2, per
+docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md sections 5.6 and 11, and
+re-confirmed against the live Modal workspace by the hub lead on 2026-11-10.
+No test here can check that either way: nothing in this repo reaches the
+Modal account. Reachable by no customer while the adapter is out of the
+registry and ``FLAG_TOOL_RFD4`` is unset.
 
 Runtime: tools-hub's ``gpu.modal_client.ModalClient.submit`` resolves this
 function via ``modal.Function.from_name("ranomics-rfd4-prod", "run_tool")``

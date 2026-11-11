@@ -302,6 +302,30 @@ def test_viewer_row_spans_exactly_the_header_count():
     assert set(table.viewer_colspans) == {len(table.header_cells)}
 
 
+def test_viewer_row_spans_the_header_count_on_a_worked_example_too():
+    """The multi-tool case above exercises neither conditional column.
+
+    ``_multi_tool_table`` passes multi_tool=True with rows that carry a
+    ``pdb_key``, so ``show_name`` is off (it requires ``not multi_tool``)
+    and ``has_structures`` is on. Both terms the span sum added would have
+    to be wrong in the same direction for that test to notice. This is the
+    opposite shape, and the one a worked-example page actually renders:
+    job_id == "example" suppresses the job-scoped URL so no row has a
+    structure, and a tool with no score columns falls back to the design
+    name. That is rfd4's table (tools/rfd4/meta.py:142).
+    """
+    rows = [{"rank": 0, "name": "000_pdl1_binder_0_generated",
+             "pdb_key": "000_pdl1_binder_0_generated.cif"},
+            {"rank": 1, "name": "001_pdl1_binder_1_generated",
+             "pdb_key": "001_pdl1_binder_1_generated.cif"}]
+    table = _parse(_render(candidates=rows, columns=[], job_id="example",
+                           tool_slug="rfd4"))
+
+    assert table.header_text == ["#", "★", "Design"], table.header_text
+    assert table.viewer_colspans, "no viewer rows rendered"
+    assert set(table.viewer_colspans) == {len(table.header_cells)}
+
+
 # ---------------------------------------------------------------------------
 # The Score cell
 # ---------------------------------------------------------------------------

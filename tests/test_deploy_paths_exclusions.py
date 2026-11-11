@@ -3,10 +3,10 @@
 ``.github/workflows/deploy-modal.yml`` excludes ``tools/**/__init__.py`` from the
 ``tools/**`` deploy trigger, alongside the ``meta.py`` and ``example/**``
 exclusions. Those files hold the Flask-side adapter class; nothing about them
-reaches a GPU container, so an edit there should not rebuild and redeploy nine
+reaches a GPU container, so an edit there should not rebuild and redeploy ten
 images.
 
-That is a PREMISE, not a law. It holds today because, for all nine deployed apps:
+That is a PREMISE, not a law. It holds today because, for all ten deployed apps:
 
 * ``modal deploy tools/<slug>/modal_app.py`` loads that file in SCRIPT mode, so
   its ``__package__`` is ``""`` and Modal classifies it ``FunctionInfoType.FILE``
@@ -167,8 +167,13 @@ def _deploy_matrix_apps() -> list[str]:
 _APPS = _deploy_matrix_apps()
 
 
-def test_deploy_matrix_is_the_nine_known_apps():
-    """Non-vacuity floor: every check below is parametrized over this list."""
+def test_deploy_matrix_is_the_ten_known_apps():
+    """Non-vacuity floor: every check below is parametrized over this list.
+
+    Renamed from ``test_deploy_matrix_is_the_nine_known_apps`` when rfd4 joined
+    the matrix; spelled out here so a grep for the old name still lands on the
+    test that replaced it.
+    """
     assert sorted(_APPS) == [
         "af2",
         "boltz2",
@@ -179,6 +184,7 @@ def test_deploy_matrix_is_the_nine_known_apps():
         "mpnn",
         "opendde",
         "proteina",
+        "rfd4",
     ], f"deploy-modal.yml matrix changed: {_APPS!r}. Re-verify the premise in this module's docstring for the new app, then update this list."
 
 
@@ -323,7 +329,7 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
     It was named for the negations alone, from when they were all it held. The
     three `static/example/` fixture entries are positives with an entirely
     different failure mode, so the name and the message both have to say so —
-    a message that reports a dropped fixture as "redeploying nine GPU images"
+    a message that reports a dropped fixture as "redeploying ten GPU images"
     names the exact opposite of what goes wrong.
     """
     doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
@@ -341,7 +347,7 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
         "Which entry moved decides which way this breaks.\n"
         "  NEGATIONS (`!tools/**/...`) — GitHub applies `paths` later-wins, so "
         "a negation moved above `tools/**` is re-included and stops excluding "
-        "anything, and a negation dropped altogether resumes redeploying nine "
+        "anything, and a negation dropped altogether resumes redeploying ten "
         "GPU images on web-tier-only edits. Wasteful, but loud and harmless.\n"
         "  POSITIVES (`static/example/...`) — the OPPOSITE failure. Four "
         "Dockerfiles COPY those fixtures as in-image smoke targets, and "
@@ -363,22 +369,27 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
 _DOCKERFILES = sorted((_REPO / "tools").glob("*/Dockerfile.modal"))
 
 # Slugs that have a Dockerfile.modal but are NOT in the deploy matrix: a tool
-# whose image lands before its Modal app does. `rfd4` is one because
-# docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §8 ships the image and the
-# weights seeder as step 1 and the modal_app.py only at step 2. Adding its
-# matrix entry is NOT a test-side change: .github/workflows/deploy-modal.yml
-# lists itself among its own trigger paths (line 132 of that file), so the
-# commit that adds the entry redeploys the whole fleet on merge. That waits on
-# the scope's rollout order (seed volumes, deploy Modal, merge, flip the flag)
-# and on an explicit go-ahead, not on a guard-test step. Until then no deploy
-# builds that image and no customer can reach it. Every check in this module still reads these files — only the
-# app-to-Dockerfile relation below has to know they have no app yet.
-_UNDEPLOYED_DOCKERFILE_SLUGS = {"rfd4"}
+# whose image lands before its Modal app does. Empty as of the commit that put
+# `rfd4` in the matrix — it was the only entry, and its modal_app.py now
+# deploys like the other nine. Kept rather than deleted because this is the one
+# relation that breaks when an image lands ahead of its app, and the next tool
+# will land that way too: the set is read by test_dockerfiles_are_discovered
+# and by test_every_discovered_dockerfile_is_the_one_its_app_uses below, both
+# of which go red on a Dockerfile with no matrix entry unless it is named here.
+#
+# Adding a matrix entry is not a test-side change on its own:
+# .github/workflows/deploy-modal.yml lists itself among its own trigger paths
+# (`_EXPECTED_PATHS` above pins that entry), so the commit that adds one
+# redeploys the whole fleet on merge, and for rfd4 the job also needs the
+# `rfd4-proteina-weights` Volume to exist already (tools/rfd4/modal_app.py
+# declares it without `create_if_missing`). Neither is enforced by a test here:
+# nothing in this repo can reach the Modal account.
+_UNDEPLOYED_DOCKERFILE_SLUGS: set[str] = set()
 
 # EVERY tools-side __init__.py must fail to match every COPY pattern — globbed,
 # not enumerated. A Dockerfile is free to COPY a *non-deployed* slug's adapter
 # (`tools/pxdesign/__init__.py` into af2's image, say); that file is still under
-# the `!tools/**/__init__.py` exclusion, so an enumeration of the nine deployed
+# the `!tools/**/__init__.py` exclusion, so an enumeration of the ten deployed
 # slugs would miss it entirely. The glob also covers the top-level
 # `tools/__init__.py`, where `**` handling differs.
 _INIT_PATHS = sorted(p.relative_to(_REPO) for p in (_REPO / "tools").glob("**/__init__.py"))
@@ -998,7 +1009,7 @@ def test_non_image_receiver_exemption_is_narrow():
     assert {"Volume", "Secret"} <= _MODAL_NON_IMAGE_CLASSES, (
         f"modal {modal.__version__} no longer exposes Volume/Secret as classes: "
         f"{sorted(_MODAL_NON_IMAGE_CLASSES)}. The exemption is now dead and the "
-        "nine apps' volume handles are about to go red."
+        "ten apps' volume handles are about to go red."
     )
 
 
@@ -1006,8 +1017,8 @@ def test_scan_flags_every_forbidden_call_and_kwarg():
     """Non-vacuity floor for ``_scan``'s violation branch itself.
 
     No app uses any of these today, so ``test_modal_app_stays_self_contained``
-    asserts ``not scan["violations"]`` over nine files that never populate it.
-    Without this, an AST refactor could stop detecting them entirely and nine
+    asserts ``not scan["violations"]`` over ten files that never populate it.
+    Without this, an AST refactor could stop detecting them entirely and ten
     tests would stay green over nothing.
     """
     for src in (
@@ -1038,7 +1049,7 @@ def test_scan_flags_every_forbidden_call_and_kwarg():
         '_f = image.pip_install_from_requirements\n_f("tools/mpnn/__init__.py")',
     ):
         assert _scan(src)["violations"], f"_scan() saw nothing wrong with: {src}"
-    # ...and does not cry wolf over what the nine apps really do.
+    # ...and does not cry wolf over what the ten apps really do.
     assert not _scan(
         'image.micromamba_install("cudatoolkit", channels=["conda-forge"])'
         '.add_local_file(_P, _R, copy=True)'
@@ -1048,6 +1059,48 @@ def test_scan_flags_every_forbidden_call_and_kwarg():
     # or the refusal above gets loosened for reasons unrelated to images.
     assert not _scan('subprocess.run(cmd, **kwargs)')["violations"]
     assert not _scan('modal.App("x", **app_kwargs)')["violations"]
+
+
+# Local Python files an app ships BESIDES its own run_pipeline.py, named per
+# app. `add_local_file` puts each one in the same remote directory, which is
+# what makes a plain `import numbering` resolve inside the subprocess: CPython
+# prepends the script's own directory to sys.path
+# (tools/rfd4/modal_app.py, the comment above `_NUMBERING_LOCAL`).
+#
+# What makes an entry here safe is the same property run_pipeline.py has: the
+# file sits under `tools/<app>/` and is not one of the three negated trigger
+# paths, so an edit to it redeploys the app. `_EXPECTED_PATHS` above pins those
+# negations (`!tools/**/meta.py`, `!tools/**/example/**`,
+# `!tools/**/__init__.py`), and ``test_every_extra_local_file_is_trigger_safe``
+# below checks both halves for every entry.
+_EXTRA_LOCAL_FILES: dict[str, set[str]] = {
+    "rfd4": {"tools/rfd4/numbering.py"},
+}
+
+
+def test_every_extra_local_file_is_trigger_safe():
+    """An entry in ``_EXTRA_LOCAL_FILES`` must exist and still redeploy.
+
+    Without this the dict would be a free pass: a stale entry would widen
+    ``test_modal_app_stays_self_contained`` over a file that no longer exists,
+    and an entry naming a negated path would permit a local file an edit to
+    which never triggers a deploy — silent staleness in a live image.
+    """
+    assert _EXTRA_LOCAL_FILES, "nothing named; this test asserts nothing"
+    negated = [p.lstrip("!") for p in _EXPECTED_PATHS if p.startswith("!")]
+    for app, extras in _EXTRA_LOCAL_FILES.items():
+        assert app in _APPS, f"{app} is not in the deploy matrix: {_APPS}"
+        for rel in extras:
+            assert rel.startswith(f"tools/{app}/"), (
+                f"{rel} is not under tools/{app}/, so it is not this app's own "
+                "file and nothing here says an edit to it redeploys this app"
+            )
+            assert (_REPO / rel).is_file(), f"{rel} does not exist"
+            hit = [pat for pat in negated if FilePatternMatcher(pat)(pathlib.Path(rel))]
+            assert not hit, (
+                f"{rel} matches the deploy trigger negation(s) {hit}, so "
+                f"editing it would change {app}'s image and trigger no deploy"
+            )
 
 
 @pytest.mark.parametrize("app", _APPS)
@@ -1102,14 +1155,18 @@ def test_modal_app_stays_self_contained(app):
         "measurement as the reason."
     )
 
+    allowed = {f"tools/{app}/run_pipeline.py"} | _EXTRA_LOCAL_FILES.get(app, set())
     resolved = [(n, _resolve(a, scan)) for n, a in scan["local_files"]]
-    unexpected = [(n, v) for n, v in resolved if v != f"tools/{app}/run_pipeline.py"]
+    unexpected = [(n, v) for n, v in resolved if v not in allowed]
     assert not unexpected, (
-        f"{app}/modal_app.py adds local files other than its own run_pipeline.py: "
+        f"{app}/modal_app.py adds local files beyond {sorted(allowed)}: "
         + ", ".join(f"line {n}: {v!r}" for n, v in unexpected)
-        + ". run_pipeline.py is the only local file the deploy trigger's "
-        "exclusions are known to be safe around. (None means the argument is not "
-        "a module-level string constant, so this scan cannot tell what it is.)"
+        + ". A local file is only safe around the deploy trigger's exclusions "
+        "while it sits under `tools/<app>/` and is not one of the three "
+        "negated paths (`_EXPECTED_PATHS` above). Add it to "
+        "_EXTRA_LOCAL_FILES with that reasoning, or move the code into "
+        "run_pipeline.py. (None means the argument is not a module-level "
+        "string constant, so this scan cannot tell what it is.)"
     )
 
     # `.dockerfile_commands([...])` injects raw Dockerfile directives, so a COPY
@@ -1153,11 +1210,12 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 
     ``_DOCKERFILES`` is a glob of ``tools/*/Dockerfile.modal``; nothing else
     proves those are the files the apps actually build from. If an app switched
-    to a Dockerfile somewhere else, the glob would still find nine files, still
-    scan them, and still pass — over a Dockerfile no longer in use.
+    to a Dockerfile somewhere else, the glob would still find the same files,
+    still scan them, and still pass — over a Dockerfile no longer in use.
 
     A slug in ``_UNDEPLOYED_DOCKERFILE_SLUGS`` has no modal_app.py to scan, so it
-    is dropped from the globbed side rather than counted as unused.
+    is dropped from the globbed side rather than counted as unused. That set is
+    empty today, so both sides are the full glob and nothing is dropped.
     """
     used = set()
     for app in _APPS:
@@ -1185,7 +1243,7 @@ def test_every_discovered_dockerfile_is_the_one_its_app_uses():
 # stay green. It probes the client requirements.txt pins (modal==1.6.2), NOT
 # the one deploy-modal.yml installs (`modal>=1.4,<2`, resolved fresh per deploy).
 #
-# Costs ~1s per app (subprocess start + `import modal`), ~10s for the nine. Not
+# Costs ~1s per app (subprocess start + `import modal`), ~10s for the ten. Not
 # marked slow and not skippable: a skipped guard is not a guard.
 # ---------------------------------------------------------------------------
 
@@ -1217,7 +1275,7 @@ def test_probe_sees_the_context_files_channel():
     solely responsible for, and three review rounds found five different
     spellings that got past the scan. It is worth exactly nothing unless it
     reports something: no app populates ``context_files`` today, so it returns
-    ``[]`` for all nine and would go on returning ``[]`` if the closure name it
+    ``[]`` for all ten and would go on returning ``[]`` if the closure name it
     reads were renamed — silently restoring single coverage.
 
     So build an image that really does ship a local file and make the probe

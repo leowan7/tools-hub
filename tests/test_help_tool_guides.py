@@ -376,3 +376,44 @@ def test_pilots_over_the_minimum_topup_are_all_binder_design(app):
         "step 4 of /help/getting-started says it starts structure prediction "
         "and sequence design"
     )
+
+
+def test_a_registered_tools_guide_404s_while_its_flag_is_off(monkeypatch):
+    """A tool in the registry but behind an off flag has no readable guide.
+
+    ``public.help_tool_guide`` gated on the registry alone, which was the same
+    thing as "launched" until a tool was registered ahead of its flag. The
+    first one that was (rfd4, step 7A) served its whole guide -- blurb,
+    inputs, presets and an "Open the form" button pointing at a 404 -- to
+    anonymous visitors under ``robots: index,follow``, while /help and
+    /sitemap.xml already omitted it.
+
+    Written against whatever two slugs are registered rather than against
+    rfd4, so it still holds once that flag is flipped on.
+    """
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    adapters = tool_base.all_adapters()
+    assert len(adapters) >= 2, "need two registered tools to compare"
+    off_slug, on_slug = adapters[0].slug, adapters[1].slug
+    for adapter in adapters:
+        monkeypatch.setenv(
+            "FLAG_TOOL_" + adapter.slug.upper().replace("-", "_"), "on"
+        )
+    monkeypatch.delenv("FLAG_TOOL_" + off_slug.upper().replace("-", "_"))
+
+    flask_app = _app.create_app()
+    flask_app.config["TESTING"] = True
+    client = flask_app.test_client()
+
+    off_resp = client.get(f"/help/tools/{off_slug}")
+    assert off_resp.status_code == 404, (
+        f"/help/tools/{off_slug} served {off_resp.status_code} with "
+        "its flag off"
+    )
+    # Not the slug: the 404 template echoes the requested URL in its
+    # canonical and og:url tags, so a correct 404 still contains it. The
+    # adapter's label is the guide copy that was leaking.
+    assert adapters[0].label not in off_resp.get_data(as_text=True)
+    assert client.get(f"/help/tools/{on_slug}").status_code == 200, (
+        f"the flag gate also 404s {on_slug}, whose flag is on"
+    )

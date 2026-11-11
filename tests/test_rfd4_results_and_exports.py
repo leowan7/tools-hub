@@ -1,16 +1,16 @@
 """rfd4's results page and its exports (RFD4-Proteina step 5).
 
-HOW THE PARITY GATE IS EXERCISED FOR AN UNREGISTERED TOOL. rfd4 ships
-unregistered on purpose — ``tools/rfd4/__init__.py`` builds its adapter and
-never calls ``register``, so ``tools.base.get("rfd4")`` is None and
-``blueprints/tools.py::_require_tool`` 404s every rfd4 URL. The shared parity
-driver in ``tests/test_export_page_parity.py`` resolves a tool's partial through
-``tools.base.get`` (``tests/test_worked_examples.py:190``), so rfd4 cannot be
-added to its ``TABLE_TOOLS`` tuple without registering the tool. This file
-instead injects the adapter into ``tools.base._REGISTRY`` for the duration of
-one test and reuses that driver's own helpers, so the page-vs-CSV assertion is
-the same assertion the other eleven tools get, run against shipped code that
-still has rfd4 unregistered.
+HOW THE PARITY GATE IS EXERCISED. rfd4 is in the adapter registry as of
+step 7A: ``tools/rfd4/__init__.py`` calls ``register(adapter)`` and app.py
+imports the package. The shared parity driver in
+``tests/test_export_page_parity.py`` resolves a tool's partial through
+``tools.base.get`` (``tests/test_worked_examples.py:190``), which answers for
+rfd4 now. These tests still reach the adapter through this file's own
+``rfd4_registered`` fixture rather than that driver's ``TABLE_TOOLS`` tuple --
+the fixture READS the live registry where it used to write to it, and folding
+rfd4 into TABLE_TOOLS is a change to a guard this step does not otherwise
+touch. The page-vs-CSV assertion below is still the same assertion the other
+eleven tools get, now run against the adapter the app itself routes to.
 
 The structure assertions read the committed rung-4 GPU run,
 ``docs/scoping/rung4-probe/gpu_result_20261103T114437.json`` (rc=0), so they are
@@ -39,17 +39,26 @@ PROBE = REPO / "docs/scoping/rung4-probe/gpu_result_20261103T114437.json"
 
 
 @pytest.fixture
-def rfd4_registered(monkeypatch):
-    """rfd4 in the registry for this test only; shipped code keeps it out."""
-    from tools import base as tool_base
-    import tools.rfd4 as rfd4
+def rfd4_registered():
+    """The rfd4 adapter as the running app routes to it.
 
-    assert tool_base.get("rfd4") is None, (
-        "rfd4 is registered in shipped code — registration is step 7A, and this "
-        "fixture's whole point is that it is not there yet"
+    Read through ``import app`` because that is how the running app fills
+    ``tools.base._REGISTRY``. The registry is process-global and other test
+    modules import tools.rfd4 directly, so this fixture cannot be relied on
+    to notice a missing app.py import; the source-level guard
+    tests/test_tool_categories.py::test_app_imports_every_registering_tool_package
+    is what does, measured by deleting the line.
+    """
+    import app  # noqa: F401, PLC0415  (populates tools.base._REGISTRY)
+
+    from tools.base import get
+
+    adapter = get("rfd4")
+    assert adapter is not None, (
+        "rfd4 is not in the registry -- register(adapter) is missing from "
+        "tools/rfd4/__init__.py"
     )
-    monkeypatch.setitem(tool_base._REGISTRY, "rfd4", rfd4.adapter)
-    return rfd4.adapter
+    return adapter
 
 
 def _probe_cifs() -> dict[str, str]:

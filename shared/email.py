@@ -504,9 +504,11 @@ def _next_step_for_job(
     """Resolve the natural next-step tool for a binder-design job.
 
     Uses the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in
-    shared.refold: tools that produce binder sequences get ColabFold as
-    the no-MSA orthogonal validator. Returns ("", "") when no handoff
-    applies (failed/empty result, or a tool not in SOURCE_TOOLS).
+    shared.refold: tools that produce binder sequences AND a score of their
+    own get ColabFold as the no-MSA orthogonal validator, while rfd4, which
+    produces no score, gets Boltz-2 to cofold against its target. Returns
+    ("", "") when no handoff applies (failed/empty result, or a tool not in
+    SOURCE_TOOLS).
     """
     if tone != "success":
         return ("", "")
@@ -517,11 +519,19 @@ def _next_step_for_job(
     tool_slug = getattr(job, "tool", "") or ""
     if tool_slug not in SOURCE_TOOLS:
         return ("", "")
-    dest_slug = "colabfold"
-    # _label_for_tool is defined further down in the wallet-senders
-    # block; it covers colabfold/esmfold and falls through to the slug
-    # if a future destination is added. Forward reference is fine since
-    # this function is only invoked at email-send time.
+    # rfd4 produces no score of its own (tools/rfd4/run_pipeline.py's
+    # ``_upload_design`` streams no number), so the next step it needs is a
+    # cofold against its target, not a standalone single-sequence fold. Every
+    # other source tool here already ranks its own candidates -- AF2 for
+    # rfdiffusion, bindcraft and pxdesign, refolding RMSD/ipTM/pLDDT for
+    # boltzgen (tools/boltzgen/__init__.py:7-8) -- so for them the ColabFold
+    # form is a second opinion on a number that already exists.
+    dest_slug = "boltz2" if tool_slug == "rfd4" else "colabfold"
+    # _label_for_tool is defined further down in the wallet-senders block;
+    # it delegates to ``_tool_label``, whose map holds both destinations
+    # reachable here ("colabfold" and "boltz2") and falls through to the raw
+    # slug for anything it does not. Forward reference is fine since this
+    # function is only invoked at email-send time.
     return f"{base_url}/tools/{dest_slug}", _label_for_tool(dest_slug)
 
 
@@ -531,7 +541,7 @@ def _tool_label(slug: str) -> str:
     The job-complete email might be sent from a worker that hasn't
     imported the tool adapter modules; keep this self-contained.
     """
-    # All 14 registered slugs, copied from tools.base.all_adapters() at
+    # Every registered slug, copied from tools.base.all_adapters() at
     # edit time rather than imported -- the docstring above explains why
     # the runtime import is avoided. It previously held five entries, one
     # of which ("proteinmpnn") is not a slug any tool uses, so it covered
@@ -552,6 +562,13 @@ def _tool_label(slug: str) -> str:
         "opendde": "OpenDDE co-folding",
         "proteina": "Proteina-Complexa",
         "pxdesign": "PXDesign",
+        # Written ahead of rfd4's registration, which landed at step 7A of
+        # docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md; the coverage guard
+        # reaches this key now and cost nothing while it did not -- the guard
+        # checks that every registered slug HAS a label, not that every label
+        # has a slug. This is the map a worker reads with no registry
+        # imported, which is exactly the path that emailed raw slugs before.
+        "rfd4": "RFD4-Proteina",
         "rfantibody": "RFantibody",
         "rfdiffusion": "RFdiffusion",
     }
@@ -1620,8 +1637,9 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         # Failed jobs that consumed no GPU time, or whose failure class is
         # refunded, get their wallet hold released
         # (shared/jobs.py::_settle_wallet_hold_for_completed_job), billing the
-        # user nothing. A refunded run can still carry GPU seconds, which
-        # debit the Workspace cap, not the wallet. Surface that reassurance in
+        # user nothing. A refunded run can still carry GPU seconds; they
+        # debit neither the wallet nor the Workspace cap
+        # (shared/jobs.py::_charge_workspace_for_completed_job). Surface that reassurance in
         # the email body for jobs that actually carried a hold; free smoke
         # runs skip the message since no charge was ever possible.
         # ``failure_notice`` makes the decision. It also covers 'timeout'

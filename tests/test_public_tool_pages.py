@@ -478,7 +478,8 @@ class TestNoAnonymouslyReachableSubmitControl:
                 if 'id="campaign-submit-btn"' in resp.get_data(as_text=True):
                     seen.append(slug)
         assert set(seen) == {
-            "bindcraft", "proteina", "pxdesign", "rfantibody", "rfdiffusion",
+            "bindcraft", "proteina", "pxdesign", "rfantibody", "rfd4",
+            "rfdiffusion",
         }, seen
 
 
@@ -882,21 +883,23 @@ class TestRenderedLedeRules:
     clause. ``seo_long`` is a free-standing sentence of prose, where
     "so you can weigh a mini-protein against a nanobody" (boltzgen) and
     "templates that make it accurate" (af2) are correct English. Running
-    the shape rules over it would fail six of the fourteen tools on
-    copy that is right — measured, not assumed.
+    the shape rules over it would fail six of the then-fourteen tools on
+    copy that is right — measured before rfd4 registered, not assumed.
 
     The three CONTENT rules — own name, raw slug, "free" — are true of
-    both halves and all fourteen tools today, so those are the three
+    both halves and every registered tool, which this class re-reads from
+    the rendered page on each run, so those are the three
     extended. That is what catches M-E: its mutation violates all three.
     """
 
     @staticmethod
     def _ledes(all_tools_app):
         flask_app, slugs = all_tools_app
-        # Not "at least 14": the two assertions the brief names, spelled
+        # Not "at least 15": the two assertions the brief names, spelled
         # out, so a registry that half-populated or a flag left off cannot
-        # make the loop below pass over three tools.
-        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        # make the loop below pass over three tools. 15 since step 7A
+        # registered rfd4.
+        assert len(slugs) == 15, f"expected 15 adapters, got {slugs}"
         cached = _LEDES.get(flask_app)
         if cached is not None:
             return cached
@@ -913,7 +916,7 @@ class TestRenderedLedeRules:
                 "assertion about its wording would be vacuous"
             )
             out[slug] = hero
-        assert served == 14, f"only {served} tool pages returned 200"
+        assert served == 15, f"only {served} tool pages returned 200"
         _LEDES[flask_app] = out
         return out
 
@@ -1633,7 +1636,7 @@ class TestProteinaScoringClaimIsConsistent:
         neither needed a new claim pattern.
         """
         flask_app, slugs = all_tools_app
-        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        assert len(slugs) == 15, f"expected 15 adapters, got {slugs}"
         client = flask_app.test_client()
         offenders = {}
         seen_proteina = 0
@@ -1892,7 +1895,7 @@ class TestEveryJsonLdBlockIsClean:
         from flask import template_rendered
 
         flask_app, slugs = all_tools_app
-        assert len(slugs) == 14, f"expected 14 adapters, got {slugs}"
+        assert len(slugs) == 15, f"expected 15 adapters, got {slugs}"
         expected = self._jsonld_templates()
 
         rendered: set[str] = set()

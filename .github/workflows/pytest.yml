@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Same MINOR as runtime.txt (3.13), but note this floats to the newest
       # 3.13.x on the runner while runtime.txt pins prod to exactly 3.13.0, so
@@ -63,7 +63,7 @@ jobs:
       # by itself proof for prod's exact interpreter. The real remedy is to bump
       # runtime.txt off the year-old 3.13.0 pin, after which the two converge.
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.13'
           cache: 'pip'

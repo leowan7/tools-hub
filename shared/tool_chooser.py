@@ -180,6 +180,41 @@ _FACTS: dict[str, _Facts] = {
         shapes=frozenset({"mini-protein"}),
         chemistries=frozenset(),
     ),
+    # "You have a target structure and want a binder that arrives whole.
+    # RFD4-Proteina writes the sequence and the all-atom structure in a single
+    # model, so there is no separate sequence-design step to run afterwards."
+    # -- tools/rfd4/meta.py::comparison_one_liner. The adapter blurb in
+    # tools/rfd4/__init__.py no longer makes this claim (rewritten
+    # 2026-11-11), so comparison_one_liner is the one source quoted here.
+    #
+    # target-structure, not target-sequence: ``requires_pdb=True`` on the
+    # adapter AND on its one preset (tools/rfd4/__init__.py), and
+    # ``tools/rfd4/__init__.py::validate`` refuses a submit that names no
+    # hotspot -- which is a residue on an uploaded structure, so there is no
+    # sequence-only route into this tool at all.
+    #
+    # mini-protein and nothing else. The one preset is labelled "Protein
+    # binder (de novo, vs your target chain)" (tools/rfd4/__init__.py), and
+    # ``about["when_to_use"][0]`` in tools/rfd4/meta.py rules the format out
+    # ("not an antibody format"); it is ``comparison_one_liner`` in that
+    # same file that sends such a format to RFantibody or IgGM instead.
+    #
+    # chemistries is empty, and single-chain: ``_RFD4`` in
+    # shared/pdb_preflight_rules.py sets ``multi_chain_supported=False`` and
+    # ``multi_chain_container_ready=False``, and validate() refuses more than
+    # one target chain, so the multi-chain answer must not reach it. That
+    # exclusion is derived from TOOL_RULES, not from this entry.
+    #
+    # No score of its own: "It returns no confidence number: judging the
+    # complex is a fold run of its own" (tools/rfd4/meta.py::
+    # comparison_one_liner), which is why rfd4 has no shared/result_columns.py
+    # entry and no score-legend row (tools/rfd4/__init__.py module docstring).
+    # Nothing in the chooser quotes a score for it as a result.
+    "rfd4": _Facts(
+        haves=frozenset({"target-structure"}),
+        shapes=frozenset({"mini-protein"}),
+        chemistries=frozenset(),
+    ),
     # "No PDB required. The gradient loop is sequence-only."
     # — tools/esmfold2_design/meta.py, about["prerequisites"]. Two presets: a
     # paired scFv ("all six binding loops designed jointly against your
