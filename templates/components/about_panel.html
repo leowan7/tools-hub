@@ -42,7 +42,8 @@ Usage:
 {% macro about_panel(adapter, about) %}
   {# TWO grid children, and the second one is deliberate. Every tool form
      lays its page out as a two-column grid whose right column is capped
-     around 360px (.rfd4-layout and its thirteen siblings), and the rail
+     around 360px (.rfd4-layout and its twelve per-tool siblings; mpnn uses
+     the shared .tool-form-layout instead), and the rail
      wrapper is the child that fills it. Anything emitted here WITHOUT an
      explicit placement lands in the left column under the form, which is
      why this was one child for so long. Inline layout only — no new class
@@ -62,11 +63,21 @@ Usage:
      is where the link landed. ``grid-column: 1 / -1`` is what keeps this
      out of the left column; on a page whose layout is not a grid the
      property is simply ignored and the block is full width anyway.
-     The macro renders nothing at all for a tool with no worked example,
-     so this adds no empty row. #}
-  <div style="grid-column: 1 / -1; min-width: 0;">
-    {{ worked_example(adapter, tool_public_context(adapter).example) }}
-  </div>
+     The wrapper repeats the macro's own guard (worked_example.html:39)
+     rather than wrapping unconditionally, because an empty grid child is
+     still a grid child: it would add a row and its 1.25rem gap of blank
+     space under the form. The inner grid is not decoration either -- the
+     macro emits THREE top-level blocks (two asides around the tool's
+     results partial), which were direct children of the rail grid before
+     this commit and so were spaced by its gap. A plain block wrapper
+     would have dropped that spacing; this keeps the rail's own value. #}
+  {% set _example = tool_public_context(adapter).example %}
+  {% if _example and adapter.results_partial %}
+    <div style="grid-column: 1 / -1; min-width: 0;
+                display: grid; gap: 1.25rem; align-content: start;">
+      {{ worked_example(adapter, _example) }}
+    </div>
+  {% endif %}
 {% endmacro %}
 
 {% macro about_reference_card(adapter, about) %}

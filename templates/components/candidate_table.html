@@ -167,10 +167,10 @@
                          and not is_example)
                         or ((candidates | selectattr('pdb_content_b64') | list | length) > 0) %}
 {# The design's own name, shown ONLY where this table would otherwise have no
-   column of its own content: a tool with no score columns (rfd4 is the only
-   one today -- it has no entry in shared/result_columns.py and says so on its
-   own results page) renders #, star and nothing else. Narrow on purpose: the
-   other fourteen tools' live job pages gain no column from this. #}
+   column of its own content: a tool with no score columns renders #, star
+   and nothing else. Narrow on purpose. Measured, not assumed: rendering all
+   fifteen /tools/<slug> pages and diffing the candidate-table headers before
+   and after, rfd4 is the only page that gains this column. #}
 {% set show_name = (not multi_tool)
                    and (columns | length == 0)
                    and ((candidates | selectattr('name') | list | length) > 0) %}
