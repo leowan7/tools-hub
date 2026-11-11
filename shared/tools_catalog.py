@@ -83,6 +83,14 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
 # the keys of ``shared.category_glyphs._CATEGORY_GLYPHS`` -- renaming one
 # without the other silently drops the glyph, so tests/test_tool_categories.py
 # asserts every band still resolves one.
+# A slug may carry its band before it carries a ``register(adapter)``
+# call: ``_build_tools_catalog`` reads the live registry, so an entry for
+# an unregistered slug renders nothing and only takes effect at
+# registration. ``rfd4`` is in that state today
+# (tools/rfd4/__init__.py defines the adapter and never registers it);
+# tests/test_tool_categories.py::UNREGISTERED_SLUGS names it, and
+# test_no_tool_lands_in_other fails the moment it IS registered, so the
+# exception cannot outlive the gap.
 _TOOL_CATEGORIES: dict[str, str] = {
     "rfdiffusion": "Make new binders for my target",
     "bindcraft": "Make new binders for my target",
@@ -92,6 +100,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "boltzgen": "Make new binders for my target",
     "iggm": "Make new binders for my target",
     "proteina": "Make new binders for my target",
+    "rfd4": "Make new binders for my target",
     "mpnn": "Choose sequences for a structure I already have",
     "af2": "Predict or check a 3D structure",
     "colabfold": "Predict or check a 3D structure",

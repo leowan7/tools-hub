@@ -18,18 +18,27 @@ docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 8. The two templates
 named at the bottom of this file now exist, and so does the copy a guard
 reads off the slug without the registry (tools/rfd4/meta.py, the two lede
 maps in blueprints/tools.py, the ``_tool_label`` entry in shared/email.py).
-What 7A still has to land in ONE commit with the ``register`` call was
-measured 2026-11-05 on a throwaway worktree: the ``_TOOL_CATEGORIES`` band
-in shared/tools_catalog.py, the ``_FACTS`` row in shared/tool_chooser.py and
-the GPU-table row in README.md. Those three are gated by exact-identity
-guards that read the live registry -- test_no_tool_lands_in_other,
-test_every_fact_slug_is_a_real_catalog_slug and
-test_readme_tool_table_matches_the_live_registry -- so each one turns the
-suite red WHILE the slug is unregistered and green only once it is.
+Three registry-coupled edits were measured 2026-11-05 on a throwaway
+worktree as having to land in ONE commit with the ``register`` call,
+because each was gated by an exact-identity guard that reads the live
+registry. Two of the three have since landed AHEAD of registration, with
+their guards taught the difference between an unregistered slug and a typo:
+the ``_TOOL_CATEGORIES`` band in shared/tools_catalog.py (the size identity
+in test_no_tool_lands_in_other now subtracts
+tests/test_tool_categories.py::UNREGISTERED_SLUGS, and
+test_the_unregistered_exception_list_is_still_true fails the moment rfd4
+registers) and the ``_FACTS`` row in shared/tool_chooser.py
+(test_every_fact_slug_is_a_real_catalog_slug now accepts the NAMED
+tests/test_tool_categories.py::UNREGISTERED_SLUGS set -- deliberately
+not any slug that merely carries a band, which would have retired the
+typo shape that test exists for). The GPU-table row in README.md is
+the one still waiting:
+test_readme_tool_table_matches_the_live_registry asserts set equality
+against ``tools.base.all_adapters()``, so that row turns the suite red
+while the slug is unregistered and green only once it is.
 rfd4 has no shared/result_columns.py entry and no score-legend row by
 design: nothing in a run of it measures how well a binder holds.
-Every guard that iterates ``tools.base.all_adapters()`` demands the rest of
-that row complete, so registering ahead of them turns the suite red. The
+The
 scope document's step table records 66 failing ids, measured on step 3's
 branch; re-running the same experiment on this base on 2026-11-05 gave 49.
 THE 49 IS NOT RECORDED ANYWHERE IN THIS REPOSITORY: it was measured in a
@@ -140,17 +149,28 @@ def validate(
     """Coerce the RFD4 form into the job_spec ``run_pipeline.main`` reads.
 
     Every refusal here mirrors one the container would make anyway. The
-    converse does NOT hold -- a run this function passes can still be one
-    the container refuses, and such a run IS funded: a PDB holding a second
-    polymer chain while the form names one gets through every hub-side gate
-    and dies in ``run_pipeline.resolve_target_chain``. That gap is pinned by
-    tests/test_rfd4_adapter.py::
-    test_an_extra_polymer_chain_passes_the_gates_the_container_refuses and
-    recorded as scope section 9 item 11, a blocker on registration.
+    converse does NOT hold -- a run this function passes can still be one the
+    container refuses, and such a run IS funded. The case that made that
+    concrete was a PDB holding a second polymer chain while the form named one:
+    it got through every hub-side gate and died in
+    ``run_pipeline.resolve_target_chain``, so the customer paid the start
+    minimum for zero designs. CLOSED 2026-11-10 by Leo's decision in scope
+    section 9 item 11 -- the container crops to the named chain instead of
+    refusing the file, the gates and the preflight are deliberately unchanged,
+    and both halves are pinned by tests/test_rfd4_adapter.py::
+    test_an_extra_polymer_chain_passes_the_gates_and_the_container_crops.
+    The converse still does not hold for other inputs; this one case is closed,
+    not the general gap.
 
-    * ONE target chain. ``run_pipeline.resolve_target_chain`` ``_fail``s on
-      a multi-chain target, and its docstring records why: no committed
-      artefact shows upstream accepting one.
+    * ONE target chain PER RUN. ``run_pipeline.resolve_target_chain``'s
+      docstring records why only one chain is designed against: no committed
+      artefact shows upstream accepting a two-chain target. A multi-chain
+      upload is no longer refused for it -- ``run_pipeline.load_target`` crops
+      a PDB upload to the chain named here -- but a run still conditions on one
+      chain, so naming two in this field is still refused below. A BLANK field
+      is NOT a naming: it becomes ``"A"`` below for this function's own gates,
+      and ``target_chain_named`` tells the container so, because cropping to a
+      default would design against whichever protomer happens to be chain A.
     * AT LEAST ONE HOTSPOT. ``run_pipeline.build_hotspot_selections``
       ``_fail``s on an empty token list -- this tool runs upstream's
       hotspot-conditioned configuration and has nothing to condition on
@@ -207,6 +227,15 @@ def validate(
         {
             "preset": preset,
             "target_chain": target_chains[0],
+            # Did the CUSTOMER name that chain, or is it the "A" substituted
+            # above for a blank field? run_pipeline.main crops only on a named
+            # chain, so a dimer submitted with the field blank still reaches
+            # resolve_target_chain's "no target chain was named" refusal
+            # instead of designing against whichever protomer is chain A.
+            # blueprints/targets.py always sends the key, with "" when the
+            # stored target has no chain (:104, :213), so a prefilled form
+            # template is not enough to rule the blank case out.
+            "target_chain_named": bool((form.get("target_chain") or "").strip()),
             # ONE representation, and it is the one that ships.
             # ``shared.pdb_preflight.shipped_hotspots`` -- what every paid
             # gate reads -- prefers ``hotspot_spec`` and falls back to this
@@ -235,9 +264,9 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the job_spec ``tools/rfd4/run_pipeline.py::main`` reads.
 
-    Four keys at the top level because that is where ``main`` looks for
-    them: ``preset``, ``binder_length``, ``nsamples``, ``target_chain``,
-    plus hotspots via ``hotspot_tokens``. ``parameters`` carries the wallet
+    Five keys at the top level because that is where ``main`` looks for
+    them: ``preset``, ``binder_length``, ``nsamples``, ``target_chain`` and
+    ``target_chain_named``, plus hotspots via ``hotspot_tokens``. ``parameters`` carries the wallet
     stamp and is not read by the container.
 
     ``presigned_url`` is unused: the generic submit route puts the same URL
@@ -252,6 +281,13 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     return {
         "preset": inputs["preset"],
         "target_chain": inputs["target_chain"],
+        # `main` reads this gate with `.get` (run_pipeline.py:1360), so a
+        # missing key reads as False: a MULTI-CHAIN upload would then take the
+        # "no target chain was named" refusal even where the customer named a
+        # chain, while a single-chain upload is unaffected (it falls to
+        # `picked = chains[0]`). So it travels with `target_chain` rather than
+        # being derivable at the other end.
+        "target_chain_named": inputs["target_chain_named"],
         "hotspot_residues": inputs["hotspot_residues"],
         "binder_length": inputs["binder_length"],
         "nsamples": inputs["nsamples"],

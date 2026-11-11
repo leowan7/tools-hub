@@ -68,13 +68,30 @@
    components/results_shell.html:49 drops the line.
 
    The inputs fallback names the SAME chain the container designed against, or
-   the run failed: tools/rfd4/__init__.py:148-158 refuses a multi-chain
-   request and defaults a blank field to "A" (:148), so
-   `inputs.target_chain` is always one concrete id, and
-   run_pipeline.py:657-674 `_fail`s a request that is not a polymer chain of
-   the upload (:661-666) or that leaves other polymer chains standing
-   (:667-674). There is
-   no path on which it returns a chain other than the one requested. #}
+   the run failed: tools/rfd4/__init__.py::validate refuses a multi-chain
+   request and defaults a blank field to "A", so `inputs.target_chain` is
+   always one concrete id, and run_pipeline.py::resolve_target_chain `_fail`s
+   a request that is not a polymer chain of the upload. A multi-chain FILE is
+   no longer refused -- as of 2026-11-10 run_pipeline.py::load_target crops a
+   PDB upload to the named chain -- but the crop changes which chains reach
+   upstream, never which chain is designed against, and a blank field is not
+   cropped on at all (`target_chain_named`).
+
+   One path could diverge in principle: `main` blanks `target_chain` when the
+   customer named no chain, and resolve_target_chain then picks the only
+   polymer chain of the upload, which need not be the "A" validate
+   substituted. Two gates close it. A multi-chain upload with no chain named
+   is refused in the container rather than picked for. And the substituted
+   "A" must be a chain with surviving protein residues, or the normalizer
+   raises (shared/pipeline_normalize.py:404-408), which the preflight turns
+   into NEEDS_FIX (shared/pdb_preflight.py:2314) and blueprints/tools.py:2312
+   turns into a refusal with the wallet hold released -- so by the time a
+   blank-field run is funded, "A" is a protein chain of the upload, and a
+   protein chain the hub kept carries a CA, which is what the container counts
+   as polymer. The residual is the submit path where the preflight itself
+   errored and was skipped (blueprints/tools.py:2305-2311): unverified, and it
+   would read as a mislabelled inputs row rather than a wrong design, since
+   this branch only fires when the upload has exactly one polymer chain. #}
 {% set job_inputs  = job.inputs or {} %}
 {% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
 {% set is_example  = (job.id == 'example') %}

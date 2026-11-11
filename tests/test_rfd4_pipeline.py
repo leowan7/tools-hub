@@ -202,8 +202,8 @@ def test_a_structure_with_no_atom_site_is_refused():
 def test_a_multi_model_structure_is_refused():
     """Taking model 1 silently would condition on a structure we do not send.
 
-    ``load_target`` hands upstream the uploaded CIF unmodified
-    (tools/rfd4/run_pipeline.py:595), so a mapping built from model 1 of a
+    ``load_target`` hands upstream an uploaded CIF unmodified -- the crop added
+    2026-11-10 runs on the PDB path only -- so a mapping built from model 1 of a
     20-model ensemble would describe one structure while ``rfd4-generate``
     received another.
     """
@@ -259,12 +259,15 @@ def test_a_single_polymer_chain_is_picked_even_with_non_polymer_chains(results):
     assert resolve_target_chain(mapping, "") == "A"
 
 
-def test_a_two_chain_target_is_refused(results):
+def test_a_two_chain_target_with_no_chain_named_is_refused(results):
     """Scope §4.2 proposes multi-chain; no artefact shows upstream accepting one.
 
-    The Fc dimer is the committed two-polymer-chain fixture. A refusal before
-    the GPU starts is what keeps a dimer from being designed against one
-    protomer while the run looks successful.
+    The Fc dimer is the committed two-polymer-chain fixture. With a chain NAMED
+    the container now crops to it
+    (``test_naming_one_chain_of_a_dimer_crops_instead_of_refusing``); with none
+    named there is nothing to crop to, and picking a protomer for the customer
+    is what makes a dimer design look successful while conditioning on half the
+    structure.
     """
     _, mapping, _ = _mapping(FC_DIMER)
     with pytest.raises(SystemExit):
@@ -272,11 +275,229 @@ def test_a_two_chain_target_is_refused(results):
     assert results()["error"]["check"] == "chain"
 
 
-def test_naming_one_chain_of_a_dimer_is_still_refused(results):
-    _, mapping, _ = _mapping(FC_DIMER)
+def test_naming_one_chain_of_a_dimer_crops_instead_of_refusing(tmp_path, results):
+    """Leo 2026-11-10, scope doc section 9 item 11: the CONTAINER crops.
+
+    This is the ordinary binder-design case -- upload a crystal dimer, name the
+    antigen chain. It used to reach ``_fail`` AFTER the wallet hold and the GPU
+    start, so the customer paid the start minimum for zero designs. Nothing
+    hub-side refused it first and, by that decision, nothing will: the preflight
+    is unchanged.
+    """
+    pdb_path = tmp_path / "dimer.pdb"
+    pdb_path.write_text(FC_DIMER.read_text())
+    _, mapping, _ = load_target(pdb_path, tmp_path, "A")
+    assert run_pipeline._polymer_chains(mapping) == ["A"]
+    assert resolve_target_chain(mapping, "A") == "A"
+
+
+def test_cropping_a_dimer_leaves_the_kept_chains_label_numbering_identical(tmp_path):
+    """The hazard the crop had to avoid: a hotspot pointing at a new residue.
+
+    A hotspot resolves through ``label_for`` and the contig through
+    ``label_range_for_chain``, both in ``label_seq_id`` space. ``pdb_to_cif``
+    counts that per asym from 1 over the asym's own polymer residues, so
+    dropping OTHER chains cannot move the kept chain's ids -- this test is what
+    says so rather than the reasoning. It compares every author residue of
+    chain A, uncropped against cropped, not a sample.
+    """
+    pdb_path = tmp_path / "dimer.pdb"
+    pdb_path.write_text(FC_DIMER.read_text())
+    _, whole, _ = load_target(pdb_path, tmp_path)
+    _, cropped, _ = load_target(pdb_path, tmp_path, "A")
+    authors = [e.author for e in whole.polymer_entries("A")]
+    assert len(authors) == len(cropped.polymer_entries("A")) == 211
+    assert [(a.chain, a.seq, a.icode) for a in authors] == [
+        (e.author.chain, e.author.seq, e.author.icode)
+        for e in cropped.polymer_entries("A")
+    ]
+    assert all(
+        whole.label_for("A", a.seq) == cropped.label_for("A", a.seq)
+        for a in authors
+    )
+    assert numbering.label_range_for_chain(whole, "A") == (
+        numbering.label_range_for_chain(cropped, "A")
+    )
+
+
+def test_the_crop_drops_other_chains_glycans_and_keeps_the_targets_own(tmp_path):
+    """What survives: the named chain's records. 3ave's glycans are chains C/D.
+
+    The net effect outside the target chain matches the sibling normalizers'
+    ``keep_hetatm=False, keep_waters=False``
+    (``shared/pipeline_normalize.py::normalize_for_rfd4``). Inside it, a
+    non-polymer sharing the target's chain id survives: 3ave's chain A carries
+    a ZN and its own waters, and the second half asserts every one of those
+    records comes back in the cropped text.
+    """
+    pdb_path = tmp_path / "dimer.pdb"
+    pdb_path.write_text(FC_DIMER.read_text())
+    _, whole, _ = load_target(pdb_path, tmp_path)
+    _, cropped, _ = load_target(pdb_path, tmp_path, "A")
+    assert sorted(whole.chains()) == ["A", "B", "C", "D"]
+    assert sorted(cropped.chains()) == ["A"]
+
+    # A HETATM on the TARGET chain is kept, byte for byte as uploaded.
+    text = FC_DIMER.read_text()
+    hetatm_on_a = [
+        ln for ln in text.splitlines()
+        if ln[:6] == "HETATM" and ln[21:22] == "A"
+    ]
+    assert hetatm_on_a, "fixture no longer carries HETATM on chain A"
+    assert {"ZN", "HOH"} <= {ln[17:20].strip() for ln in hetatm_on_a}
+    kept = run_pipeline.crop_pdb_to_chain(text, "A")
+    assert kept is not None
+    kept_lines = set(kept.splitlines())
+    for ln in hetatm_on_a:
+        assert ln in kept_lines
+    # ... and the OTHER chains' non-polymers are gone with their chains.
+    assert not [
+        ln for ln in kept.splitlines()
+        if ln[:6] in ("ATOM  ", "HETATM") and ln[21:22] != "A"
+    ]
+
+
+def test_a_single_chain_upload_is_not_cropped_at_all(tmp_path):
+    """No other polymer chain means nothing to crop, so the file is untouched.
+
+    1HEW is one polymer chain plus waters on A and NAG on author chain B. The
+    crop would have dropped that NAG, changing what a single-chain run sends
+    upstream -- a change this task was not asked to make. ``crop_pdb_to_chain``
+    returns None here, and ``load_target`` then passes the uploaded text to
+    ``pdb_to_cif`` as it did before, which the chain list measures.
+    """
+    assert run_pipeline.crop_pdb_to_chain(LYSOZYME.read_text(), "A") is None
+    pdb_path = tmp_path / "lysozyme.pdb"
+    pdb_path.write_text(LYSOZYME.read_text())
+    _, mapping, _ = load_target(pdb_path, tmp_path, "A")
+    assert sorted(mapping.chains()) == ["A", "B"]
+
+
+def _mse_chain(text: str, chain: str) -> str:
+    """Rewrite one chain's ``ATOM`` records as selenomethionine ``HETATM``."""
+    out = []
+    for ln in text.splitlines():
+        if ln[:6] == "ATOM  " and ln[21:22] == chain:
+            ln = "HETATM" + ln[6:17] + "MSE" + ln[20:]
+        out.append(ln)
+    return "\n".join(out) + "\n"
+
+
+def test_a_named_chain_of_hetatm_modified_residues_is_cropped(tmp_path):
+    """The crop's polymer test is ``_is_polymer``'s, HETATM half included.
+
+    ``_is_polymer`` counts a ``HETATM`` whose resname is in ``_MODRES_EQUIV``
+    (tools/rfd4/numbering.py:174-177), so a chain deposited entirely as
+    selenomethionine is a polymer chain to the parser. The crop reads the same
+    condition, so naming it crops rather than refusing.
+    """
+    from tests.test_pdb_preflight import _two_chain_pdb
+
+    text = _mse_chain(_two_chain_pdb(range(1, 61), range(1, 61)).decode(), "A")
+    cropped = run_pipeline.crop_pdb_to_chain(text, "A")
+    assert cropped is not None
+    assert not [
+        ln for ln in cropped.splitlines()
+        if ln[:6] in ("ATOM  ", "HETATM") and ln[21:22] != "A"
+    ]
+    pdb_path = tmp_path / "all_mse.pdb"
+    pdb_path.write_text(text)
+    _, mapping, _ = load_target(pdb_path, tmp_path, "A")
+    assert run_pipeline._polymer_chains(mapping) == ["A"]
+    assert resolve_target_chain(mapping, "A") == "A"
+
+
+def test_a_modified_residue_ligand_on_its_own_chain_is_cropped_away(tmp_path):
+    """The case a narrower polymer test left funded and then refused.
+
+    A free modified amino acid on its own chain id carries a ``CA``, so
+    ``_is_polymer`` calls it a polymer chain and ``_polymer_chains`` lists it --
+    measured here on the uncropped text. A crop that asked for an ``ATOM``
+    record would decline the file, and the run would be funded and then refused
+    in this container, which is the defect ``crop_pdb_to_chain`` exists to
+    close.
+    """
+    from tests.test_pdb_preflight import _two_chain_pdb
+
+    raw = _two_chain_pdb(range(1, 61), [500], b_chain="C").decode()
+    text = _mse_chain(raw, "C")
+    _, uncropped = numbering.pdb_to_cif(text)
+    assert run_pipeline._polymer_chains(uncropped) == ["A", "C"]
+
+    cropped = run_pipeline.crop_pdb_to_chain(text, "A")
+    assert cropped is not None
+    assert "MSE" not in cropped
+    pdb_path = tmp_path / "ligand.pdb"
+    pdb_path.write_text(text)
+    _, mapping, _ = load_target(pdb_path, tmp_path, "A")
+    assert run_pipeline._polymer_chains(mapping) == ["A"]
+    assert resolve_target_chain(mapping, "A") == "A"
+
+
+def test_a_truncated_coordinate_record_survives_the_crop(tmp_path, results):
+    """A line too short to hold coordinates is kept so the refusal still fires.
+
+    ``pdb_to_cif`` raises on a coordinate record under 54 columns
+    (tools/rfd4/numbering.py:571-575) and ``load_target`` turns that into a
+    refusal. Dropping the line with its chain would convert the file instead,
+    quietly short one residue.
+    """
+    from tests.test_pdb_preflight import _two_chain_pdb
+
+    lines = _two_chain_pdb(range(1, 61), range(1, 61)).decode().splitlines()
+    for i, ln in enumerate(lines):
+        if ln[:6] == "ATOM  " and ln[21:22] == "B":
+            lines[i] = ln[:40]
+            break
+    else:                                   # pragma: no cover - fixture guard
+        raise AssertionError("builder no longer emits chain B ATOM records")
+    text = "\n".join(lines) + "\n"
+
+    cropped = run_pipeline.crop_pdb_to_chain(text, "A")
+    assert cropped is not None
+    assert lines[i] in cropped.splitlines()
+
+    pdb_path = tmp_path / "truncated.pdb"
+    pdb_path.write_text(text)
+    with pytest.raises(SystemExit):
+        load_target(pdb_path, tmp_path, "A")
+    assert "too short to hold coordinates" in results()["error"]["detail"]
+
+
+def test_a_chain_the_upload_does_not_hold_is_not_cropped_but_refused(tmp_path, results):
+    """``crop_pdb_to_chain`` returns None so the precise refusal still fires.
+
+    Cropping to a name with no record would hand ``pdb_to_cif`` a file with no
+    polymer residue, and the customer would read "no polymer residue in the
+    first model" for what is really a typed chain id.
+    """
+    pdb_path = tmp_path / "dimer.pdb"
+    pdb_path.write_text(FC_DIMER.read_text())
+    assert run_pipeline.crop_pdb_to_chain(FC_DIMER.read_text(), "Z") is None
+    _, mapping, _ = load_target(pdb_path, tmp_path, "Z")
+    with pytest.raises(SystemExit):
+        resolve_target_chain(mapping, "Z")
+    assert "is not a polymer chain of the upload" in results()["error"]["detail"]
+
+
+def test_a_multi_chain_mmcif_is_still_refused(tmp_path, results):
+    """The crop is PDB-only: there is no CIF writer in this container.
+
+    The four hub paths that stage a target convert a ``.cif``/``.mmcif``
+    upload to PDB bytes before staging (``blueprints/tools.py:1773``, ``:2193``,
+    ``blueprints/prep.py:132``, ``shared/pdb_intake.py:563`` -- those four are
+    cited, not enumerated), so this is not a customer path today -- it is the branch that keeps the refusal honest if one
+    opens.
+    """
+    cif_text, _ = numbering.pdb_to_cif(FC_DIMER.read_text())
+    cif_path = tmp_path / "dimer.cif"
+    cif_path.write_text(cif_text)
+    used, mapping, _ = load_target(cif_path, tmp_path, "A")
+    assert used == cif_path
+    assert run_pipeline._polymer_chains(mapping) == ["A", "B"]
     with pytest.raises(SystemExit):
         resolve_target_chain(mapping, "A")
-    assert "more than one polymer chain" in results()["error"]["detail"]
+    assert "could not be cropped to chain A" in results()["error"]["detail"]
 
 
 def test_an_unknown_chain_is_refused(results):
