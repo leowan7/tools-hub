@@ -280,9 +280,9 @@ adapter = ToolAdapter(
     slug="rfd4",
     label="RFD4-Proteina",
     blurb=(
-        "Upload your target structure, mark the residues you want gripped, "
-        "and get back binders whose sequence and all-atom structure come "
-        "out of one model, with no separate sequence-design step."
+        "Upload your target structure, mark the residues in your target "
+        "epitope, and get back binders from a sequence and all-atom "
+        "structure generator"
     ),
     presets=(
         Preset(
