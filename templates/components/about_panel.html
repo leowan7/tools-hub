@@ -40,16 +40,32 @@ Usage:
 #}
 
 {% macro about_panel(adapter, about) %}
-  {# ONE grid child. tool_form_layout is a two-column grid, so a second
-     top-level element here would drop into the LEFT column under the
-     form instead of continuing the right rail. Inline layout only —
-     no new class in static/style.css. The wrapper is unconditional so
-     the signed-in rail is laid out by the same rule as the anonymous
-     one. #}
+  {# TWO grid children, and the second one is deliberate. Every tool form
+     lays its page out as a two-column grid whose right column is capped
+     around 360px (.rfd4-layout and its thirteen siblings), and the rail
+     wrapper is the child that fills it. Anything emitted here WITHOUT an
+     explicit placement lands in the left column under the form, which is
+     why this was one child for so long. Inline layout only — no new class
+     in static/style.css. The wrapper is unconditional so the signed-in
+     rail is laid out by the same rule as the anonymous one. #}
   <div class="tool-form-about-rail"
        style="display: grid; gap: 1.25rem; align-content: start; min-width: 0;">
     {{ about_reference_card(adapter, about) }}
     {{ about_public_explainer(adapter) }}
+  </div>
+
+  {# The worked example, spanning BOTH columns on a row of its own below
+     the form. It used to sit in the rail above, where a replayed results
+     table — the tool's real results partial, candidate table and all —
+     had about 360px to render in and was unreadable; the "See what came
+     back →" teaser in tools/_form_hero.html links straight at it, so that
+     is where the link landed. ``grid-column: 1 / -1`` is what keeps this
+     out of the left column; on a page whose layout is not a grid the
+     property is simply ignored and the block is full width anyway.
+     The macro renders nothing at all for a tool with no worked example,
+     so this adds no empty row. #}
+  <div style="grid-column: 1 / -1; min-width: 0;">
+    {{ worked_example(adapter, tool_public_context(adapter).example) }}
   </div>
 {% endmacro %}
 
@@ -148,12 +164,11 @@ Usage:
        actually DO. Renders nothing for tools with PILOT = None. #}
     {{ pilot_card(_pub.pilot) }}
 
-    {# Straight after the pilot card, because the two are one argument:
-       here is the run to start with, and here is what a run of this
-       tool actually returned. Renders nothing for a tool with no
-       worked example -- _example_context withholds one unless both
-       narration and payload are present. #}
-    {{ worked_example(adapter, _pub.example) }}
+    {# The worked example used to render here, straight after the pilot
+       card. It is now emitted by ``about_panel`` as a full-width row
+       below the form instead, because the rail is too narrow to read a
+       replayed results table in. The pilot card still carries the "here
+       is the run to start with" half of that argument on its own. #}
 
     {% if _meta and _meta.comparison_one_liner %}
       <aside class="panel about-panel">
