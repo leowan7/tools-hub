@@ -60,11 +60,14 @@ _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
     "iggm": ["epitope_contacts"],
     # NO ``rfd4`` KEY, for the ``cluster_id`` reason above: a column header is a
     # claim the number exists. tools/rfd4/run_pipeline.py::_upload_design writes
-    # exactly ``{"rank", "name", "pdb_key"}`` into each delivered design, so
-    # every metric column rfd4 could be given would render an em dash on every
-    # row. The scoring leg that would supply one is a separate job that does not
-    # exist yet — rfd4 has no entry in shared/refold.py::SOURCE_TOOLS, none in
-    # _TOOL_PRIMARY_METRIC below, and none in
+    # ``{"rank", "name", "pdb_key"}`` plus, when the binder chain is
+    # identifiable, ``sequence`` -- no numbers at all -- so every metric column
+    # rfd4 could be given would render an em dash on every row. The scoring leg
+    # that supplies one is a separate boltz2 job, spawned from this page's
+    # second-opinion fold (rfd4 is in shared/refold.py::SOURCE_TOOLS), and its
+    # ipTM and pLDDT render on those boltz2 jobs and in /jobs/compare, not in
+    # this table: nothing writes a score back onto the rfd4 row. rfd4 also has
+    # no entry in _TOOL_PRIMARY_METRIC below and none in
     # shared/compute_campaigns.py::SUPPORTED_TOOLS, so nothing asks this table
     # for an rfd4 ranking either. ``columns_for`` returns [] for an unknown
     # slug, which is the right answer here; templates/tools/rfd4_results.html

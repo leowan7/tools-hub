@@ -579,6 +579,102 @@ def atom_names_by_residue(
     return {k: tuple(v) for k, v in out.items()}
 
 
+_AA3TO1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLN": "Q",
+    "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K",
+    "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W",
+    "TYR": "Y", "VAL": "V",
+    # Modified residues that are the standard one for folding purposes, and
+    # routine in deposited structures. Without these a target chain holding
+    # one yields an X that the design file's chain does not have, which makes
+    # ``_designed_sequence`` match nothing and drop the sequence from every
+    # design. Anything else still becomes X and still fails closed.
+    # ponytail: KNOWN CEILING, and the three entries are not equivalent.
+    # ``MSE`` is in ``numbering._MODRES_EQUIV`` (tools/rfd4/numbering.py:80-83)
+    # so it is polymer on an ``ATOM`` or a ``HETATM`` record. ``SEC`` and
+    # ``PYL`` are NOT in that set, and ``_is_polymer`` applies no residue-name
+    # test only to ``ATOM`` records (:146-147), so those two entries are
+    # reachable from an ``ATOM`` record alone. DIRECTION OF THE FAILURE: a
+    # ``SEC`` or ``PYL`` residue deposited as ``HETATM`` gets no
+    # ``label_seq_id``, the null-``label_seq_id`` drop in ``chain_sequences``
+    # removes it, and the sequence reads SHORT by that residue -- it is not
+    # mis-read as another amino acid and it is not read as ``X``. Both the
+    # target and the design go through this same function (its two callers
+    # are ``target_chain_sequence`` and ``_designed_sequence`` below), so a
+    # short read is consistent on both sides AS LONG AS both
+    # files mark the residue the same way. That is UNVERIFIED for the design
+    # file. A PDB upload's target CIF is written by ``numbering.pdb_to_cif``,
+    # whose rule is ``_is_polymer`` -- a CIF upload is used as it arrived
+    # (``load_target`` below, the ``is_cif`` arm) and is written by neither.
+    # The design CIF is written by upstream RFD4, and nothing in this repo
+    # shows how that writer treats a ``HETATM`` ``SEC``/``PYL`` residue. (The
+    # one numbering fact the repo does record about an upstream CIF,
+    # docs/scoping/RFD4-RUNG4-RESUME-2026-11-02.md:209-210, is about the
+    # conditioning CIF that ``write_condition_spec_cifs.py`` writes, :201-203,
+    # not about a design, so it is not evidence here either way.) If
+    # the two disagree, ``_designed_sequence`` finds no match and carries no
+    # sequence, which is the fail-closed arm. Upgrade path: adding
+    # ``SEC``/``PYL`` to ``_MODRES_EQUIV`` would close it for files this
+    # container writes, but that set drives ``pdb_to_cif``'s
+    # ``label_seq_id`` assignment and is held against
+    # ``pdb_ca_residues`` by ``test_polymer_eligibility_matches_pdb_ca_residues``,
+    # so it is a numbering change and not a change to this map. Not attempted
+    # here.
+    "MSE": "M", "SEC": "C", "PYL": "K",
+}
+
+
+def chain_sequences(rows: Iterable[dict[str, str]]) -> dict[str, str]:
+    """One-letter sequence per author chain, from the ``_atom_site`` CA rows.
+
+    The method is the one the committed $0 rehearsal proved on real rung-4
+    output (docs/scoping/rung5-probe/prep_rung5.py::chain_seqs): one CA per
+    residue, grouped by ``auth_asym_id``, ordered by ``auth_seq_id``. A
+    residue outside the twenty standard ones becomes ``X``; callers that need
+    a foldable sequence reject an ``X`` rather than guess
+    (``_designed_sequence`` below).
+
+    Altloc rows duplicate a CA, so residues are deduplicated -- on their
+    author key here, where ``mapping_from_atom_site`` uses its own wider key.
+
+    Non-polymer rows are dropped on null ``label_seq_id``, the same test
+    ``atom_names_by_residue`` above uses: a calcium ion is an ``_atom_site``
+    row whose ``label_atom_id`` AND ``label_comp_id`` are both ``CA``, so the
+    atom filter alone lets it into the chain it shares an author id with
+    (pinned by
+    tests/test_rfd4_pipeline.py::test_a_calcium_ion_is_not_read_as_a_residue).
+
+    Residues are ordered by (``auth_seq_id``, insertion code), so antibody
+    numbering like 52/52A/52B keeps its order; ordering on the tuple as a
+    whole would have broken that tie on the amino-acid letter.
+    """
+    seen: set[tuple[str, str, str]] = set()
+    per_chain: dict[str, list[tuple[int, str, str]]] = {}
+    for row in rows:
+        if row["label_atom_id"].strip() != "CA":
+            continue
+        if not _cif_opt(row.get("label_seq_id", "")):
+            continue
+        ch = row["auth_asym_id"]
+        ins = _cif_opt(row.get("pdbx_PDB_ins_code", ""))
+        key = (ch, row["auth_seq_id"], ins)
+        if key in seen:
+            continue
+        seen.add(key)
+        raw = _cif_opt(row["auth_seq_id"])
+        try:
+            pos = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"non-integer auth_seq_id in chain {ch}: {exc}") from exc
+        per_chain.setdefault(ch, []).append(
+            (pos, ins, _AA3TO1.get(row["label_comp_id"].upper(), "X"))
+        )
+    return {
+        ch: "".join(aa for _, _, aa in sorted(res, key=lambda r: (r[0], r[1])))
+        for ch, res in per_chain.items()
+    }
+
+
 def crop_pdb_to_chain(pdb_text: str, chain: str) -> str | None:
     """Drop every coordinate record outside author chain ``chain``.
 
@@ -1173,8 +1269,83 @@ def new_design_stream() -> dict[str, Any]:
     return {"taken": set(), "designs": [], "next_rank": 0, "beat_at": time.monotonic()}
 
 
+def target_chain_sequence(cif_text: str, chain: str) -> str:
+    """The target chain's one-letter sequence, or ``""`` when it has none.
+
+    Takes the CIF TEXT, not ``load_target``'s ``atoms``: those are
+    ``atom_names_by_residue``'s ``(chain, residue) -> atom names`` pairs, a
+    shape ``chain_sequences`` cannot read. Pinned together with
+    ``load_target`` by
+    tests/test_rfd4_pipeline.py::test_the_target_chain_sequence_comes_off_a_loaded_target.
+
+    ``chain`` is an author chain id, which is what ``resolve_target_chain``
+    returns and what ``chain_sequences`` keys on.
+    """
+    try:
+        return chain_sequences(read_atom_site(cif_text)).get(chain, "")
+    except ValueError as exc:
+        logger.warning("target: sequence read failed (%s)", exc)
+        return ""
+
+
+def _designed_sequence(cif_text: str, target_sequence: str) -> str:
+    """The binder chain's one-letter sequence, or ``""`` when it is not certain.
+
+    The designed chain is picked by SEQUENCE IDENTITY against the known
+    target, not by chain id and not by length: rung 4's ``pdl1_binder_4`` is
+    116 aa against a 115 aa target, so a length rule mis-picks it
+    (docs/scoping/rung5-probe/prep_rung5.py module docstring). One occurrence
+    of the target sequence is removed rather than every chain matching it, so
+    a design that copies the target verbatim -- the shape recorded for
+    proteina in memory note ``proteina-target-self-copy`` -- still yields its
+    sequence.
+
+    Exactly one chain is left after the removal because the file handed
+    upstream holds one polymer chain, which after #507 is true by two
+    different routes, not one: a multi-chain PDB upload with the target chain
+    NAMED is cropped to that chain before conversion (``load_target`` above,
+    via ``crop_pdb_to_chain``, pinned by
+    tests/test_rfd4_pipeline.py::test_naming_one_chain_of_a_dimer_crops_instead_of_refusing),
+    and the cases the crop declines or cannot reach -- an mmCIF upload, a
+    multi-chain upload with no chain named -- are still refused by
+    ``resolve_target_chain`` above (its ``_fail`` branches). The crop keeps
+    the target chain's own
+    HETATM records and drops every other chain's ligands and waters
+    (tests/test_rfd4_pipeline.py::test_the_crop_drops_other_chains_glycans_and_keeps_the_targets_own),
+    which does not change what this function compares: non-polymer rows carry
+    no ``label_seq_id`` and ``chain_sequences`` drops them on either side of
+    the crop. Anything else
+    returns ``""``: no key at all is better than a wrong sequence, because
+    the sequence is what the chained Boltz-2 fold folds
+    (shared/refold.py::_candidate_sequence).
+    """
+    if not target_sequence:
+        return ""
+    try:
+        seqs = chain_sequences(read_atom_site(cif_text))
+    except ValueError as exc:
+        logger.warning("design: sequence read failed (%s) - no sequence carried", exc)
+        return ""
+    remaining = list(seqs.values())
+    if target_sequence in remaining:
+        remaining.remove(target_sequence)
+    if len(remaining) != 1:
+        logger.warning(
+            "design: %d candidate binder chains after dropping the target "
+            "- no sequence carried", len(remaining),
+        )
+        return ""
+    if "X" in remaining[0]:
+        logger.warning(
+            "design: binder chain holds a non-standard residue - no sequence carried"
+        )
+        return ""
+    return remaining[0]
+
+
 def _upload_design(
-    cif_path: Path, rank: int, *, upload_endpoint: str, job_token: str
+    cif_path: Path, rank: int, *, upload_endpoint: str, job_token: str,
+    target_sequence: str = "",
 ) -> dict | None:
     """Upload one finished design and build its manifest entry, or None on failure.
 
@@ -1188,8 +1359,20 @@ def _upload_design(
     NO SCORE. Every numeric column upstream produces lands in the two metrics
     CSVs, and scope §5.8's timings show both arriving in the same poll interval
     as the LAST design, so at stream time there is nothing numeric to carry.
-    The three keys here are all in ``_sanitize_candidate``'s allow-list
-    (webhooks/modal.py:508-511).
+    The score arrives from a chained Boltz-2 fold instead, which needs the
+    designed chain's sequence -- hence the fourth key.
+
+    ``rank``, ``name`` and ``pdb_key`` are in ``_sanitize_candidate``'s
+    allow-list; ``sequence`` is NOT, deliberately. That allowlist runs on one
+    path only, the mid-run heartbeat (webhooks/modal.py:353), and a terminal
+    COMPLETED payload reaches ``complete_job`` unfiltered
+    (webhooks/modal.py:145-151 passes ``payload.get("output")`` straight into
+    ``_apply_terminal``, whose ``complete_job`` call is webhooks/modal.py:188),
+    which is where the refold reads it
+    from -- ``job_refold`` refuses a source job that is not ``succeeded``
+    (blueprints/jobs.py::job_refold). So the sequence survives where it is
+    used and is absent from the live/partial snapshot, which is the same
+    behaviour every other refold source tool already has.
     """
     text = cif_path.read_text()
     uniq = f"{rank:03d}_{cif_path.stem}"
@@ -1200,7 +1383,11 @@ def _upload_design(
     except Exception as exc:
         logger.warning("design %s: upload failed (%s) — skipping", cif_key, exc)
         return None
-    return {"rank": rank, "name": uniq, "pdb_key": cif_key}
+    entry = {"rank": rank, "name": uniq, "pdb_key": cif_key}
+    seq = _designed_sequence(text, target_sequence)
+    if seq:
+        entry["sequence"] = seq
+    return entry
 
 
 def sweep_designs(
@@ -1414,9 +1601,24 @@ def main() -> None:
 
             stream = new_design_stream()
 
+            # Read once, so each design file only has to be told which
+            # sequence is NOT the binder. NOT from ``atoms``: that is
+            # ``atom_names_by_residue``'s residue -> atom-name map
+            # (``load_target``'s third return), whose keys are tuples, so
+            # ``chain_sequences`` would index a tuple with a string.
+            target_seq = target_chain_sequence(
+                cif_path.read_text(errors="replace"), chain
+            )
+            if not target_seq:
+                logger.warning(
+                    "target chain %s yielded no CA sequence; designs will carry "
+                    "no sequence and cannot be folded downstream", chain,
+                )
+
             def upload_one(path: Path, rank: int) -> dict | None:
                 return _upload_design(
-                    path, rank, upload_endpoint=upload_endpoint, job_token=job_token
+                    path, rank, upload_endpoint=upload_endpoint, job_token=job_token,
+                    target_sequence=target_seq,
                 )
 
             def _sweep(mid_run: bool) -> None:

@@ -30,6 +30,15 @@ SOURCE_TOOLS: frozenset[str] = frozenset({
     "rfantibody",
     "pxdesign",
     "boltzgen",
+    # rfd4 is the one source here that carries NO score of its own: the fold
+    # is not a second opinion on an AF2 ranking, it is the only ranking its
+    # designs ever get (scope docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md
+    # section 7C). Its container streams the designed chain's sequence for
+    # exactly this (tools/rfd4/run_pipeline.py::_upload_design), and only on
+    # a succeeded run -- the mid-run heartbeat allowlist drops it
+    # (webhooks/modal.py::_sanitize_candidate), as it does for every source
+    # tool here, so a cancelled or recovered run has no sequences to refold.
+    "rfd4",
 })
 
 # Destination tools that accept a single binder and produce a per-design

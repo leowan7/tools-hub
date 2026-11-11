@@ -504,9 +504,11 @@ def _next_step_for_job(
     """Resolve the natural next-step tool for a binder-design job.
 
     Uses the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in
-    shared.refold: tools that produce binder sequences get ColabFold as
-    the no-MSA orthogonal validator. Returns ("", "") when no handoff
-    applies (failed/empty result, or a tool not in SOURCE_TOOLS).
+    shared.refold: tools that produce binder sequences AND a score of their
+    own get ColabFold as the no-MSA orthogonal validator, while rfd4, which
+    produces no score, gets Boltz-2 to cofold against its target. Returns
+    ("", "") when no handoff applies (failed/empty result, or a tool not in
+    SOURCE_TOOLS).
     """
     if tone != "success":
         return ("", "")
@@ -517,11 +519,19 @@ def _next_step_for_job(
     tool_slug = getattr(job, "tool", "") or ""
     if tool_slug not in SOURCE_TOOLS:
         return ("", "")
-    dest_slug = "colabfold"
-    # _label_for_tool is defined further down in the wallet-senders
-    # block; it covers colabfold/esmfold and falls through to the slug
-    # if a future destination is added. Forward reference is fine since
-    # this function is only invoked at email-send time.
+    # rfd4 produces no score of its own (tools/rfd4/run_pipeline.py's
+    # ``_upload_design`` streams no number), so the next step it needs is a
+    # cofold against its target, not a standalone single-sequence fold. Every
+    # other source tool here already ranks its own candidates -- AF2 for
+    # rfdiffusion, bindcraft and pxdesign, refolding RMSD/ipTM/pLDDT for
+    # boltzgen (tools/boltzgen/__init__.py:7-8) -- so for them the ColabFold
+    # form is a second opinion on a number that already exists.
+    dest_slug = "boltz2" if tool_slug == "rfd4" else "colabfold"
+    # _label_for_tool is defined further down in the wallet-senders block;
+    # it delegates to ``_tool_label``, whose map holds both destinations
+    # reachable here ("colabfold" and "boltz2") and falls through to the raw
+    # slug for anything it does not. Forward reference is fine since this
+    # function is only invoked at email-send time.
     return f"{base_url}/tools/{dest_slug}", _label_for_tool(dest_slug)
 
 

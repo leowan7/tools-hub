@@ -425,15 +425,24 @@ def test_the_rfd4_scoring_fold_is_covered_by_boltz2s_existing_cap():
     §7C.4 measured the batched 8-design fold at $0.21-$0.31, with $0.69 as
     the per-design ceiling for the same shape. boltz2's scaled cap at 8
     designs is the headroom over that. The leg's $0 start minimum is
-    deliberate and closes at the spawn, not here -- see
-    shared/wallet_guard.py::live_start_usd.
+    deliberate and closes at the spawn instead -- ``refold_start_usd``,
+    asserted below.
     """
+    from shared.wallet_guard import refold_start_usd
     import shared.refold as refold
 
     assert compute_hard_cap("boltz2", {"n_designs_total": 8}) == Decimal("3.20")
     assert live_start_usd("boltz2", {}) == 0
-    # Nothing spawns the chained fold yet, so there is nothing to gate.
-    assert "rfd4" not in refold.SOURCE_TOOLS
+    # The spawn path exists, so the gate is where the $0 start minimum is
+    # made safe. One job per design, each 1 process and 1 record, so the
+    # figure is §7C.4's "n=1, one design" row at its slow end -- NOT the
+    # batched $0.31, which prices eight records in one process.
+    assert "rfd4" in refold.SOURCE_TOOLS
+    assert refold_start_usd("boltz2", 1) == Decimal("0.11")
+    assert refold_start_usd("boltz2", 8) == Decimal("0.88")
+    # Named gap, not a measurement: neither has a per-fold anchor here.
+    assert refold_start_usd("colabfold", 8) == 0
+    assert refold_start_usd("esmfold", 8) == 0
 
 
 def test_proteina_below_its_start_minimum_is_refused():
@@ -1761,3 +1770,58 @@ def test_wallet_history_explains_an_absorbed_row(monkeypatch):
                                       total_count=1, tx_annotations={})
     assert both.count(hint) == 1
     assert hint not in charge_only
+
+
+def test_a_frozen_wallet_cannot_start_a_refold_chain(monkeypatch):
+    """The refold gate is the ONLY wallet check on the spawn path.
+
+    ``_spawn_refold_job`` does not go through ``requires_wallet``, so a
+    balance comparison alone would let a frozen wallet (chargeback dispute)
+    spawn the whole chain. shared/wallet.py::wallet_preflight refuses frozen
+    before it looks at the balance; this gate now matches that order.
+    """
+    import shared.wallet_guard as wg
+
+    seen = {}
+    monkeypatch.setattr(
+        wg, "render_template", lambda *a, **kw: seen.update(kw) or "PAGE"
+    )
+
+    def wallet(balance, frozen):
+        monkeypatch.setattr(
+            wg, "get_or_create_wallet",
+            lambda _uid: {"balance_usd": balance, "wallet_frozen": frozen},
+        )
+
+    # Funded and not frozen: the chain may start.
+    wallet("5.00", False)
+    assert wg.refold_gate("u", "boltz2", 8, "/back") is None
+
+    # Funded but frozen: refused, and the page says why -- the arm
+    # templates/wallet/topup.html already has.
+    wallet("5.00", True)
+    page, status = wg.refold_gate("u", "boltz2", 8, "/back")
+    assert (page, status) == ("PAGE", 402)
+    assert seen["gate_reason"] == "wallet_frozen"
+
+    # Not frozen, short of the $0.88 the eight folds need.
+    wallet("0.50", False)
+    assert wg.refold_gate("u", "boltz2", 8, "/back")[1] == 402
+    assert seen["gate_reason"] == "insufficient_balance"
+
+    # A destination with no per-fold figure is never refused for MONEY...
+    wallet("0.00", False)
+    assert wg.refold_gate("u", "colabfold", 8, "/back") is None
+    # ...but a frozen wallet is still refused there. The frozen test must not
+    # sit behind the ``need <= 0`` exit, or colabfold and esmfold -- the two
+    # destinations ``_REFOLD_PER_FOLD_USD`` has no figure for -- bypass it and
+    # a chargeback-frozen wallet spawns up to MAX_REFOLD_N GPU jobs.
+    wallet("5.00", True)
+    assert wg.refold_gate("u", "colabfold", 8, "/back")[1] == 402
+    assert seen["gate_reason"] == "wallet_frozen"
+    # A wallet that cannot be read is refused too, on every destination: a
+    # transient DB error must not be the way a frozen account starts GPU work.
+    monkeypatch.setattr(wg, "get_or_create_wallet", lambda _uid: None)
+    for dest in ("boltz2", "colabfold"):
+        assert wg.refold_gate("u", dest, 8, "/back")[1] == 402
+        assert seen["gate_reason"] == "wallet_frozen"

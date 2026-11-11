@@ -28,6 +28,7 @@ from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
 from shared.wallet import (
     MIN_TOPUP_USD,
     REASON_INSUFFICIENT,
+    REASON_WALLET_FROZEN,
     get_or_create_wallet,
     live_due_usd,
     open_live_run,
@@ -118,6 +119,11 @@ RFANTIBODY_START_USD = Decimal("2.00")
 # derivation and for the scoring leg it does not pay for.
 RFD4_START_USD = Decimal("1.00")
 _LIVE_BATCH_ONLY = frozenset({"af2", "colabfold", "esmfold"})
+
+# What one spawned second-opinion fold must be funded for, per destination
+# tool. See ``refold_start_usd``; a tool absent here contributes $0, which is
+# a named gap and not a measurement.
+_REFOLD_PER_FOLD_USD: dict[str, Decimal] = {"boltz2": Decimal("0.11")}
 
 
 def live_charging_enabled(tool_slug: str, params: dict) -> bool:
@@ -249,12 +255,21 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
     * So the hole §7C.4 names -- a balance drained by generation leaves the
       fold job to start at $0 and deliver structures with no scores -- closes
       at the SPAWN, in the step that builds the chain: refuse to spawn the
-      fold unless the balance covers it. The figure that gate needs is
-      $0.11 for the first fold record (93 GPU-s, the batched anchor's slow
-      end) and $0.31 for the whole 8-design fold. No spawn path exists in
-      this repository yet (shared/refold.py::SOURCE_TOOLS has no rfd4 entry),
-      so there is nothing to gate in this step and no constant is left here
-      for it.
+      fold unless the balance covers it. That gate is
+      ``refold_start_usd`` below, called by ``refold_gate``, which both
+      refold routes now run before their spawn loop
+      (blueprints/jobs.py::job_refold,
+      blueprints/campaigns.py::compute_campaign_refold). Its figure is
+      ``_REFOLD_PER_FOLD_USD["boltz2"]`` x the number of folds, NOT the
+      $0.31 this bullet used to quote: §7C.4's $0.21-$0.31 prices eight
+      records inside ONE batched boltz2 process, and the refold path spawns
+      one job per design (shared/refold.py::DESTINATION_TOOLS states it,
+      and ``job_refold``'s loop does it), so each fold pays the process
+      fixed cost itself and the right row is §7C.4's "n=1, one design"
+      -- $0.09-$0.11, at its slow end rounded to the cent. Eight designs
+      therefore need $0.88 at this gate, not
+      $0.31. Batching them into one job would be cheaper and is not what
+      this chain does.
     """
     if tool_slug in ("bindcraft", "iggm"):
         return TOOL_SPECS[tool_slug].base_hard_cap_usd
@@ -272,6 +287,92 @@ def live_start_usd(tool_slug: str, params: dict) -> Decimal:
         return Decimal("0")
     seconds = runtime_estimate_min(TOOL_RULES[tool_slug], 120, 1) * 60
     return live_due_usd(tool_slug, seconds, gpu_class_for_job(tool_slug), params)
+
+
+def refold_start_usd(dest_tool: str, n_folds: int) -> Decimal:
+    """The balance a chained second-opinion fold of ``n_folds`` designs needs.
+
+    One spawned job per design, each with ``n_designs_total = 1``
+    (blueprints/jobs.py::_spawn_refold_job), so every fold pays Boltz-2's
+    per-process fixed cost itself: the applicable row is scope
+    docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md §7C.4's "n=1, one
+    design", which that table prices at $0.09-$0.11 for 74-93 GPU-s at
+    $0.0012138 per customer GPU-second. $0.11 is that band's slow end as the
+    doc states it, rounded to the cent (93 s works out at $0.1129, so the
+    gate asks a third of a cent less per fold than the slowest measured
+    fold would cost). The batched $0.21-$0.31 figure in the same table is
+    for eight records in ONE process and does not apply here.
+
+    colabfold and esmfold return $0, so this gate never refuses them. That is
+    a gap, not a judgement that they are free: no measured per-fold anchor
+    exists for either in this repository, and inventing one to put in a money
+    gate would be worse than leaving the hole named. They also both fall
+    through ``live_start_usd`` to $0 today, so the gate matches the status quo
+    for them and changes behaviour only for boltz2.
+
+    Not a cap and not a hold: the spawned jobs still go through the normal
+    completion-side settlement (shared/wallet.py::settle_hold,
+    shared/wallet.py::settle_live_run), and boltz2's
+    existing cap already covers the leg (see ``live_start_usd``). This figure
+    only decides whether the chain may start.
+    """
+    per_fold = _REFOLD_PER_FOLD_USD.get(dest_tool, Decimal("0"))
+    return per_fold * max(int(n_folds), 0)
+
+
+def refold_gate(user_id: str, dest_tool: str, n_folds: int, back_url: str):
+    """``None`` when the balance covers the chain, else the top-up page.
+
+    Called before the spawn loop, so a refusal happens before any Modal
+    submit and therefore before any GPU starts. The page is the same
+    ``wallet/topup.html`` every tool-submit gate renders; ``return_tool`` is
+    deliberately omitted, because the customer did not come from a tool form
+    and a "go back to the boltz2 form" link would send them somewhere they
+    never were. ``back_url`` is the job or campaign they are on.
+
+    A frozen wallet is refused whatever the balance AND whatever the
+    destination costs, which is the order shared/wallet.py::wallet_preflight
+    uses (its frozen branch precedes every cost comparison).
+    ``_spawn_refold_job`` does not go through ``requires_wallet``, so this
+    gate is the only wallet check the refold path has: a balance comparison
+    alone would let a frozen wallet spawn the chain, and a frozen test placed
+    after the ``need <= 0`` exit would leave colabfold and esmfold -- the two
+    destinations with no per-fold figure -- bypassing it entirely.
+
+    A wallet that cannot be READ is refused the same way, for the same
+    reason and with the same reason code as shared/wallet.py:586-594: a
+    missing service client or a raising Supabase read both return ``None``
+    (shared/wallet.py:276-277, 292-294), and treating that as "not frozen"
+    would let a transient DB error during the POST spawn the chain on an
+    account whose freeze simply could not be seen.
+
+    Returned with status 402, not 200, because both callers are
+    ``@idempotent()`` and shared/idempotency.py:758-770 releases the claimed
+    key only for a status >= 400 -- naming this very hazard, a refusal
+    replayed to a customer who topped up in another tab. A 200 would be
+    stored for ``DEFAULT_TTL_SECONDS``.
+    """
+    # One wallet read. An unreadable wallet counts as frozen, and the frozen
+    # test is NOT behind the ``need <= 0`` exit: a $0 destination still has to
+    # pass both.
+    wallet = get_or_create_wallet(user_id)
+    frozen = not wallet or bool(wallet.get("wallet_frozen"))
+    wallet = wallet or {}
+    need = refold_start_usd(dest_tool, n_folds)
+    balance = Decimal(str(wallet.get("balance_usd") or 0))
+    if not frozen and (need <= 0 or balance >= need):
+        return None
+    reason = REASON_WALLET_FROZEN if frozen else (
+        REASON_WALLET_EMPTY if balance <= 0 else REASON_INSUFFICIENT
+    )
+    return render_template(
+        "wallet/topup.html",
+        wallet=wallet,
+        min_topup_usd=MIN_TOPUP_USD,
+        next_url=back_url,
+        gate_reason=reason,
+        tool_slug=dest_tool,
+    ), 402
 
 
 def _esmfold2_seeds(params: dict) -> int:

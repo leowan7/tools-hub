@@ -991,3 +991,182 @@ def test_the_adapter_stamps_the_key_the_wallet_scales_on():
         f"key, so _effective_scaling_value falls back to the baseline and "
         f"every run prices as {we.TOOL_SPECS['rfd4'].designs_per_run_baseline} designs"
     )
+
+
+# ===========================================================================
+# The designed chain's sequence (the chained Boltz-2 fold's only input)
+# ===========================================================================
+
+
+def _rung4_design(n: int = 0) -> str:
+    """One real design CIF from the committed rung-4 artefact."""
+    files = json.loads(RUNG4_RESULT.read_text())["files"]
+    key = f"/tmp/rfd4_run/inference_samples/pdl1_binder_{n}/pdl1_binder_{n}_generated.cif"
+    return files[key]
+
+
+def test_a_real_design_file_yields_one_sequence_per_chain():
+    """Cross-check against the committed $0 rehearsal on the same bytes.
+
+    ``docs/scoping/rung5-probe/prep_rung5.py::chain_seqs`` read these two
+    chains as 115 (the PD-L1 target) and 108 (the binder) residues; the
+    binder being the LONGER of a 115/116 pair in design 4 is why
+    ``_designed_sequence`` discriminates on identity and not on length.
+    """
+    seqs = run_pipeline.chain_sequences(read_atom_site(_rung4_design(0)))
+    assert {ch: len(s) for ch, s in seqs.items()} == {"A": 115, "B": 108}
+    assert set("".join(seqs.values())) <= set("ACDEFGHIKLMNPQRSTVWY")
+
+
+def test_the_binder_chain_is_picked_by_identity_not_by_length():
+    text = _rung4_design(0)
+    seqs = run_pipeline.chain_sequences(read_atom_site(text))
+    picked = run_pipeline._designed_sequence(text, seqs["A"])
+    assert picked == seqs["B"]
+    # Design 4 is the case a length rule gets wrong: 116 aa binder, 115 aa
+    # target. Identity still picks the binder.
+    text4 = _rung4_design(4)
+    seqs4 = run_pipeline.chain_sequences(read_atom_site(text4))
+    assert len(seqs4["B"]) > len(seqs4["A"])
+    assert run_pipeline._designed_sequence(text4, seqs4["A"]) == seqs4["B"]
+
+
+def test_a_design_that_copies_the_target_still_yields_a_sequence():
+    """Only ONE occurrence of the target is dropped (memory note
+    ``proteina-target-self-copy``: a design can be the target verbatim)."""
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA GLY B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text, "G") == "G"
+
+
+def test_a_non_standard_residue_blocks_the_sequence():
+    """``X`` is not foldable, and a wrong sequence is worse than no key.
+
+    SEP (phosphoserine), not MSE: _AA3TO1 maps MSE to M deliberately -- see
+    ``test_selenomethionine_reads_as_methionine``.
+    """
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA SEP B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text, "G") == ""
+
+
+def test_an_unknown_target_sequence_carries_nothing():
+    text = _MINIMAL_HEAD + "ATOM 1 CA GLY A 1 1 A 1\n"
+    assert run_pipeline._designed_sequence(text, "") == ""
+    # Target not present at all: two chains remain, so no single binder.
+    text2 = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1\n"
+        "ATOM 2 CA ALA B 1 1 B 1\n"
+    )
+    assert run_pipeline._designed_sequence(text2, "W") == ""
+
+
+def test_the_uploaded_entry_carries_the_sequence_only_when_it_is_certain(
+    tmp_path, monkeypatch
+):
+    """The fourth key is what ``shared/refold.py`` folds, so it must be absent
+    rather than wrong."""
+    monkeypatch.setattr(
+        run_pipeline, "request_upload_urls",
+        lambda endpoint, token, keys: {k: f"https://up/{k}" for k in keys},
+    )
+    monkeypatch.setattr(run_pipeline, "upload_file", lambda *a, **k: None)
+    path = tmp_path / "pdl1_binder_0_generated.cif"
+    path.write_text(_rung4_design(0))
+    seqs = run_pipeline.chain_sequences(read_atom_site(_rung4_design(0)))
+
+    entry = run_pipeline._upload_design(
+        path, 0, upload_endpoint="https://hub/u", job_token="t",
+        target_sequence=seqs["A"],
+    )
+    assert entry == {
+        "rank": 0, "name": "000_pdl1_binder_0_generated",
+        "pdb_key": "000_pdl1_binder_0_generated.cif", "sequence": seqs["B"],
+    }
+
+    bare = run_pipeline._upload_design(
+        path, 0, upload_endpoint="https://hub/u", job_token="t",
+    )
+    assert set(bare) == {"rank", "name", "pdb_key"}
+
+
+def test_the_target_chain_sequence_comes_off_a_loaded_target(tmp_path, results):
+    """``main`` pairs these two, and the pair is what the shapes have to match.
+
+    ``load_target``'s third return is ``atom_names_by_residue``'s
+    ``(chain, residue) -> atom names`` map, NOT atom_site rows: handing it to
+    ``chain_sequences`` indexes a tuple with a string. This test folds the
+    real pairing main uses, so that mistake cannot come back silently.
+    """
+    cif_path, mapping, atoms = load_target(LYSOZYME, tmp_path)
+    chain = resolve_target_chain(mapping, "")
+    seq = run_pipeline.target_chain_sequence(
+        cif_path.read_text(errors="replace"), chain
+    )
+    assert len(seq) == len(mapping.polymer_entries(chain))
+    assert set(seq) <= set("ACDEFGHIKLMNPQRSTVWYX")
+    # The shape main must not pass.
+    with pytest.raises(TypeError):
+        run_pipeline.chain_sequences(atoms)
+
+
+def test_an_unreadable_target_yields_no_sequence_instead_of_raising():
+    assert run_pipeline.target_chain_sequence("data_X\n", "A") == ""
+
+
+def test_a_calcium_ion_is_not_read_as_a_residue():
+    """A calcium HETATM has label_atom_id CA and label_comp_id CA.
+
+    So the CA atom filter alone admits it, and it lands in whatever author
+    chain it shares an id with as an X. One X in the target sequence is
+    enough to make ``_designed_sequence`` match nothing and drop the
+    sequence from every design in the run, which silently empties the
+    second-opinion fold panel. The null ``label_seq_id`` is what rejects it.
+    """
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA GLY A 1 1 A 1" + _EOL
+        + "ATOM 2 CA ALA A 1 2 A 2" + _EOL
+        + "HETATM 3 CA CA B . . A 3" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "GA"}
+
+
+def test_selenomethionine_reads_as_methionine():
+    """MSE is routine in deposited crystal structures.
+
+    It is the standard residue for folding purposes, so mapping it to X would
+    cost the whole run its sequences for the reason above. _AA3TO1 carries it.
+    """
+    text = _MINIMAL_HEAD + (
+        "ATOM 1 CA MSE A 1 1 A 1" + _EOL
+        + "ATOM 2 CA GLY A 1 2 A 2" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "MG"}
+    # Still fails closed on a residue that is NOT a standard one in disguise.
+    odd = _MINIMAL_HEAD + "ATOM 1 CA XYZ A 1 1 A 1" + _EOL
+    assert run_pipeline.chain_sequences(read_atom_site(odd)) == {"A": "X"}
+
+
+def test_insertion_codes_order_by_code_not_by_amino_acid():
+    """Antibody numbering writes 52, 52A, 52B at one auth_seq_id.
+
+    Ordering the (position, residue) pairs as whole tuples broke that tie on
+    the one-letter code, so the sequence came out alphabetised at that
+    position -- a wrong sequence, which on a binder chain would be folded and
+    billed. The order here is (auth_seq_id, insertion code).
+    """
+    head = _MINIMAL_HEAD.replace(
+        "_atom_site.auth_seq_id" + _EOL,
+        "_atom_site.auth_seq_id" + _EOL + "_atom_site.pdbx_PDB_ins_code" + _EOL,
+    )
+    text = head + (
+        "ATOM 1 CA TRP A 1 1 A 52 ?" + _EOL
+        + "ATOM 2 CA GLY A 1 2 A 52 A" + _EOL
+        + "ATOM 3 CA ALA A 1 3 A 52 B" + _EOL
+        + "ATOM 4 CA CYS A 1 4 A 53 ?" + _EOL
+    )
+    assert run_pipeline.chain_sequences(read_atom_site(text)) == {"A": "WGAC"}
