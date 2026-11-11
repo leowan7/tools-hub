@@ -599,8 +599,9 @@ _AA3TO1 = {
     # ``label_seq_id``, the null-``label_seq_id`` drop in ``chain_sequences``
     # removes it, and the sequence reads SHORT by that residue -- it is not
     # mis-read as another amino acid and it is not read as ``X``. Both the
-    # target and the design go through this same function (``:1274``,
-    # ``:1313``), so a short read is consistent on both sides AS LONG AS both
+    # target and the design go through this same function (its two callers
+    # are ``target_chain_sequence`` and ``_designed_sequence`` below), so a
+    # short read is consistent on both sides AS LONG AS both
     # files mark the residue the same way. That is UNVERIFIED for the design
     # file: the target CIF is written by ``numbering.pdb_to_cif``, whose rule
     # is ``_is_polymer``, but the design CIF is written by upstream RFD4 and
