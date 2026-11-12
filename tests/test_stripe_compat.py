@@ -18,6 +18,9 @@ without either version installed.
 
 from __future__ import annotations
 
+import json
+from decimal import Decimal
+
 import pytest
 
 from shared.stripe_compat import as_dict
@@ -29,7 +32,13 @@ class StripeObject15:
     def __init__(self, data: dict) -> None:
         object.__setattr__(self, "_data", dict(data))
 
-    def to_dict(self) -> dict:
+    def to_dict(self, recursive: bool = True, for_json: bool = False) -> dict:
+        # 15.x holds decimal_string fields as Decimal; for_json=True gives str.
+        if for_json:
+            return {
+                k: str(v) if isinstance(v, Decimal) else v
+                for k, v in self._data.items()
+            }
         return dict(self._data)
 
     def __getattr__(self, name: str):
@@ -149,3 +158,17 @@ def test_topup_session_metadata_on_15x_is_a_plain_dict(monkeypatch):
     assert err is None
     assert type(out["metadata"]) is dict and out["metadata"].get("user_id") == "u1"
     assert out["status"] is None
+
+
+def test_decimal_fields_come_back_json_serialisable():
+    # stripe 15 coerces decimal_string fields (checkout session
+    # currency_conversion.fx_rate) to Decimal. The webhook stores the whole
+    # event as JSON in stripe_events.payload, and a Decimal there fails the
+    # insert, which _insert_event_once logs as a replay.
+    event = _wrap({
+        "id": "evt_1",
+        "data": {"object": {"currency_conversion": {"fx_rate": Decimal("0.92")}}},
+    })
+    out = as_dict(event)
+    assert out["data"]["object"]["currency_conversion"]["fx_rate"] == "0.92"
+    json.dumps(out)
