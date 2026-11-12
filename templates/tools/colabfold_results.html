@@ -222,7 +222,7 @@
 
       {% if send_target_tools %}
         <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
-          <span style="color: var(--text-secondary);">Reuse this structure in:</span>
+          <span style="color: var(--text-secondary);">Design new binders for this target:</span>
           {% for ho in send_target_tools %}
             <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
           {% endfor %}

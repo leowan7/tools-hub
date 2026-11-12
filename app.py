@@ -492,6 +492,13 @@ def create_app() -> Flask:
     # tests/test_boltzgen_iptm_has_no_cofold_bar.py.
     from shared.refold import SOURCE_TOOLS as _refold_sources  # noqa: PLC0415
     flask_app.jinja_env.globals["is_refold_source"] = _refold_sources.__contains__
+    # The join key the candidate table looks a design's cofold score up by.
+    # A bare Environment that never registered it raises UndefinedError on the
+    # call rather than rendering a wrong cell -- but the table only reaches
+    # the call inside ``show_refold``, which is false whenever no refold
+    # scores were passed in, so the macro still renders in those environments.
+    from shared.refold_scores import design_key as _design_key  # noqa: PLC0415
+    flask_app.jinja_env.globals["design_key"] = _design_key
     # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:
     # explanation plus the optional ``caveat``, the half that is about what an
     # old stored result may hold rather than about the metric. A global rather

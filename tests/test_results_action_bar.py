@@ -34,7 +34,14 @@ from html.parser import HTMLParser
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from shared import metric_glossary, pdb_bfactors, ranking, refold, score_legends
+from shared import (
+    metric_glossary,
+    pdb_bfactors,
+    ranking,
+    refold,
+    refold_scores,
+    score_legends,
+)
 from shared.jobs import display_rows
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -67,6 +74,7 @@ def _env() -> Environment:
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
+    env.globals["design_key"] = refold_scores.design_key
     env.globals["csrf_input"] = lambda: ""
     # results_shell.html gates the Second-opinion panel on this predicate, and
     # gates it with a CALL. Registering it is not optional: omit it and that
@@ -215,7 +223,9 @@ def test_the_wet_lab_panel_carries_no_primary_button():
         '{{ results_panel(candidates, ["ipTM"], "bindcraft", "job-1") }}'
     )
     html = tmpl.render(candidates=[_row()])
-    assert "Validating in the lab is optional" in html, "panel did not render"
+    assert "Ranomics makes and measures designs like these" in html, (
+        "panel did not render"
+    )
     # bindcraft is a refold source, so the Second-opinion block must render.
     # This catches the block disappearing; it CANNOT tell how it was gated --
     # a review swapped the call for the five hardcoded slugs and this stayed
