@@ -338,6 +338,18 @@ def test_mode_is_payment_not_subscription(
     assert fake_stripe.last_create_kwargs["mode"] == "payment"
 
 
+def test_unsaved_card_session_still_stamps_payment_intent_metadata(
+    fake_stripe: _FakeStripeModule,
+) -> None:
+    """The dispute handler finds the user from PI metadata, saved card or not."""
+    checkout.create_topup_session(USER_ID, USER_EMAIL, Decimal("25.00"))
+    kwargs = fake_stripe.last_create_kwargs
+    assert kwargs["payment_intent_data"] == {
+        "metadata": {"user_id": USER_ID, "kind": "topup"},
+    }
+    assert "customer_creation" not in kwargs
+
+
 def test_save_payment_method_sets_setup_future_usage(
     fake_stripe: _FakeStripeModule,
 ) -> None:

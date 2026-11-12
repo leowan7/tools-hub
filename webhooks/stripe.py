@@ -249,25 +249,46 @@ def _user_id_from_charge(charge_obj: dict) -> Optional[str]:
     Disputes carry a charge id. The charge's metadata usually inherits
     from the PaymentIntent metadata, which our Checkout flow stamps with
     ``user_id``. Falls back to retrieving the PI explicitly when the
-    charge metadata is bare.
+    charge metadata is bare, then to the Checkout Session that created
+    the PI: top-ups made without saving the card before the PI metadata
+    was stamped on every session carry ``user_id`` only on the Session.
     """
     user_id = _user_id_from_metadata(charge_obj)
     if user_id:
         return user_id
     payment_intent_id = charge_obj.get("payment_intent")
+    if isinstance(payment_intent_id, dict):
+        payment_intent_id = payment_intent_id.get("id")
     if not payment_intent_id:
         return None
+    import stripe  # noqa: PLC0415
+    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
     try:
-        import stripe  # noqa: PLC0415
-        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
-        return _user_id_from_metadata(as_dict(pi))
+        user_id = _user_id_from_metadata(as_dict(pi))
     except Exception:
         logger.warning(
             "Could not retrieve PaymentIntent %s while resolving dispute user.",
             payment_intent_id, exc_info=True,
         )
+    if user_id:
+        return user_id
+    try:
+        sessions = as_dict(stripe.checkout.Session.list(
+            payment_intent=payment_intent_id, limit=1
+        ))
+    except Exception:
+        logger.warning(
+            "Could not list Checkout Sessions for PaymentIntent %s while "
+            "resolving dispute user.",
+            payment_intent_id, exc_info=True,
+        )
         return None
+    for session in sessions.get("data") or []:
+        user_id = _user_id_from_metadata(session)
+        if user_id:
+            return user_id
+    return None
 
 
 # ---------------------------------------------------------------------------
