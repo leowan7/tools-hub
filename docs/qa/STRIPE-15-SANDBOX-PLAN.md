@@ -223,7 +223,7 @@ The off-session charge uses `user_wallets.stripe_payment_method_id`, which is th
   - `as_dict(stripe.Charge.retrieve(...))` at `webhooks/stripe.py:529`.
   - The `PaymentIntent.retrieve` fallback at `webhooks/stripe.py:263`, if the charge metadata is bare.
   - Pass 6 never ran this end to end. It called `freeze_wallet_on_dispute` directly.
-- Opening `/account/wallet/topup` while frozen redirects to the wallet overview with `?wallet_frozen=1` (`blueprints/wallet.py:917-918`; the checkout POST has the same guard at `:966-967`). Pass 6 finding 1 reported this gap; it has since been closed.
+- Opening `/account/wallet/topup` while frozen redirects to the wallet overview with `?wallet_frozen=1` (`blueprints/wallet.py:918-919`; the checkout POST has the same guard at `:966-967`). Pass 6 finding 1 reported this gap; it has since been closed.
 - **Result:** PENDING
 
 ### Step 8: pass7 operator scripts, sandbox key, local, 15.x
