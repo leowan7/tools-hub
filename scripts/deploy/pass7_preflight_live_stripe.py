@@ -17,7 +17,13 @@ Checks:
 import os
 import sys
 
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+
 import stripe
+
+from shared.stripe_compat import as_dict  # noqa: E402
 
 PROD_URL = "tools.ranomics.com"
 REQUIRED_EVENTS = {
@@ -61,11 +67,11 @@ except Exception as exc:
     print(f"  FAIL: stripe.Account.retrieve() raised: {exc}")
     sys.exit(1)
 print(f"  account id:          {acct.id}")
-print(f"  business_profile:    {acct.business_profile.get('name') if acct.business_profile else None}")
+print(f"  business_profile:    {as_dict(acct.business_profile).get('name') if acct.business_profile else None}")
 print(f"  charges_enabled:     {acct.charges_enabled}")
 print(f"  payouts_enabled:     {acct.payouts_enabled}")
 print(f"  details_submitted:   {acct.details_submitted}")
-req = acct.get("requirements") if hasattr(acct, "get") else None
+req = as_dict(acct).get("requirements")
 if req:
     currently_due = req.get("currently_due") or []
     past_due = req.get("past_due") or []
@@ -87,7 +93,7 @@ try:
     # stripe-python exposes tax settings under stripe.tax.Settings
     settings = stripe.tax.Settings.retrieve()
     status = getattr(settings, "status", None)
-    defaults = getattr(settings, "defaults", None) or {}
+    defaults = as_dict(getattr(settings, "defaults", None)) or {}
     print(f"  status:              {status}")
     if isinstance(defaults, dict):
         print(f"  tax_behavior:        {defaults.get('tax_behavior')}")

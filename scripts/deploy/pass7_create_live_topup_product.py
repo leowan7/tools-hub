@@ -33,7 +33,13 @@ once it is live.
 import os
 import sys
 
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+
 import stripe
+
+from shared.stripe_compat import as_dict  # noqa: E402
 
 ROLE_TAG = "wallet_topup"  # metadata marker for idempotent lookup
 PRODUCT_NAME = "Ranomics Tools wallet top up"
@@ -66,7 +72,7 @@ print(f"stripe key:  sk_live_ (prefix {key[:11]})")
 default_tax_code = None
 try:
     settings = stripe.tax.Settings.retrieve()
-    defaults = getattr(settings, "defaults", None) or {}
+    defaults = as_dict(getattr(settings, "defaults", None)) or {}
     if isinstance(defaults, dict):
         default_tax_code = defaults.get("tax_code")
     tax_status = getattr(settings, "status", None)
@@ -84,7 +90,7 @@ except Exception as exc:  # AttributeError on old SDKs, API errors
 existing = None
 try:
     for prod in stripe.Product.list(limit=100, active=True).auto_paging_iter():
-        meta = prod.get("metadata") or {}
+        meta = as_dict(prod).get("metadata") or {}
         if meta.get("tools_hub_role") == ROLE_TAG:
             existing = prod
             break
@@ -96,7 +102,7 @@ if existing is not None:
     print()
     print(f"A live wallet top up product already exists:")
     print(f"  id:    {existing.id}")
-    print(f"  name:  {existing.get('name')}")
+    print(f"  name:  {as_dict(existing).get('name')}")
     print()
     print("Nothing to create. Set this id as STRIPE_WALLET_TOPUP_PRODUCT_ID:")
     print()
@@ -134,7 +140,7 @@ except Exception as exc:
     print(f"FAIL: stripe.Product.create raised: {exc}")
     sys.exit(1)
 
-print(f"  created product id={product.id}  name={product.get('name')!r}")
+print(f"  created product id={product.id}  name={as_dict(product).get('name')!r}")
 print()
 print("=" * 72)
 print("NEXT: set this id in the Railway production environment.")

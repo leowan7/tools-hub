@@ -75,6 +75,8 @@ import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional, Tuple
 
+from shared.stripe_compat import as_dict
+
 logger = logging.getLogger(__name__)
 
 
@@ -556,7 +558,7 @@ def create_off_session_payment_intent(
         stripe_customer_id, payment_method_id, amount,
         _attr(intent, "id"),
     )
-    return intent if isinstance(intent, dict) else intent.to_dict_recursive()
+    return as_dict(intent)
 
 
 def create_portal_session(
@@ -605,10 +607,10 @@ def _attr(obj, name: str):
     if obj is None:
         return None
     if isinstance(obj, dict):
-        return obj.get(name)
+        return as_dict(obj.get(name))
     if hasattr(obj, name):
-        return getattr(obj, name)
+        return as_dict(getattr(obj, name))
     try:
-        return obj[name]
+        return as_dict(obj[name])
     except Exception:
         return None
