@@ -10,23 +10,50 @@ Jobs occasionally get marooned in a non-terminal state:
   running  — a heartbeat fired (which transitioned the row to
              ``running``) but the pipeline died without posting a
              terminal webhook, and no further heartbeats arrived.
+             That is the intent; the ``stuck_running`` query below
+             cannot see it. It matches on ``started_at`` age alone and
+             reads no heartbeat and no progress field (the only
+             per-tool read on this path is the campaign-piece
+             budget in ``_within_campaign_session``), so a row still
+             beating healthily past the cutoff is swept too
+             (``shared/jobs.py::timeout_stuck_job`` calls that case
+             "our stall" and withholds the bill for it).
 
 Both states leak a wallet hold. This module routes stale rows through the
 public ``timeout_stuck_job`` helper, which first tries to RECOVER a job
 whose work actually completed but whose terminal webhook was lost (it
 finalizes such a job as ``succeeded`` through the normal ``complete_job``
 settle path). Only jobs with nothing recoverable are CAS-transitioned to
-``timeout`` and full-refunded. The summary counts recoveries separately so
-a lost-webhook incident is visible in the cron log.
+``timeout``. Designs the run had already streamed are kept on the row
+whatever Modal reported (``shared/jobs.py::_keep_streamed_designs``); what
+Modal reported decides only the BILL. A run carries the billed class
+``timeout_with_delivery`` just when it delivered designs AND Modal reported
+neither a failure nor that the call was still alive (Leo 2026-11-04); the
+three verdicts that withhold the bill leave the full refund
+``mark_timeout`` wrote
+(tests/test_sweep_stuck_recovery.py::TestGenuinelyDeadJobStillTimesOut
+::test_a_failed_verdict_still_shows_the_designs_it_delivered). The summary
+counts recoveries separately so a lost-webhook incident is visible in
+the cron log.
 
 Configuration
 -------------
 ``STUCK_PENDING_AGE_MINUTES``  default 30 — pending older than this is
                                considered orphaned.
-``STUCK_RUNNING_AGE_HOURS``    default 6  — running with no progress
-                               this long is considered dead.
+``STUCK_RUNNING_AGE_HOURS``    default 6  — running this long, measured
+                               from ``started_at`` alone, is considered
+                               dead. Not progress: nothing here reads a
+                               heartbeat timestamp.
                                Campaign pieces with a longer session
                                budget get that budget plus 2 h instead.
+                               One flat value for every non-campaign
+                               tool, so one whose own Modal
+                               ``timeout=`` is shorter
+                               (esmfold2-design: 6300 s, about 1 h 45 m,
+                               at ``tools/esmfold2_design/modal_app.py``
+                               ``_ORCHESTRATOR_TIMEOUT_S``) spends the
+                               remainder of the 6 h undetectably dead —
+                               see ``docs/qa/ESMFOLD2-STALL-2026-11-05.md``.
 
 CLI entry point::
 

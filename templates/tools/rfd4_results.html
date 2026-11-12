@@ -1,18 +1,26 @@
 {# RFD4-Proteina results partial — included by job_detail.html on status=succeeded
    or a cancelled run that kept designs.
 
-   NO SCORE COLUMNS, AND THAT IS THE SHAPE, NOT AN OMISSION. Every delivered
-   design carries exactly three keys — rank, name, pdb_key — written by
-   tools/rfd4/run_pipeline.py::_upload_design (`return {"rank": rank, "name":
-   uniq, "pdb_key": cif_key}`). The pipeline writes no confidence, no ipTM and
-   no RMSD: the Boltz-2 scoring leg that would produce them is a separate job
-   that does not exist yet (rfd4 has no entry in shared/refold.py::SOURCE_TOOLS).
-   So the table is the structure list plus its viewers, and rfd4 is likewise
-   absent from shared/score_legends.py::GATE_COLUMNS (:1527): `judge` returns
-   ``Judgement("unjudged", (), ())`` when `gate_columns` is empty
-   (score_legends.py:2321-2323), and the shell's shortfall banner only counts
-   rows whose verdict is ``below`` (components/results_shell.html:88, :93), so
-   it stays silent.
+   THE PIPELINE MEASURES NOTHING, AND THAT IS THE SHAPE, NOT AN OMISSION. A
+   delivered design carries rank, name, pdb_key and — when its binder chain is
+   identifiable — sequence, written by
+   tools/rfd4/run_pipeline.py::_upload_design. Not one of them is a number the
+   pipeline measured: no confidence, no ipTM, no RMSD. The scoring leg is a
+   SEPARATE Boltz-2 job the customer spawns from the second-opinion fold panel
+   below (rfd4 is in shared/refold.py::SOURCE_TOOLS).
+   Those scores are now READ BACK onto this table: blueprints/jobs.py's
+   job_detail passes ``refold_scores``
+   (shared/refold_scores.py::cofold_scores_for_source), and the shared macro
+   draws an ipTM column once at least one refold of this job exists. The
+   column is the customer's own folds reported back, never a number this run
+   produced, and it is absent entirely until they run one. ``columns`` below
+   stays empty on the ordinary path — the ipTM column is not a metric column
+   and is not routed through it.
+   rfd4 remains absent from shared/score_legends.py::GATE_COLUMNS:
+   `judge` returns ``Judgement("unjudged", (), ())`` when `gate_columns` is
+   empty (shared/score_legends.py::judge), and the shell's shortfall banner only
+   counts rows whose verdict is ``below`` (the ``ns.below`` tally inside
+   components/results_shell.html::results_panel), so it stays silent — no pass/fail is declared over a cofold score.
 
    `ranked=false`. The pipeline's ranks are "not quality ranks": they are
    completion order to within a poll interval, path-sorted within one sweep
@@ -65,17 +73,39 @@
    components/results_shell.html:49 drops the line.
 
    The inputs fallback names the SAME chain the container designed against, or
-   the run failed: tools/rfd4/__init__.py:148-158 refuses a multi-chain
-   request and defaults a blank field to "A" (:148), so
-   `inputs.target_chain` is always one concrete id, and
-   run_pipeline.py:657-674 `_fail`s a request that is not a polymer chain of
-   the upload (:661-666) or that leaves other polymer chains standing
-   (:667-674). There is
-   no path on which it returns a chain other than the one requested. #}
+   the run failed: tools/rfd4/__init__.py::validate refuses a multi-chain
+   request and defaults a blank field to "A", so `inputs.target_chain` is
+   always one concrete id, and run_pipeline.py::resolve_target_chain `_fail`s
+   a request that is not a polymer chain of the upload. A multi-chain FILE is
+   no longer refused -- as of 2026-11-10 run_pipeline.py::load_target crops a
+   PDB upload to the named chain -- but the crop changes which chains reach
+   upstream, never which chain is designed against, and a blank field is not
+   cropped on at all (`target_chain_named`).
+
+   One path could diverge in principle: `main` blanks `target_chain` when the
+   customer named no chain, and resolve_target_chain then picks the only
+   polymer chain of the upload, which need not be the "A" validate
+   substituted. Two gates close it. A multi-chain upload with no chain named
+   is refused in the container rather than picked for. And the substituted
+   "A" must be a chain with surviving protein residues, or the normalizer
+   raises (shared/pipeline_normalize.py:404-408), which the preflight turns
+   into NEEDS_FIX (shared/pdb_preflight.py:2314) and blueprints/tools.py:2312
+   turns into a refusal with the wallet hold released -- so by the time a
+   blank-field run is funded, "A" is a protein chain of the upload, and a
+   protein chain the hub kept carries a CA, which is what the container counts
+   as polymer. The residual is the submit path where the preflight itself
+   errored and was skipped (blueprints/tools.py:2305-2311): unverified, and it
+   would read as a mislabelled inputs row rather than a wrong design, since
+   this branch only fires when the upload has exactly one polymer chain. #}
 {% set job_inputs  = job.inputs or {} %}
 {% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
 {% set is_example  = (job.id == 'example') %}
 
+{# ``sequence`` is carried through, not dropped. It is what the table's
+   Length column counts and what its expanded row prints, and it is the key
+   shared/refold_scores.py::design_key joins this row to its cofold on. A
+   mid-run or recovered row has none (the heartbeat allow-list drops it), and
+   the table drops the column rather than draw it empty. #}
 {% set candidates = [] %}
 {% for d in raw_designs %}
   {% set _ = candidates.append({
@@ -83,6 +113,7 @@
       'rank': d.get('rank'),
       'name': d.get('name'),
       'pdb_key': d.get('pdb_key'),
+      'sequence': d.get('sequence'),
       'scores': {},
   }) %}
 {% endfor %}
@@ -106,10 +137,23 @@
     {% endif %}
   </p>
 {% endif %}
+{# The fold needs a per-design `sequence`, which tools/rfd4/run_pipeline.py's
+   ``_designed_sequence`` writes only when the binder chain is certain, and
+   which a recovered run never carries (the heartbeat allowlist drops it). So
+   the sentence that tells the customer to click the fold button is rendered
+   only when a design can actually be folded -- otherwise the buttons below
+   redirect back to this page with nothing to show for it
+   (blueprints/jobs.py::job_refold's empty-``seqs`` return). #}
+{% set foldable = (recovered or raw_designs or []) | selectattr('sequence') | list %}
 <p class="subtitle">
-  These designs carry no confidence score. RFD4 generates backbones and
-  sequences; scoring the complex is a separate fold run, so take the structures
-  into a predictor before choosing between them.
+  RFD4 generates backbones and sequences; it does not judge them, so a
+  confidence number comes from folding a design against your target.
+  {% if foldable %}Use <strong>Re-fold with Boltz-2 (cofold)</strong> below on
+  the designs you care about. Each one's ipTM joins this table, beside the
+  design it scored, once that fold finishes and you reload this page.{% else %}
+  That means these designs cannot be scored here: they did not come back with
+  the binder sequence a fold needs, so download the structures and fold them
+  yourself.{% endif %}
 </p>
 
 {# `gpu_seconds=` below is passed runtime_seconds, not gpu_seconds: that is the
@@ -132,7 +176,8 @@
     send_target_tools=send_target_tools,
     ranked=false,
     requested=designs_total,
-    returned=designs_returned) %}
+    returned=designs_returned,
+    refold_scores=(refold_scores | default({}, true))) %}
   <p class="subtitle">
     This run returned no designs. Contact us with this job's id and we can
     look into why.

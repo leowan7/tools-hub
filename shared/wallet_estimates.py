@@ -668,8 +668,8 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         gpu_class="A100-80GB",
         # The section-4.3 runtime fit evaluated at 8 designs -- the default
         # section 4.2 proposes, and what the pipeline falls back to
-        # (DEFAULT_NUM_DESIGNS in tools/rfd4/run_pipeline.py); no rfd4 form
-        # exists yet to call it a form default:
+        # (DEFAULT_NUM_DESIGNS in tools/rfd4/run_pipeline.py, and the value
+        # templates/tools/rfd4_form.html pre-fills the count field with):
         # 65 + 12.3 x 8 = 163.4 s
         # (docs/scoping/RFD4-PROTEINA-SCOPE-2026-10-30.md section 4.3). The
         # fit is affine and this field is scaled purely proportionally
@@ -693,12 +693,14 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         #
         # ``_effective_scaling_value`` looks this key up in the caller's params
         # and falls back to ``designs_per_run_baseline`` when it is ABSENT,
-        # without raising -- so until an rfd4 adapter stamps it, and an rfd4
-        # form carries it, every run of every size will price as the default
-        # eight. That adapter does not exist yet, so
+        # without raising -- so if the adapter stopped stamping it, every run
+        # of every size would price as the default eight in silence. The
+        # adapter landed in step 3 and does stamp it
+        # (tools/rfd4/__init__.py:226). So
         # ``test_the_adapter_stamps_the_key_the_wallet_scales_on`` in
-        # tests/test_rfd4_pipeline.py skips today and starts enforcing the
-        # stamp the moment tools/rfd4/__init__.py appears.
+        # tests/test_rfd4_pipeline.py:747 RUNS rather than skipping; its skip
+        # branch is kept for the adapter file being removed, not because it
+        # is expected to fire.
         scaling_param="n_designs_total",
         # Caps: Leo, 2026-11-03, with the ~$0.28 (N=8) and ~$2.26 (N=100)
         # figures in front of him. His numbers, NOT derived from the runtime

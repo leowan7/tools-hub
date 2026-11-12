@@ -301,6 +301,39 @@ class TestChargeGating:
                 jobs_mod._charge_workspace_for_completed_job(job)
             charge.assert_not_called(), f"gpu={gpu} should not charge"
 
+    @pytest.mark.parametrize(
+        "failure_class", sorted(jobs_mod._REFUNDED_FAILURE_CLASSES)
+    )
+    def test_skipped_when_failure_class_refunded(self, failure_class):
+        """Leo 2026-11-10: a refunded run never debits the Workspace cap."""
+        job = self._job(
+            status="failed", gpu_seconds_used=600,
+            failure_class=failure_class,
+            inputs={"_workspace": {"target_pdb_id": "4Z18"}},
+        )
+        with patch(
+            "shared.workspaces.get_active_workspace", return_value=_ws(user_id=job.user_id)
+        ), patch("shared.workspaces.charge_for_job") as charge:
+            jobs_mod._charge_workspace_for_completed_job(job)
+        charge.assert_not_called()
+
+    def test_billed_failure_class_still_charges(self):
+        """Positive control for the refunded-class skip: a billed failed
+        class with GPU time still debits the cap."""
+        job = self._job(
+            status="failed", gpu_seconds_used=600,
+            failure_class="completed_no_yield",
+            inputs={"_workspace": {"target_pdb_id": "4Z18"}},
+        )
+        with patch(
+            "shared.workspaces.get_active_workspace", return_value=_ws(user_id=job.user_id)
+        ), patch(
+            "shared.workspaces.charge_for_job", return_value=_ws(user_id=job.user_id)
+        ) as charge:
+            jobs_mod._charge_workspace_for_completed_job(job)
+        charge.assert_called_once()
+        assert charge.call_args.kwargs["gpu_seconds"] == 600
+
     def test_skipped_when_no_active_workspace(self):
         """Orphan: target_pdb_id present but no active Workspace exists."""
         job = self._job(

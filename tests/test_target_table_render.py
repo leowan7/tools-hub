@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from shared import metric_glossary, ranking, score_legends
+from shared import metric_glossary, ranking, refold, refold_scores, score_legends
 from shared import pdb_bfactors
 from shared.jobs import display_rows
 from shared.tool_meta import preset_label
@@ -60,6 +60,10 @@ def _env() -> Environment:
     env.globals["raw_metric"] = score_legends.raw_metric
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["score_era_caveat"] = score_legends.score_era_caveat
+    # The REAL join key, for the same reason ``ordinal`` is real above: a stub
+    # would let the ipTM cell be tested against this file's idea of the key
+    # instead of the one blueprints/jobs.py::_spawn_refold_job writes.
+    env.globals["design_key"] = refold_scores.design_key
     # The REAL function, not a stub. A stub here would let the percentile cell
     # be tested against this file's idea of an ordinal rather than production's.
     env.globals["ordinal"] = ranking.ordinal
@@ -76,14 +80,15 @@ def _render(**kwargs) -> str:
     params = dict(
         candidates=[], columns=[], job_id="", tool_slug="",
         clone_url="", campaign_id="", target_id="", multi_tool=False,
-        sort_mode="", split_tools=(), per_tool={},
+        sort_mode="", split_tools=(), per_tool={}, refold_scores={},
     )
     params.update(kwargs)
     tmpl = _env().from_string(
         '{% from "components/candidate_table.html" import candidate_table %}'
         "{{ candidate_table(candidates, columns, job_id, tool_slug, clone_url,"
         "                   campaign_id, target_id, multi_tool, sort_mode,"
-        "                   split_tools, per_tool) }}"
+        "                   split_tools, per_tool,"
+        "                   refold_scores=refold_scores) }}"
     )
     return tmpl.render(**params)
 
@@ -300,6 +305,465 @@ def test_viewer_row_spans_exactly_the_header_count():
 
     assert table.viewer_colspans, "no viewer rows rendered"
     assert set(table.viewer_colspans) == {len(table.header_cells)}
+
+
+def test_viewer_row_spans_the_header_count_on_a_worked_example_too():
+    """The multi-tool case above exercises neither conditional column.
+
+    ``_multi_tool_table`` passes multi_tool=True with rows that carry a
+    ``pdb_key``, so ``show_name`` is off (it requires ``not multi_tool``)
+    and ``has_structures`` is on. Both terms the span sum added would have
+    to be wrong in the same direction for that test to notice. This is the
+    opposite shape, and the one a worked-example page actually renders:
+    job_id == "example" suppresses the job-scoped URL so no row has a
+    structure, and a tool with no score columns falls back to the design
+    name. That is rfd4's table (tools/rfd4/meta.py:142).
+    """
+    rows = [{"rank": 0, "name": "000_pdl1_binder_0_generated",
+             "pdb_key": "000_pdl1_binder_0_generated.cif"},
+            {"rank": 1, "name": "001_pdl1_binder_1_generated",
+             "pdb_key": "001_pdl1_binder_1_generated.cif"}]
+    table = _parse(_render(candidates=rows, columns=[], job_id="example",
+                           tool_slug="rfd4"))
+
+    assert table.header_text == ["#", "★", "Design"], table.header_text
+    assert table.viewer_colspans, "no viewer rows rendered"
+    assert set(table.viewer_colspans) == {len(table.header_cells)}
+
+
+# ---------------------------------------------------------------------------
+# Length and ipTM: the two conditional columns rfd4 added
+# ---------------------------------------------------------------------------
+
+_SEQ_A = "QVQLVESGGGLVQPGGSLRLSCAASGFTFSSYAMSWVRQAPGKGLEWVS"
+_SEQ_B = "EVQLLESGGGLVQPGGSLRLSCAASGFTFSNYWMSWVRQAPGKGLEWVG"
+
+
+def _design(i, *, seq=None, name=True):
+    """One rfd4-shaped design row.
+
+    ``rank`` and ``pdb_key`` are both set because they are the two fields
+    ``shared.refold.candidate_seq_from_record`` reads to build the join key,
+    and a row that carried neither would be joined on an idx fallback instead,
+    which is a different path from the one a real rfd4 result takes.
+    """
+    row = {"rank": i, "pdb_key": f"designs/design_{i}.pdb"}
+    if name:
+        row["name"] = f"{i:03d}_pdl1_binder_{i}_generated"
+    if seq is not None:
+        row["sequence"] = seq
+    return row
+
+
+def _rfd4_table(rows, scores=None):
+    return _parse(_render(
+        candidates=rows, columns=[], job_id="job-rfd4-1", tool_slug="rfd4",
+        refold_scores=scores or {},
+    ))
+
+
+def _cell(table, header, row_index=0):
+    """The text of one row's cell under a named header.
+
+    Indexed through ``header_text`` rather than a fixed position: the column
+    order here is #, star, Design, Length, ipTM, 3D, Structure, and hard-coding
+    an index would make every one of these tests pass against the wrong cell
+    the moment a column is inserted.
+    """
+    assert header in table.header_text, (
+        f"no {header!r} column rendered: {table.header_text}")
+    return table.rows[row_index][table.header_text.index(header)]
+
+
+def test_viewer_row_spans_the_header_count_with_length_and_iptm():
+    """The third span shape: both of the newer conditional columns ON.
+
+    The two span tests above render a multi-tool table (show_name off,
+    has_structures on, neither new term reached) and a worked example
+    (show_name on, has_structures off, neither new term reached). Neither
+    would notice a span that forgot ``show_length`` or ``show_refold``.
+    This one is a real job with sequences and a refold, so all four terms
+    are live at once, which makes it the only test that fails if the
+    ``show_length`` or ``show_refold`` term is dropped from the ``span``
+    expression in ``components/candidate_table.html::candidate_table``.
+    """
+    rows = [_design(0, seq=_SEQ_A), _design(1, seq=_SEQ_B)]
+    table = _rfd4_table(rows, {refold_scores.design_key(rows[0], 0): {
+        "state": "succeeded", "iptm": 0.71, "job_id": "j-fold-1"}})
+
+    assert "Length" in table.header_text, table.header_text
+    assert "ipTM" in table.header_text, table.header_text
+    assert table.viewer_colspans, "no viewer rows rendered"
+    assert set(table.viewer_colspans) == {len(table.header_cells)}
+
+
+def test_the_length_column_counts_the_designs_own_sequence():
+    rows = [_design(0, seq=_SEQ_A), _design(1, seq=_SEQ_B[:20])]
+    table = _rfd4_table(rows)
+
+    assert _cell(table, "Length", 0) == f"{len(_SEQ_A)} aa"
+    assert _cell(table, "Length", 1) == "20 aa"
+
+
+def test_a_design_with_no_sequence_says_so_rather_than_counting_zero():
+    """A sparse row must not read as a zero-residue binder.
+
+    Both rows go in together because the column only exists when at least one
+    row has a sequence; the row without one is the case under test.
+    """
+    rows = [_design(0, seq=_SEQ_A), _design(1)]
+    table = _rfd4_table(rows)
+
+    assert _cell(table, "Length", 1) == "not reported"
+    assert "0 aa" not in table.rows[1]
+
+
+def test_no_length_column_while_a_run_is_still_streaming():
+    """Mid-run rows carry no sequence at all.
+
+    webhooks/modal.py::_sanitize_candidate drops ``sequence`` from every
+    heartbeat payload, so a live table has nothing to count. It must draw no
+    column rather than a column of "not reported".
+    """
+    table = _rfd4_table([_design(0), _design(1)])
+
+    assert "Length" not in table.header_text, table.header_text
+
+
+def test_no_iptm_column_until_the_customer_has_folded_something():
+    """An empty score column reads as a measured failure. There isn't one."""
+    table = _rfd4_table([_design(0, seq=_SEQ_A)])
+
+    assert "ipTM" not in table.header_text, table.header_text
+
+
+def test_the_iptm_header_is_not_click_sortable():
+    """Same mechanism as the multi-tool test at the top of this file: the
+    click handler binds to ``th[data-col]``. Sorting on ipTM would reorder
+    the pipeline's own order against a column that is filled only for the
+    designs the customer chose to fold."""
+    rows = [_design(0, seq=_SEQ_A)]
+    table = _rfd4_table(rows, {refold_scores.design_key(rows[0], 0): {
+        "state": "succeeded", "iptm": 0.71, "job_id": "j-fold-1"}})
+
+    labelled = {c.get("data-col") for c in table.header_cells if "data-col" in c}
+    assert "ipTM" not in labelled, labelled
+    assert "Length" not in labelled, labelled
+
+
+def test_every_refold_state_renders_its_own_honest_cell():
+    """The partial-state matrix, in one table.
+
+    Six rows, six states a design can be in once ANY refold exists. Each
+    must say something different and true, and none may be a bare dash: a
+    dash in a score column reads as a number the fold measured and failed.
+    The succeeded-with-no-score row is the STATE A case -- a refold job that
+    finished with an empty or missing ``designs`` list, which
+    shared/refold_scores.py::_iptm_of returns None for rather than raising.
+    """
+    rows = [_design(i, seq=_SEQ_A) for i in range(6)]
+    k = [refold_scores.design_key(r, i) for i, r in enumerate(rows)]
+    assert len(set(k)) == 6, f"join keys collided, test is not testing six rows: {k}"
+
+    table = _rfd4_table(rows, {
+        # rows[0]: deliberately absent -- never folded.
+        k[1]: {"state": "running", "iptm": None, "job_id": "j1"},
+        k[2]: {"state": "succeeded", "iptm": 0.83, "job_id": "j2"},
+        k[3]: {"state": "succeeded", "iptm": None, "job_id": "j3"},
+        k[4]: {"state": "failed", "iptm": None, "job_id": "j4"},
+        k[5]: {"state": "cancelled", "iptm": None, "job_id": "j5"},
+    })
+
+    cells = [_cell(table, "ipTM", i) for i in range(6)]
+    assert cells == [
+        "not folded yet",
+        "folding now",
+        "0.83",
+        "fold returned no score",
+        "fold failed",
+        "fold cancelled",
+    ], cells
+    assert len(set(cells)) == 6, cells
+    for text in cells:
+        assert "\u2014" not in text and text.strip() != "-", repr(text)
+
+
+def test_a_design_with_no_refold_shows_no_number_from_another_row():
+    """The join is per design, not per table.
+
+    One folded row and one unfolded row, with the score on the SECOND row, so
+    a cell that read ``refold_scores`` by position instead of by key would put
+    0.83 on the wrong design and this test would catch it.
+    """
+    rows = [_design(0, seq=_SEQ_A), _design(1, seq=_SEQ_B)]
+    table = _rfd4_table(rows, {refold_scores.design_key(rows[1], 1): {
+        "state": "succeeded", "iptm": 0.83, "job_id": "j2"}})
+
+    assert _cell(table, "ipTM", 0) == "not folded yet"
+    assert _cell(table, "ipTM", 1) == "0.83"
+
+
+def test_the_join_key_is_the_one_the_spawn_actually_writes():
+    """End to end, against the spawn side rather than against itself.
+
+    ``blueprints/jobs.py::_spawn_refold_job`` writes
+    ``inputs.binder_sequences[0].name = seq.fasta_header`` for the sequences
+    ``shared.refold.extract_top_n_sequences`` returned, and
+    ``shared/refold_scores.py`` keys its map on that stored name. So the key
+    used here is built the way the spawn builds it -- through
+    ``extract_top_n_sequences`` on a job-result dict -- not by calling
+    ``design_key``, which is the function under test. If the two sides ever
+    drift, the cell goes back to "not folded yet" and this fails.
+    """
+    rows = [_design(0, seq=_SEQ_A), _design(1, seq=_SEQ_B)]
+    spawned = refold.extract_top_n_sequences({"candidates": rows}, 2)
+    assert len(spawned) == 2, spawned
+
+    table = _rfd4_table(rows, {
+        spawned[1].fasta_header: {
+            "state": "succeeded", "iptm": 0.66, "job_id": "j9"},
+    })
+
+    assert _cell(table, "ipTM", 1) == "0.66"
+    assert _cell(table, "ipTM", 0) == "not folded yet"
+
+
+
+def test_a_non_string_sequence_cannot_500_the_page():
+    """The macro is shared by all fifteen tools; the rows are not.
+
+    ``sequence`` is written by per-tool pipelines, several of which live
+    outside this repo. A truthy non-string reaching ``| length`` is a
+    TypeError that takes down the whole results page, and a list would have
+    printed its element count as "N aa" and its repr as the sequence while
+    shared/refold.py::_candidate_sequence read the same row as having no
+    sequence at all. The cell says "not reported", which is what the refold
+    panel already believes about that row.
+    """
+    rows = [
+        {"rank": 1, "pdb_key": "designs/design_1.pdb", "name": "d1",
+         "sequence": ["M", "K", "V"]},
+        {"rank": 2, "pdb_key": "designs/design_2.pdb", "name": "d2",
+         "sequence": 42},
+        {"rank": 3, "pdb_key": "designs/design_3.pdb", "name": "d3",
+         "sequence": True},
+    ]
+    html = _render(candidates=rows, columns=[], job_id="job-rfd4-1",
+                   tool_slug="rfd4", refold_scores={})
+    table = _parse(html)
+
+    for i in range(3):
+        assert "not reported" in _cell(table, "Length", i), (i, table.rows[i])
+    # No count leaked into the cell, and no repr into the expand row.
+    for bad in ("3 aa", "1 aa", "&#39;M&#39;", 'class="cand-seq"'):
+        assert bad not in html, bad
+
+
+def test_the_newest_refolds_are_the_ones_read_back():
+    """The read cap keeps the NEWEST attempts, not the oldest.
+
+    ``created_at`` ascending with a LIMIT keeps the oldest rows and throws
+    the newest away, which inverts the last-write-wins the docstring
+    promises: past the cap a design folded today would read "not folded yet"
+    forever. Asserted on the query the module actually builds, because the
+    bug is invisible under the cap and no fixture can hold 200 refolds.
+    """
+    seen = {}
+
+    class _Q:
+        def select(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            return self
+
+        def order(self, col, **k):
+            seen["order"] = (col, k)
+            return self
+
+        def limit(self, n):
+            seen["limit"] = n
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class _C:
+        def table(self, _name):
+            return _Q()
+
+    import shared.refold_scores as rs
+
+    orig = rs.get_service_client
+    rs.get_service_client = lambda: _C()
+    try:
+        assert rs.cofold_scores_for_source("u1", "job-1") == {}
+    finally:
+        rs.get_service_client = orig
+
+    assert seen["order"] == ("created_at", {"desc": True}), seen
+    assert seen["limit"] == rs._MAX_REFOLDS_READ, seen
+
+
+def test_a_recovered_refold_still_reports_its_iptm():
+    """A refold rebuilt from Storage nests its score, and must still count.
+
+    The boltz2 success path writes ``designs`` with ``iptm`` at the record
+    root. A job whose webhook was lost is rebuilt by
+    shared/job_recovery.py::_candidate_from_partial into ``candidates`` with
+    the score under ``scores["ipTM"]``, and shared/jobs.py::candidate_records
+    PREFERS ``candidates`` -- so a root-only read returns None and the rfd4
+    row says "fold returned no score" for a fold that measured one, while
+    that same job's own page shows it.
+
+    Built with the real ``_candidate_from_partial`` rather than a hand-typed
+    dict, so this fails if the recovery shape moves rather than passing
+    against a copy of it that has gone stale.
+    """
+    from shared.job_recovery import _candidate_from_partial
+
+    import shared.refold_scores as rs
+
+    rec = _candidate_from_partial(
+        {"rank": 1, "pdb_key": "designs/rank1_d0.cif", "iptm": 0.71}
+    )
+    assert "iptm" not in rec, rec  # the shape this test exists for
+    assert rs._iptm_of({"candidates": [rec], "backfilled": True}) == 0.71
+    # The native shape is unchanged by the fix.
+    assert rs._iptm_of({"designs": [{"rank": 1, "iptm": 0.71}]}) == 0.71
+
+
+def test_a_failed_re_fold_does_not_erase_an_earlier_measurement():
+    """Newest-wins must not delete the number the customer paid for.
+
+    Re-folding a design whose first fold succeeded at 0.82, where the second
+    attempt fails -- including the spawn-side failure that writes a ``failed``
+    row before Modal is ever reached -- would under a plain last-write-wins
+    flip the cell to "fold failed" and lose the only measurement in the table.
+
+    Rows are handed back NEWEST FIRST, the way the real query orders them, so
+    this exercises the walk and not just the dict update.
+    """
+    import shared.refold_scores as rs
+
+    key = "rank0_d0"
+    rows = [
+        {"id": "newer", "status": "failed", "result": None,
+         "inputs": {"binder_sequences": [{"name": key}]}},
+        {"id": "older", "status": "succeeded",
+         "result": {"designs": [{"rank": 1, "iptm": 0.82}]},
+         "inputs": {"binder_sequences": [{"name": key}]}},
+    ]
+
+    class _Q:
+        def select(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def limit(self, _n):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class _C:
+        def table(self, _name):
+            return _Q()
+
+    orig = rs.get_service_client
+    rs.get_service_client = lambda: _C()
+    try:
+        out = rs.cofold_scores_for_source("u1", "job-1")
+    finally:
+        rs.get_service_client = orig
+
+    assert out[key]["iptm"] == 0.82, out
+    assert out[key]["job_id"] == "older", out
+
+    # A newer attempt that DID measure still wins -- the exception is narrow.
+    rows[0] = {"id": "newer", "status": "succeeded",
+               "result": {"designs": [{"rank": 1, "iptm": 0.44}]},
+               "inputs": {"binder_sequences": [{"name": key}]}}
+    rs.get_service_client = lambda: _C()
+    try:
+        out = rs.cofold_scores_for_source("u1", "job-1")
+    finally:
+        rs.get_service_client = orig
+
+    assert out[key]["iptm"] == 0.44, out
+    assert out[key]["job_id"] == "newer", out
+
+    # A re-fold still RUNNING wins on purpose: the cell says a fold is in
+    # flight rather than showing the older number, and the older number
+    # comes back by this same rule if that attempt ends without one.
+    rows[0] = {"id": "newer", "status": "running", "result": None,
+               "inputs": {"binder_sequences": [{"name": key}]}}
+    rs.get_service_client = lambda: _C()
+    try:
+        out = rs.cofold_scores_for_source("u1", "job-1")
+    finally:
+        rs.get_service_client = orig
+
+    assert out[key]["state"] == "running", out
+    assert out[key]["iptm"] is None, out
+    assert out[key]["job_id"] == "newer", out
+
+    # THREE attempts, which is what clicking re-fold twice produces: the
+    # measurement, a still-running attempt, then one that ended with no
+    # number. Comparing only against the previous winner loses here -- the
+    # running row overwrites 0.82 and carries iptm None, so the failed row
+    # then sees no measurement to protect and reports "fold failed" over a
+    # design that is in fact mid-fold.
+    rows[:] = [
+        {"id": "newest-failed", "status": "failed", "result": None,
+         "inputs": {"binder_sequences": [{"name": key}]}},
+        {"id": "mid-running", "status": "running", "result": None,
+         "inputs": {"binder_sequences": [{"name": key}]}},
+        {"id": "oldest-measured", "status": "succeeded",
+         "result": {"designs": [{"rank": 1, "iptm": 0.82}]},
+         "inputs": {"binder_sequences": [{"name": key}]}},
+    ]
+    rs.get_service_client = lambda: _C()
+    try:
+        out = rs.cofold_scores_for_source("u1", "job-1")
+    finally:
+        rs.get_service_client = orig
+
+    assert out[key]["state"] == "running", out
+    assert out[key]["job_id"] == "mid-running", out
+
+    # And with nothing left running, the measurement is what survives two
+    # later attempts that both ended without one.
+    rows[1] = {"id": "mid-cancelled", "status": "cancelled", "result": None,
+               "inputs": {"binder_sequences": [{"name": key}]}}
+    rs.get_service_client = lambda: _C()
+    try:
+        out = rs.cofold_scores_for_source("u1", "job-1")
+    finally:
+        rs.get_service_client = orig
+
+    assert out[key]["iptm"] == 0.82, out
+    assert out[key]["job_id"] == "oldest-measured", out
+
+
+def test_the_full_sequence_is_rendered_in_the_expandable_row():
+    """Leo approved seeing the sequence; it is not truncated and not a tooltip.
+
+    Asserted on the rendered expand-row markup, and on the WHOLE string: a
+    substring check would pass against a truncated cell ending in an ellipsis,
+    which is the thing this was chosen over.
+    """
+    html = _render(candidates=[_design(0, seq=_SEQ_A)], columns=[],
+                   job_id="job-rfd4-1", tool_slug="rfd4")
+
+    assert f'<code class="cand-seq">{_SEQ_A}</code>' in html, html[-3000:]
+    # Not smuggled into a hover tooltip instead.
+    assert f'title="{_SEQ_A}"' not in html
 
 
 # ---------------------------------------------------------------------------

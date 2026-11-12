@@ -7,7 +7,7 @@ exposes a small stable API that `app.py` imports lazily.
 
 ## Tools
 
-Fourteen GPU tools live in `tools/<slug>/` and register through
+Fifteen GPU tools live in `tools/<slug>/` and register through
 `tools.base`; each one is gated on `FLAG_TOOL_<SLUG>` (see
 `shared/feature_flags.py`, fail-closed) and appears in the catalog only
 when its flag is on. Category is the workflow band from
@@ -24,6 +24,7 @@ grid and `/tools`.
 | IgGM | `iggm` | Make new binders for my target | `/tools/iggm` |
 | Proteina-Complexa | `proteina` | Make new binders for my target | `/tools/proteina` |
 | ESMFold2 design | `esmfold2-design` | Make new binders for my target | `/tools/esmfold2-design` |
+| RFD4-Proteina | `rfd4` | Make new binders for my target | `/tools/rfd4` |
 | ProteinMPNN | `mpnn` | Choose sequences for a structure I already have | `/tools/mpnn` |
 | AlphaFold2 | `af2` | Predict or check a 3D structure | `/tools/af2` |
 | ColabFold | `colabfold` | Predict or check a 3D structure | `/tools/colabfold` |

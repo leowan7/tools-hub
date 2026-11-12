@@ -24,6 +24,11 @@
   per_tool   : dict         — shared.ranking.build_tool_stats, slug keyed. Read
                               only by the group headers under sort_mode='tool';
                               an absent slug degrades to a bare header
+  refold_scores : dict      — shared.refold_scores.cofold_scores_for_source,
+                              keyed by that module's ``design_key``. Adds one
+                              ipTM column carrying the scores the customer's
+                              own Boltz-2 refolds produced for THESE designs.
+                              Empty (the default) draws no such column
 
   MULTI-TOOL MODE. With ``multi_tool``, ``candidates`` are pooled from SEVERAL
   tools run against one target and ``columns`` is ignored (pass []). Three
@@ -56,7 +61,7 @@
   load-bearing rather than documentation, and it omitted ``ordinal`` in the
   same change that introduced the call.
 #}
-{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=(), per_tool={}, ranked=true) %}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=(), per_tool={}, ranked=true, refold_scores={}) %}
 {# ``scope`` is the shortlist storage key + element-id suffix: the target id in
    target mode (pooled across tools), the campaign id in campaign mode (merged
    across sub-jobs of one tool), else the job id. ``export_base`` routes exports
@@ -155,10 +160,81 @@
                  and (candidates | map(attribute='_source_tool', default='')
                                  | map('default', '', true)
                                  | unique(true) | list | length) > 1 %}
+{# Does ANY row in this table have a structure to show? The per-row test is
+   ``has_pdb`` at the row cells below -- ``(pdb_key and not is_example) or
+   pdb_content_b64`` -- and this is the same test lifted to the table, so the
+   two cannot disagree about a row. Where it is false the 3D and Structure
+   columns are dropped entirely rather than drawn as a column of em dashes:
+   that is every row on a worked-example page for a tool whose example ships
+   no inline bytes -- the ``example`` sentinel suppresses the job-scoped URL,
+   so a recorded ``pdb_key`` alone buys nothing. boltzgen is the exception:
+   its example DOES carry ``pdb_content_b64``, and it keeps both columns.
+   The other case is a real job whose rows carry no structure at all. #}
+{% set has_structures = (((candidates | selectattr('pdb_key') | list | length) > 0)
+                         and not is_example)
+                        or ((candidates | selectattr('pdb_content_b64') | list | length) > 0) %}
+{# The design's own name, shown ONLY where this table would otherwise have no
+   column of its own content: a tool with no score columns renders #, star
+   and nothing else. Narrow on purpose. Measured, not assumed: rendering all
+   fifteen /tools/<slug> pages and diffing the candidate-table headers before
+   and after, rfd4 is the only page that gains this column. The other call
+   site reaches it too: targets/detail.html:570 passes ``columns_for(tool)``
+   for a single-tool pool (shared/target_results.py:787), which is [] for a
+   tool with no entry, so an rfd4 target pool gains the name column as well.
+   Those rows are a real job, so they keep their structure columns. #}
+{% set show_name = (not multi_tool)
+                   and (columns | length == 0)
+                   and ((candidates | selectattr('name') | list | length) > 0) %}
+{# Two more conditional columns, on the same rule as ``show_name``: a header
+   is a claim the value exists, so each is drawn only where the rows can
+   fill it.
+
+   LENGTH is the binder's residue count, counted from the design's own
+   sequence -- no tool writes a length field. It is therefore off while a run
+   is still streaming: the mid-run heartbeat's allow-list drops ``sequence``
+   (webhooks/modal.py::_sanitize_candidate), so a live table has nothing to
+   count and draws no column rather than a column of blanks.
+
+   IPTM is the per-design Boltz-2 cofold score carried back from the refolds
+   the customer spawned from the second-opinion panel (shared/refold_scores.py).
+   ``refold_scores`` is empty until one of those exists, so a job nobody has
+   folded draws no score column at all -- there is no empty column for a
+   reader to mistake for a measured failure. Once ANY design has a refold the
+   column appears for every row, and the rows without one say so in words. #}
+{# NOT rfd4-gated, deliberately. This macro is shared by every tool's results
+   page plus the campaign and target tables, so a Length column and the
+   sequence block appear on ANY of them whose rows carry a sequence. That is
+   data those rows already held; what changes is that it is shown, and a tool
+   whose rows carry none renders exactly as before -- which is why the gate is
+   on the data and not on the slug.
+   esmfold2-design forwards the key explicitly (the ``'sequence'`` entry of
+   the dict it builds for this macro in
+   templates/tools/esmfold2_design_results.html); the other partials pass
+   their pipeline-written rows through, so what appears there is whatever the
+   pipeline wrote. Not enumerated here: several of those pipelines are not in
+   this repo, so a list of which tools gain a column would be a guess. #}
+{% set show_length = ((candidates | selectattr('sequence') | list | length) > 0)
+                     or ((candidates | selectattr('binder_sequence') | list | length) > 0) %}
+{% set show_refold = (refold_scores | length) > 0 %}
 {# Fixed cells are #, star, 3D, PDB = 4; multi-tool replaces `columns` with
    Tool, Score and Pctile. Computed once because both the viewer rows and the
-   group header rows have to span it, and they drifted apart once already. #}
-{% set span = 7 if multi_tool else (columns | length + 4) %}
+   group header rows have to span it, and they drifted apart once already.
+   The four conditional columns move it in both directions. Dropping the
+   ``show_name`` or ``has_structures`` term is caught by
+   test_viewer_row_spans_the_header_count_on_a_worked_example_too
+   (tests/test_target_table_render.py). That test renders a worked example,
+   whose rows carry neither a sequence nor a refold score, so it does NOT
+   reach the two newer terms. Those two are covered by
+   test_viewer_row_spans_the_header_count_with_length_and_iptm in the same
+   file. The oldest
+   test_viewer_row_spans_exactly_the_header_count catches none of the four:
+   it renders the multi-tool shape, where show_name is off and
+   has_structures is on. #}
+{% set span = (7 if multi_tool else (columns | length + 4))
+              + (1 if show_name else 0)
+              + (1 if show_length else 0)
+              + (1 if show_refold else 0)
+              - (0 if has_structures else 2) %}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
@@ -175,6 +251,11 @@
    than with scout.css's .error-message, which no page rendering this macro
    loads; --error/--error-bg are static/style.css tokens, which base.html
    does load. */
+.cand-unranked-note {
+  margin: 0 0 .7rem 0;
+  font-size: .8rem;
+  color: var(--text-secondary);
+}
 .cand-download-error {
   margin: 0 0 .7rem 0;
   font-size: .8rem;
@@ -379,6 +460,11 @@
    is un-hidden. position:relative anchors Mol*'s absolutely-positioned
    canvas to this box. */
 .mol-viewer-container { height: 420px; width: 100%; position: relative; }
+.cand-seq-wrap { padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+.cand-seq-label { font-size: .75rem; color: var(--text-secondary); margin-bottom: .35rem; }
+.cand-seq { display: block; font-family: var(--font-mono); font-size: .78rem;
+            line-height: 1.5; word-break: break-all;
+            max-height: 7rem; overflow-y: auto; }
 
 /* Modal */
 .modal-overlay {
@@ -539,6 +625,84 @@
    to the shared guard and writes here. Keyed on `scope` like table_id above,
    so a page holding two panels gets one surface each. #}
 <p id="cand-dl-err-{{ scope }}" class="cand-download-error" aria-live="polite" hidden></p>
+{# WHY A VISIBLE LINE AND NOT A HEADER TOOLTIP. The "#" heading below is bare
+   while Score and Pctile each carry their own title, so an unranked table
+   reads as best-first to anyone who does not hover, and the only accurate
+   statement of what the column means lived in a Jinja comment the browser
+   never sees (templates/tools/rfd4_results.html:17-19).
+
+   ONE WORDING, and it is arrival order on every page that reaches here.
+   rfd4 passes ranked=false unconditionally
+   (templates/tools/rfd4_results.html:133) and ships no score columns at all.
+   Every other results partial that passes ranked AT ALL -- thirteen of
+   them -- passes ranked=(not output.get('backfilled')), so it reaches this
+   branch only on a backfilled result. mpnn_results.html and
+   _default_results.html pass no ranked= at all, so they take this macro's
+   default ranked=true (:59) and never reach here. The thirteen reach a
+   backfilled result in arrival order for THREE different reasons, counted
+   rather than generalised:
+
+   SIX DISCARD a sort they just ran, because the sort is followed
+   immediately by `candidates = recovered or candidates` and `recovered` is
+   non-empty exactly when the run was rebuilt: af2_results.html:76-77,
+   boltz2_results.html:81-82, colabfold_results.html:66-67,
+   esmfold_results.html:75-76, iggm_results.html:49-50 and
+   opendde_results.html:67-68. Five of those six sort on a score under
+   `scores.`; opendde sorts on the pipeline's own `rank` field
+   (opendde_results.html:67), which is not a score.
+
+   SIX NEVER SORT in the partial at all -- bindcraft_results.html:6,
+   boltzgen_results.html:6, proteina_results.html:25,
+   pxdesign_results.html:6, rfantibody_results.html:5 and
+   rfdiffusion_results.html:7 each take output['candidates'] straight
+   through (proteina through display_rows, which shared/jobs.py:317-319
+   documents as same length, same order). The check is
+   `grep -c sort_by_number`, which returns 0 on each of those six and 1
+   on each of the seven that do sort -- so it DISCRIMINATES, which
+   `grep -c 'sort('` did not: the sorts are written
+   `candidates | sort_by_number(...)` and carry no `sort(` substring, so
+   that pattern returned 0 on both groups and told them apart not at
+   all. Nothing in the six reorders, so the stored order is what
+   renders.
+
+   ONE, esmfold2_design, never reaches its sort on that path; the
+   `output_candidates` branch returns first
+   (esmfold2_design_results.html:155-157 and :187). `recovered` is
+   display_rows(output['candidates']), which shared/job_recovery.py::reconstruct
+   builds by walking the streamed `_partial_candidates` in stored order
+   (shared/job_recovery.py:237-245).
+
+   AN EARLIER DRAFT OF THIS COMMENT WAS WRONG about that and is corrected
+   rather than restated: it claimed those seven pages render in SCORE order
+   and used that to justify a second, shorter wording keyed on `columns`.
+   The sort is discarded, so they do not, and the split is gone with it.
+
+   ONE PATH WHERE "came back in" IS APPROXIMATE, recorded here and not on
+   the page: when no streamed partial survives, reconstruct() falls back to
+   listing Storage, which is sorted by FILENAME
+   (shared/job_recovery.py::_list_design_files) and carries no scores. Those
+   rows are in name order, which is usually but not provably arrival order.
+
+   WHOSE WORDS THESE ARE. Leo gave the sentence on 2026-11-06: "ranking based
+   on when designs completed and not binding rankings". Two departures from it
+   are deliberate. It says "the order the designs came back in" rather than an
+   exact completion order, because completion order holds only to within a
+   poll interval: designs landing in the same sweep are ordered by filename
+   (tools/rfd4/run_pipeline.py:1049-1055). A click on a sortable header also
+   re-orders the rows and renumberRows() rewrites these numbers, so the
+   sentence describes the table as rendered. No clause on the page explains
+   either: the hedge carries the first, and the second is the customer's own
+   act.
+
+   Suppressed in pooled (target-page) mode, where _rank_position is a real
+   cross-run ranking and the badge above is anchored on it rather than on
+   `ranked`. Pinned by tests/test_unranked_table_note.py. #}
+{% if not ranked and not pooled %}
+<p class="cand-unranked-note">
+  The # column is the order the designs came back in, not a ranking of how well
+  anything binds.
+</p>
+{% endif %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
@@ -549,6 +713,19 @@
            well as the optional lab handoff, so naming one consumer in the
            tooltip made the other invisible. #}
         <th style="width:2rem;" title="Star to shortlist">★</th>
+        {# NO data-col, for the reason the multi-tool block below gives: the
+           attribute is what binds the click-to-sort handler, and sortTable
+           orders rows numerically on td[data-val]. A name is not a number. #}
+        {% if show_name %}<th>Design</th>{% endif %}
+        {# NO data-col on either of the next two, for the same reason as the
+           Design header above: the attribute is what binds the click-to-sort
+           handler. A length is not a quality, and sorting on ipTM would
+           reorder rows whose order is the pipeline's own against a column
+           that is filled for the designs the customer chose to fold and
+           stated in words for the rest. Re-ordering on a partly-filled
+           column is a decision of its own and was not taken here. #}
+        {% if show_length %}<th style="width:5rem;" title="Residues in the designed binder chain, counted from the sequence this design came back with.">Length</th>{% endif %}
+        {% if show_refold %}<th style="width:9rem;" title="Boltz-2 cofold confidence for this design against your target, from the re-folds you ran below. Runs 0 to 1; higher is better.">ipTM</th>{% endif %}
         {% if multi_tool %}
         {# NO data-col on any of these three.
 
@@ -654,8 +831,10 @@
           </th>
         {% endfor %}
         {% endif %}
+        {% if has_structures %}
         <th style="width:4.5rem;">3D</th>
         <th style="width:4.5rem;">Structure</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
@@ -724,6 +903,20 @@
         {% set use_url     = raw_pdb_key and not is_example %}
         {% set pdb_url     = '/api/jobs/' ~ src_job ~ '/pdb/' ~ (pdb_key | urlencode) %}
         {% set has_pdb     = use_url or has_b64 %}
+        {# The designed binder's sequence, under the two keys adapters write
+           it under -- the same pair, in the same order, as
+           shared/refold.py::_candidate_sequence, which is what decides which
+           designs a refold can be spawned for. Resolved once per row: the
+           length cell and the expanded row both read it. #}
+        {% set row_raw     = cand.get('sequence') or cand.get('binder_sequence') %}
+        {# `is string` for the same reason shared/refold.py::_candidate_sequence
+           tests isinstance(seq, str): this macro is shared by every tool and the
+           rows come from pipelines outside this repo. A non-string here would
+           make `| length` a TypeError and 500 the page, and would print a
+           container's repr as the sequence while the refold panel read the same
+           row as having none. Guarded by
+           tests/test_target_table_render.py::test_a_non_string_sequence_cannot_500_the_page. #}
+        {% set row_seq     = row_raw if row_raw is string else none %}
         {# Converted once and used by BOTH the viewer and the download,
            so the bytes a user looks at and the bytes they save cannot
            disagree. A non-fractional file comes back unchanged.
@@ -843,6 +1036,42 @@
           <td class="star-cell">
             <button class="star-btn" data-idx="{{ idx }}" data-job="{{ src_job }}" data-ref-idx="{{ src_idx }}" title="Star to shortlist">&#9734;</button>
           </td>
+          {% if show_name %}
+          <td style="font-family:var(--font-mono);font-size:.8rem;word-break:break-all;">{{ cand.get('name') or '—' }}</td>
+          {% endif %}
+
+          {% if show_length %}
+          <td style="font-family:var(--font-mono);font-size:.8rem;">
+            {%- if row_seq %}{{ row_seq | length }} aa
+            {%- else %}<span style="color:var(--text-secondary);" title="This design came back without its binder sequence, so there is nothing to count.">not reported</span>{% endif -%}
+          </td>
+          {% endif %}
+
+          {% if show_refold %}
+          {# Every branch is a sentence about THIS design's fold. None of them
+             is an em dash: an empty-looking cell beside a column of numbers
+             reads as a bad measurement, and only the first branch here is a
+             measurement at all. ``design_key`` returns None for a row with no
+             sequence, and ``{}.get(None)`` is None, so such a row lands in
+             the first branch -- honest, since a design with no sequence is
+             also one no refold could have been spawned from. #}
+          {% set fold = refold_scores.get(design_key(cand, idx)) %}
+          <td style="font-size:.8rem;">
+            {%- if fold is none -%}
+              <span style="color:var(--text-secondary);" title="You have not folded this design yet. Use the second-opinion fold below.">not folded yet</span>
+            {%- elif fold.state == 'succeeded' and fold.iptm is not none -%}
+              {{ '%.2f' | format(fold.iptm) }}
+            {%- elif fold.state == 'succeeded' -%}
+              <span style="color:var(--text-secondary);" title="The fold finished but returned no ipTM for this design.">fold returned no score</span>
+            {%- elif fold.state == 'failed' -%}
+              <span style="color:var(--text-secondary);" title="The fold of this design did not finish.">fold failed</span>
+            {%- elif fold.state == 'cancelled' -%}
+              <span style="color:var(--text-secondary);" title="The fold of this design was cancelled.">fold cancelled</span>
+            {%- else -%}
+              <span style="color:var(--text-secondary);" title="The fold of this design is still running. Reload for the score.">folding now</span>
+            {%- endif -%}
+          </td>
+          {% endif %}
 
           {% if multi_tool %}
             {% set row_tool = cand.get('_source_tool') or '—' %}
@@ -1042,6 +1271,7 @@
           {% endfor %}
           {% endif %}
 
+          {% if has_structures %}
           <td>
             {% if has_pdb %}
               <button class="view3d-btn btn-secondary"
@@ -1089,6 +1319,7 @@
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
           </td>
+          {% endif %}
         </tr>
 
         <tr class="viewer-row" id="viewer-row-{{ idx }}" style="display:none;">
@@ -1098,6 +1329,28 @@
              empty. Shared with the group header rows, which have to span the
              same width. Miss this and every viewer row mis-spans. #}
           <td colspan="{{ span }}" style="padding:0;background:var(--bg-deep);">
+            {% if row_seq %}
+            {# The sequence in FULL, not truncated and not in a ``title``: a
+               120-mer in a tooltip is unreadable and unreachable on touch. It
+               sits in the row that already expands rather than in a column of
+               its own, which would squeeze every other column.
+
+               THIS ADDS NO REVEAL PATH. The row is opened by the 3D button
+               (the ``.view3d-btn`` click handler in
+               static/js/candidate_table.js), so a design with a
+               sequence and no structure still has no way to open it -- it
+               keeps exactly what it had before this block existed, which is
+               nothing. For the tool this was written for that case does not
+               arise: rfd4's ``_upload_design`` writes ``pdb_key``
+               unconditionally and ``sequence`` only when the binder chain is
+               identifiable (``tools/rfd4/run_pipeline.py::_upload_design``),
+               so the
+               dependency runs the other way. #}
+            <div class="cand-seq-wrap">
+              <div class="cand-seq-label">Designed binder sequence &middot; {{ row_seq | length }} aa</div>
+              <code class="cand-seq">{{ row_seq }}</code>
+            </div>
+            {% endif %}
             <div id="mol-viewer-{{ idx }}" class="mol-viewer-container"></div>
           </td>
         </tr>

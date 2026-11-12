@@ -124,7 +124,8 @@ def _fail(
     gpu/modal_client.py::_interpret_pipeline_return reads it off the FAILED
     arm as gpu_seconds_used, which
     shared/jobs.py::_charge_workspace_for_completed_job debits from the
-    Workspace cap whatever the failure class. Leave it None for fails before
+    Workspace cap unless the failure class is in
+    shared/jobs.py::_REFUNDED_FAILURE_CLASSES. Leave it None for fails before
     any GPU work.
     """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)

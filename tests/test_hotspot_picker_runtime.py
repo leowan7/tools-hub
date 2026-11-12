@@ -82,7 +82,22 @@ _SCRIPT_RE = re.compile(r"<script>(.*?)</script>", re.S)
 # refuses a hotspot whose chain is outside the trimmed selection
 # (test_prep_page.py::test_handoff_refuses_hotspot_outside_trim).
 CHAIN_PREFIXED_FORMS = ("rfdiffusion", "pxdesign", "boltzgen", "proteina", "prep")
-BARE_INT_FORMS = ("rfantibody", "bindcraft")
+#
+# rfd4 joined this list at step 7A, where the earlier comment here said it
+# would. tools/rfd4/__init__.py now calls register(adapter), so /tools/rfd4
+# renders and ``_form_page`` can drive it like the other two. FLAG_TOOL_RFD4
+# being off does not keep it out: ``_form_page`` patches
+# ``blueprints.tools.tool_enabled`` to True, which is the flag arm, while the
+# registry arm of ``_require_tool`` is the one registration opened.
+BARE_INT_FORMS = ("rfantibody", "bindcraft", "rfd4")
+# Templates that construct a picker but whose slug no route renders, because
+# the adapter is not in the registry. EMPTY today -- rfd4 was its only ever
+# entry. Everything below drives a form through its real URL (``_form_page``),
+# so such a template cannot join the two lists above: ``_require_tool`` in
+# blueprints/tools.py 404s an unregistered slug. They ARE still counted by
+# the completeness scan below, so a new unrendered form is a decision about
+# ``chainPrefixed`` rather than an accident.
+UNREGISTERED_PICKER_FORMS: tuple[str, ...] = ()
 ALL_PICKER_FORMS = CHAIN_PREFIXED_FORMS + BARE_INT_FORMS
 
 needs_node = pytest.mark.skipif(
@@ -183,10 +198,12 @@ def test_every_picker_call_site_is_covered_by_this_file():
         for p in templates.rglob("*.html")
         if "initHotspotPicker(" in p.read_text(encoding="utf-8")
     }
-    assert call_sites == set(ALL_PICKER_FORMS), (
+    listed = set(ALL_PICKER_FORMS) | set(UNREGISTERED_PICKER_FORMS)
+    assert call_sites == listed, (
         f"picker call sites {sorted(call_sites)} do not match the forms this "
-        f"file drives {sorted(ALL_PICKER_FORMS)} — a new form must be added to "
-        f"CHAIN_PREFIXED_FORMS or BARE_INT_FORMS with a reason"
+        f"file lists {sorted(listed)} — a new form must be added to "
+        f"CHAIN_PREFIXED_FORMS, BARE_INT_FORMS or UNREGISTERED_PICKER_FORMS "
+        f"with a reason"
     )
 
 

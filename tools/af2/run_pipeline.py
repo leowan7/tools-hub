@@ -176,7 +176,8 @@ def _fail(
     gpu/modal_client.py::_interpret_pipeline_return reads it off the FAILED
     arm as gpu_seconds_used, which
     shared/jobs.py::_charge_workspace_for_completed_job debits from the
-    Workspace cap whatever the failure class. Leave it None for fails before
+    Workspace cap unless the failure class is in
+    shared/jobs.py::_REFUNDED_FAILURE_CLASSES. Leave it None for fails before
     any GPU work.
     """
     logger.error("pipeline FAILED at %s/%s: %s", bucket, check, detail)
@@ -1235,33 +1236,14 @@ def _run_batch(
             fasta_path = workdir / "batch.fasta"
             record_map, n_failures = _write_consolidated_fasta(records, fasta_path)
             if not record_map:
-                _write_result(
-                    {
-                        "status": "COMPLETED",
-                        "tier": "batch",
-                        "designs_total": designs_total,
-                        "designs_folded": 0,
-                        "designs_completed": 0,
-                        "n_failures": n_failures,
-                        "designs": [],
-                        "num_recycles": num_recycles,
-                        "use_templates": use_templates,
-                        "runtime_seconds": int(time.time() - start),
-                        "provider_job_id": os.environ.get("JOB_ID", ""),
-                    }
+                _fail(
+                    "pipeline",
+                    "no_designs",
+                    f"none of {designs_total} designs folded ({n_failures} "
+                    f"failures) — every record failed pre-validation, "
+                    f"nothing to fold.",
+                    runtime_seconds=int(time.time() - start),
                 )
-                send_heartbeat(
-                    webhook_url, job_id,
-                    stage="complete",
-                    designs_completed=0,
-                    designs_total=designs_total,
-                )
-                logger.info(
-                    "batch pipeline ok — 0/%d designs folded "
-                    "(all records failed pre-validation), %d failures",
-                    designs_total, n_failures,
-                )
-                return
 
             send_heartbeat(
                 webhook_url, job_id,
@@ -1409,25 +1391,16 @@ def _run_batch(
                     "%d delivered",
                     exit_code, n_folded, designs_total, len(designs_out),
                 )
-                # If we delivered at least one design we treat the batch as
-                # partially-completed (consistent with the original loop's
-                # SystemExit catch); otherwise fail hard.
-                if not designs_out:
-                    if n_folded:
-                        detail = (
-                            f"{n_folded} of {designs_total} designs folded but 0 "
-                            f"uploaded, and colabfold_batch consolidated exited "
-                            f"{exit_code} — the delivery hop failed, not the "
-                            f"folds; see the per-design upload warnings in the "
-                            f"run log, and this job's raw archive for the "
-                            f"structures"
-                        )
-                    else:
-                        detail = (
-                            f"colabfold_batch consolidated exited {exit_code} "
-                            "with zero completed designs."
-                        )
-                    _fail("tool-invocation", "exit", detail)
+                # A run that delivered a design completes; one that folded
+                # something and delivered nothing falls through to the
+                # "storage" guard after the finally.
+                if not designs_out and not n_folded:
+                    _fail(
+                        "tool-invocation",
+                        "exit",
+                        f"colabfold_batch consolidated exited {exit_code} "
+                        "with zero completed designs.",
+                    )
 
             # Account for any records that colabfold skipped silently
             # (no output emitted): treat as failures so the counts add up.

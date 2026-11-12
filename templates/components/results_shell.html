@@ -8,7 +8,8 @@
 {% macro results_panel(candidates, columns, tool_slug, job_id,
                        clone_url="", tier="", gpu_seconds=None,
                        send_target_tools=None, campaign_id="", ranked=true,
-                       requested=None, returned=None, failed=0) %}
+                       requested=None, returned=None, failed=0,
+                       refold_scores={}) %}
 {# ``job_id`` is the literal string "example" only when
    components/worked_example.html is replaying a canned payload on a
    public /tools/<slug> page. Every control keyed on it — the refold
@@ -146,8 +147,14 @@
           </p>
         </div>
       {% endif %}
+      {# ``refold_scores`` is threaded through rather than read from the
+         context: this macro is IMPORTED, and an imported macro does not
+         receive the including template's context (the same reason the
+         ``job_id`` sentinel note above gives for not reading ``example``).
+         Empty for every caller but the one tool whose table has no number of
+         its own, and an empty map draws no score column. #}
       {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url, campaign_id,
-                         ranked=ranked) }}
+                         ranked=ranked, refold_scores=refold_scores) }}
 
       {# C3 — Second-opinion fold. Spawn N orthogonal ColabFold /
          ESMFold jobs and route the user to /jobs/compare. Rendered
@@ -171,10 +178,17 @@
                score": this panel renders for boltzgen, whose run contains no
                co-folded AF2 number anywhere -- which is the premise of the
                gate fix in tools/boltzgen/meta.py. #}
+            {# "where the source tool reports one of its own": rfd4 reports
+               none at all (shared/refold.py::SOURCE_TOOLS includes it, and
+               tools/rfd4/run_pipeline.py::_upload_design streams no number),
+               so the old wording promised agreement with a score that does
+               not exist on this panel's newest source. #}
             Validate the top designs with an orthogonal predictor.
-            ColabFold's no-MSA path or ESMFold's single-sequence path
-            will agree with the source tool's own confidence score on
-            robust designs and diverge on overconfident ones.
+            ColabFold's no-MSA path and ESMFold's single-sequence path each
+            put their own confidence number on a design. Where the source
+            tool reports one too, agreement marks a robust design and
+            divergence an overconfident one; where it reports none, this
+            fold is the only score the designs get.
           </p>
           <div style="display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;">
             <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
@@ -220,7 +234,7 @@
 
       {% if send_target_tools %}
         <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
-          <span style="color: var(--text-secondary);">Reuse this target in:</span>
+          <span style="color: var(--text-secondary);">Design new binders for this target:</span>
           {% for ho in send_target_tools %}
             <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
           {% endfor %}
@@ -261,6 +275,12 @@
    page whose primary outcome is the download; a results page had two of its
    three most prominent buttons pointing at sales. Both controls are secondary
    now, and the copy names this as one option rather than as the next step.
+
+   Reworded again 2026-11-11 on Leo's ruling. The heading was "Validating in
+   the lab is optional", which opened on the reader's permission to skip and
+   buried what Ranomics actually does; it now leads with the service and the
+   "either way" clause at the end of each branch carries the optionality
+   instead. Both controls stay secondary and in place.
    They open the table's "Send shortlist to Ranomics lab" modal with the
    programme selected, so the shortlist travels with the request. The modal
    is not rendered under the worked-example sentinel (the `not is_example`
@@ -270,7 +290,7 @@
   <div class="panel" style="margin-top: 1rem;">
     <div class="panel-body" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
       <div style="flex: 1 1 320px;">
-        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Validating in the lab is optional</strong>
+        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Ranomics makes and measures designs like these</strong>
         <span style="color: var(--text-secondary); font-size: 0.9rem;">
           {# Both halves of the normal sentence name a control the worked
              example suppresses — the per-design download and the shortlist
@@ -278,15 +298,14 @@
              things that are not on the page. Same offer, phrased about the
              reader's own run instead of about this table. #}
           {% if is_example %}
-          Designs from your own run are yours to download and take anywhere.
-          If you do want them made and measured, Ranomics runs yeast display,
-          mammalian display, BLI and DMS on the same data loop.
+          Yeast display, mammalian display, BLI and DMS, on the same data
+          loop that produced these designs. Designs from your own run are
+          yours to download and take anywhere, either way.
           {% else %}
-          The designs above are yours to download and take anywhere. If you do
-          want them made and measured, Ranomics runs yeast display, mammalian
-          display, BLI and DMS on the same data loop &mdash; star the designs
-          you want tested, then use the shortlist button above or pick a
-          programme here.
+          Yeast display, mammalian display, BLI and DMS, on the same data
+          loop &mdash; star the designs you want tested, then use the
+          shortlist button above or pick a programme here. The
+          designs above are yours to download and take anywhere, either way.
           {% endif %}
         </span>
       </div>

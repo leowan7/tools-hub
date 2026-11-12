@@ -35,8 +35,9 @@
 --                            that Modal reported as failed or errored at
 --                            all -- a crash, or a stall on our own side,
 --                            is never billed off designs its own run left
---                            behind (the exit_verdict gate in
---                            shared/jobs.py::timeout_stuck_job).
+--                            behind (the ``reclassify`` argument
+--                            timeout_stuck_job passes to
+--                            shared/jobs.py::_keep_streamed_designs).
 --
 -- Status stays 'timeout' for both. Only the money differs.
 --

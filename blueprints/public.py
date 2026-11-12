@@ -520,7 +520,14 @@ def help_getting_started():
 @public_bp.route("/help/tools/<tool>", methods=["GET"])
 def help_tool_guide(tool: str):
     adapter = tool_base.get(tool)
-    if adapter is None:
+    # Registry AND flag. A registered tool whose FLAG_TOOL_<NAME> is off has no
+    # public guide: /sitemap.xml already filters on tool_enabled and the /help
+    # grid is empty for it because _build_tools_catalog() is flag-gated, so
+    # without this line the guide was the one surface still serving a hidden
+    # tool's copy to anonymous visitors. Pinned by
+    # test_a_registered_tools_guide_404s_while_its_flag_is_off in
+    # tests/test_help_tool_guides.py.
+    if adapter is None or not tool_enabled(tool):
         return render_template("404.html"), 404
     meta = meta_for(tool)
     short_name = _short_name_for_label(adapter.label)
