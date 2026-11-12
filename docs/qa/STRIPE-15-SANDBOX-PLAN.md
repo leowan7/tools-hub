@@ -11,7 +11,7 @@ On 15.x, `StripeObject` is no longer a dict. Offline proof already covers that c
 
 - the seam audit;
 - `tests/test_stripe_raw_reads_guard.py`;
-- a real-library probe under 12.5.2 and 15.6.2.
+- a real-library probe under 12.5.2 and 15.6.2 (scratch `--target` installs; the shared repo venv itself has 12.5.1).
 
 This pass checks the one thing offline proof cannot: the real Stripe API, called by the 15.x SDK, against the real wallet code.
 
@@ -154,7 +154,7 @@ Read each DB check from `user_wallets`, `wallet_ledger` and `stripe_events` for 
 
 Auto-reload fires only from `_post_settle_hooks` after a job settles (`shared/wallet.py:1682`). Two ways to trigger it:
 
-- **A, no GPU spend.** Claude runs `auto_reload_if_needed(<user_id>)` once from a local shell. That shell runs this branch, with the scratch stripe 15.6.2 on `PYTHONPATH` and the sandbox key that Leo loads into the env (Claude does not read it). Pass 6 used the same direct call for its dispute step. The PaymentIntent create runs locally on 15.x, and the webhooks still land on preview.
+- **A, no GPU spend.** Claude runs `auto_reload_if_needed(<user_id>)` once from a local shell. That shell runs this branch, with the scratch stripe 15.6.2 on `PYTHONPATH` and the sandbox key that Leo loads into the env (Claude does not read it). Pass 6 used the same direct `auto_reload_if_needed` call for its rate-limit, monthly-cap and decline steps (`docs/PASS-6-SANDBOX-RESULTS.md:294-308`). The PaymentIntent create runs locally on 15.x, and the webhooks still land on preview.
 - **B, the real path.** Leo runs the cheapest tool once on preview. This is GPU spend and needs Leo's per-job approval.
 
 **Order matters.** A successful reload writes a `kind=auto_reload` ledger row, and the 24h count then refuses any further reload for a day. A decline writes no ledger row. So run the decline (step 5) first, then the success (step 6).
@@ -180,7 +180,7 @@ The off-session charge uses `user_wallets.stripe_payment_method_id`, which is th
   - Run the setup above, then trigger with A or B.
 - **Expected:**
   - The call returns `"stripe_error"`.
-  - The logs show `retryable=False reason=card_declined`. The log line is at `shared/wallet.py:1277-1281`, and `_classify_off_session_error` in `billing/checkout.py` maps `CardError` to non-retryable.
+  - The logs show `retryable=False reason=card_declined`. The log line is at `shared/wallet.py:1274-1278`, and `_classify_off_session_error` in `billing/checkout.py` maps `CardError` to non-retryable.
   - `auto_reload_enabled = false`.
   - No new `auto_reload` ledger row.
   - The balance is unchanged at B1.
@@ -223,7 +223,7 @@ The off-session charge uses `user_wallets.stripe_payment_method_id`, which is th
   - `as_dict(stripe.Charge.retrieve(...))` at `webhooks/stripe.py:529`.
   - The `PaymentIntent.retrieve` fallback at `webhooks/stripe.py:263`, if the charge metadata is bare.
   - Pass 6 never ran this end to end. It called `freeze_wallet_on_dispute` directly.
-- **Known, not a 15.x item:** top-ups are not blocked on a frozen wallet (Pass 6 finding 1).
+- Opening `/account/wallet/topup` while frozen redirects to the wallet overview with `?wallet_frozen=1` (`blueprints/wallet.py:917-918`; the checkout POST has the same guard at `:966-967`). Pass 6 finding 1 reported this gap; it has since been closed.
 - **Result:** PENDING
 
 ### Step 8: pass7 operator scripts, sandbox key, local, 15.x
