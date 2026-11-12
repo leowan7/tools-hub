@@ -1,21 +1,26 @@
 {# RFD4-Proteina results partial — included by job_detail.html on status=succeeded
    or a cancelled run that kept designs.
 
-   NO SCORE COLUMNS, AND THAT IS THE SHAPE, NOT AN OMISSION. A delivered
-   design carries rank, name, pdb_key and — when its binder chain is
+   THE PIPELINE MEASURES NOTHING, AND THAT IS THE SHAPE, NOT AN OMISSION. A
+   delivered design carries rank, name, pdb_key and — when its binder chain is
    identifiable — sequence, written by
    tools/rfd4/run_pipeline.py::_upload_design. Not one of them is a number the
-   pipeline measured: no confidence, no ipTM, no RMSD. The Boltz-2 scoring leg
-   that produces those is a SEPARATE job, spawned from the second-opinion fold
-   panel below (rfd4 is in shared/refold.py::SOURCE_TOOLS), and its scores
-   render on those boltz2 jobs and in /jobs/compare — nothing writes them back
-   onto this table.
-   So the table is the structure list plus its viewers, and rfd4 is likewise
-   absent from shared/score_legends.py::GATE_COLUMNS (:1527): `judge` returns
-   ``Judgement("unjudged", (), ())`` when `gate_columns` is empty
-   (score_legends.py:2321-2323), and the shell's shortfall banner only counts
-   rows whose verdict is ``below`` (components/results_shell.html:88, :93), so
-   it stays silent.
+   pipeline measured: no confidence, no ipTM, no RMSD. The scoring leg is a
+   SEPARATE Boltz-2 job the customer spawns from the second-opinion fold panel
+   below (rfd4 is in shared/refold.py::SOURCE_TOOLS).
+   Those scores are now READ BACK onto this table: blueprints/jobs.py's
+   job_detail passes ``refold_scores``
+   (shared/refold_scores.py::cofold_scores_for_source), and the shared macro
+   draws an ipTM column once at least one refold of this job exists. The
+   column is the customer's own folds reported back, never a number this run
+   produced, and it is absent entirely until they run one. ``columns`` below
+   stays empty on the ordinary path — the ipTM column is not a metric column
+   and is not routed through it.
+   rfd4 remains absent from shared/score_legends.py::GATE_COLUMNS:
+   `judge` returns ``Judgement("unjudged", (), ())`` when `gate_columns` is
+   empty (shared/score_legends.py::judge), and the shell's shortfall banner only
+   counts rows whose verdict is ``below`` (the ``ns.below`` tally inside
+   components/results_shell.html::results_panel), so it stays silent — no pass/fail is declared over a cofold score.
 
    `ranked=false`. The pipeline's ranks are "not quality ranks": they are
    completion order to within a poll interval, path-sorted within one sweep
@@ -96,6 +101,11 @@
 {% set clone_url   = url_for('tools.tool_form', tool='rfd4', clone_from=job.id) %}
 {% set is_example  = (job.id == 'example') %}
 
+{# ``sequence`` is carried through, not dropped. It is what the table's
+   Length column counts and what its expanded row prints, and it is the key
+   shared/refold_scores.py::design_key joins this row to its cofold on. A
+   mid-run or recovered row has none (the heartbeat allow-list drops it), and
+   the table drops the column rather than draw it empty. #}
 {% set candidates = [] %}
 {% for d in raw_designs %}
   {% set _ = candidates.append({
@@ -103,6 +113,7 @@
       'rank': d.get('rank'),
       'name': d.get('name'),
       'pdb_key': d.get('pdb_key'),
+      'sequence': d.get('sequence'),
       'scores': {},
   }) %}
 {% endfor %}
@@ -135,13 +146,13 @@
    (blueprints/jobs.py::job_refold's empty-``seqs`` return). #}
 {% set foldable = (recovered or raw_designs or []) | selectattr('sequence') | list %}
 <p class="subtitle">
-  These designs carry no confidence score of their own — RFD4 generates
-  backbones and sequences, it does not judge them.
-  {% if foldable %}Use <strong>Re-fold with Boltz-2 (cofold)</strong> below to
-  fold the top designs against your target and get a confidence number for
-  each, then compare them side by side.{% else %}Scoring them means folding
-  each one against your target, and these designs did not come back with the
-  binder sequence that needs, so download the structures and fold them
+  RFD4 generates backbones and sequences; it does not judge them, so a
+  confidence number comes from folding a design against your target.
+  {% if foldable %}Use <strong>Re-fold with Boltz-2 (cofold)</strong> below on
+  the designs you care about. Each one's ipTM joins this table, beside the
+  design it scored, once that fold finishes and you reload this page.{% else %}
+  That means these designs cannot be scored here: they did not come back with
+  the binder sequence a fold needs, so download the structures and fold them
   yourself.{% endif %}
 </p>
 
@@ -165,7 +176,8 @@
     send_target_tools=send_target_tools,
     ranked=false,
     requested=designs_total,
-    returned=designs_returned) %}
+    returned=designs_returned,
+    refold_scores=(refold_scores | default({}, true))) %}
   <p class="subtitle">
     This run returned no designs. Contact us with this job's id and we can
     look into why.

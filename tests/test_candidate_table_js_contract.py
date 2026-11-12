@@ -95,7 +95,7 @@ from html.parser import HTMLParser
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from shared import metric_glossary, ranking, score_legends
+from shared import metric_glossary, ranking, refold_scores, score_legends
 from shared import pdb_bfactors
 from shared.jobs import display_rows
 
@@ -183,6 +183,7 @@ def _env() -> Environment:
     env.globals["legend_text"] = score_legends.legend_text
     env.globals["score_era_caveat"] = score_legends.score_era_caveat
     env.globals["ordinal"] = ranking.ordinal
+    env.globals["design_key"] = refold_scores.design_key
     # candidate_table.html:70 coerces its own rows, so a non-Mapping row
     # cannot reach the `.get` calls below it. This mirror renders the
     # macro outside create_app, so it has to carry that global too;

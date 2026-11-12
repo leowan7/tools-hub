@@ -122,6 +122,30 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "Other",
 )
 
+# The band whose tools take a TARGET structure and design something new
+# against it. Named here because it is read outside the catalog: the
+# cross-tool handoff on a results page (``blueprints/jobs.py::job_detail``
+# builds ``send_target_tools``) keeps exactly this band and drops the rest,
+# so renaming the string in one place and not the other would silently
+# empty that list. It is one of the category VALUES ``_TOOL_CATEGORIES``
+# above stamps on a slug, and a member of ``CATEGORY_ORDER`` just above;
+# both spellings are held together by
+# ``test_the_target_design_band_is_a_real_category`` in
+# tests/test_results_reuse_target_tools.py.
+TARGET_DESIGN_CATEGORY = "Make new binders for my target"
+
+
+def designs_against_a_target(slug: str) -> bool:
+    """True when ``slug`` designs something new against a target structure,
+    rather than predicting, folding or re-sequencing a structure it is handed.
+
+    Reads ``_TOOL_CATEGORIES`` rather than a second hand-kept list, so a tool
+    added to that band is offered by every consumer at once. A slug with no
+    category is False: ``_build_tools_catalog``'s fallback for one is
+    "Other", and "Other" is not this band.
+    """
+    return _TOOL_CATEGORIES.get(slug) == TARGET_DESIGN_CATEGORY
+
 
 def group_catalog(catalog: list[dict]) -> list[tuple[str, list[dict]]]:
     """Group a catalog into ordered ``(band, tools)`` pairs.

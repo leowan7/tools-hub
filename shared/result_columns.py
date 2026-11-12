@@ -64,9 +64,14 @@ _TOOL_RESULT_COLUMNS: dict[str, list[str]] = {
     # identifiable, ``sequence`` -- no numbers at all -- so every metric column
     # rfd4 could be given would render an em dash on every row. The scoring leg
     # that supplies one is a separate boltz2 job, spawned from this page's
-    # second-opinion fold (rfd4 is in shared/refold.py::SOURCE_TOOLS), and its
-    # ipTM and pLDDT render on those boltz2 jobs and in /jobs/compare, not in
-    # this table: nothing writes a score back onto the rfd4 row. rfd4 also has
+    # second-opinion fold (rfd4 is in shared/refold.py::SOURCE_TOOLS).
+    # Those cofold scores DO now reach the rfd4 table, as of 2026-11-11, but
+    # not through this dict: templates/components/candidate_table.html draws a
+    # conditional ipTM column from the ``refold_scores`` map
+    # (shared/refold_scores.py), which exists only once the customer has folded
+    # a design and is per-row rather than per-tool. An entry here would claim
+    # the number for every rfd4 row of every run, which is what this key's
+    # absence is still saying. rfd4 also has
     # no entry in _TOOL_PRIMARY_METRIC below and none in
     # shared/compute_campaigns.py::SUPPORTED_TOOLS, so nothing asks this table
     # for an rfd4 ranking either. ``columns_for`` returns [] for an unknown
