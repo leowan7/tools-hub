@@ -558,7 +558,7 @@ def create_off_session_payment_intent(
         stripe_customer_id, payment_method_id, amount,
         _attr(intent, "id"),
     )
-    return intent if isinstance(intent, dict) else as_dict(intent)
+    return as_dict(intent)
 
 
 def create_portal_session(

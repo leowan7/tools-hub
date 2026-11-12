@@ -101,3 +101,51 @@ def test_the_double_really_has_the_15x_surface():
     with pytest.raises(TypeError):
         dict(obj)
     assert obj.id == "x"
+
+
+class _FakeStripe:
+    """Just enough of the module surface ``billing.checkout`` calls."""
+
+    def __init__(self, returned):
+        returned_ = returned
+
+        class _PI:
+            @staticmethod
+            def create(**_kw):
+                return returned_
+
+        class _Session:
+            @staticmethod
+            def retrieve(_sid):
+                return returned_
+
+        class _Checkout:
+            Session = _Session
+
+        self.PaymentIntent = _PI
+        self.checkout = _Checkout
+
+
+def test_off_session_intent_on_15x_returns_a_plain_dict(monkeypatch):
+    """The confirm=True charge has already happened; the return must not raise."""
+    from billing import checkout
+
+    pi = _wrap({"id": "pi_1", "status": "succeeded", "metadata": {"kind": "auto_reload"}})
+    monkeypatch.setattr(checkout, "_stripe_client", lambda: _FakeStripe(pi))
+    out = checkout.create_off_session_payment_intent(
+        stripe_customer_id="cus_1", payment_method_id="pm_1", amount_usd="10.00",
+    )
+    assert type(out) is dict and type(out["metadata"]) is dict
+    assert out["id"] == "pi_1"
+
+
+def test_topup_session_metadata_on_15x_is_a_plain_dict(monkeypatch):
+    """blueprints/wallet.py calls ``metadata.get`` on this with no try."""
+    from billing import checkout
+
+    sess = _wrap({"id": "cs_1", "url": "https://x", "metadata": {"user_id": "u1"}})
+    monkeypatch.setattr(checkout, "_stripe_client", lambda: _FakeStripe(sess))
+    out, err = checkout.retrieve_topup_session("cs_1")
+    assert err is None
+    assert type(out["metadata"]) is dict and out["metadata"].get("user_id") == "u1"
+    assert out["status"] is None
