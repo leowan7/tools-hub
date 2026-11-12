@@ -388,6 +388,13 @@ def create_topup_session(
             "kind": "topup",
             "amount_usd": str(amount),
         },
+        # Stamped on every top-up PaymentIntent, saved card or not: the
+        # charge.dispute.created handler (webhooks/stripe.py
+        # _user_id_from_charge) reads user_id from here to freeze the
+        # wallet.
+        "payment_intent_data": {
+            "metadata": {"user_id": user_id, "kind": "topup"},
+        },
     }
     if save_payment_method:
         # Tag the underlying PaymentIntent so the webhook knows to
@@ -397,14 +404,8 @@ def create_topup_session(
         # Session; without it, off-session PaymentIntents have nothing
         # to charge against and auto-reload fails.
         session_args["customer_creation"] = "always"
-        session_args["payment_intent_data"] = {
-            "setup_future_usage": "off_session",
-            "metadata": {
-                "user_id": user_id,
-                "kind": "topup",
-                "save_pm": "true",
-            },
-        }
+        session_args["payment_intent_data"]["setup_future_usage"] = "off_session"
+        session_args["payment_intent_data"]["metadata"]["save_pm"] = "true"
         session_args["metadata"]["save_pm"] = "true"
 
     try:

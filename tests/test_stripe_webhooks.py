@@ -629,6 +629,58 @@ def test_dispute_resolves_user_via_payment_intent_when_charge_metadata_bare(
     assert wallet_calls["freeze_wallet_on_dispute"][0]["user_id"] == USER_A
 
 
+def test_dispute_resolves_user_via_checkout_session_when_pi_metadata_bare(
+    client, wallet_calls
+):
+    """Unsaved-card top-ups from before the PI was always stamped.
+
+    Charge and PI metadata are both empty; the Checkout Session that
+    created the PI still carries user_id, so the wallet freezes.
+    """
+    evt = _dispute_event(event_id="evt_dispute_session_fallback")
+    fake_charge = {"id": "ch_test_1", "metadata": {}, "payment_intent": "pi_old"}
+    fake_pi = {"id": "pi_old", "metadata": {}}
+    fake_sessions = _wrap({"object": "list", "data": [
+        {"id": "cs_old", "metadata": {"user_id": USER_A, "kind": "topup"}},
+    ]})
+    import stripe
+
+    with patch.object(
+        stripe_webhook, "_verify_signature", return_value=evt
+    ), patch.object(
+        stripe.Charge, "retrieve", return_value=fake_charge
+    ), patch.object(
+        stripe.PaymentIntent, "retrieve", return_value=fake_pi
+    ), patch.object(
+        stripe.checkout.Session, "list", return_value=fake_sessions
+    ) as session_list:
+        resp = _post_event(client, evt)
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+    session_list.assert_called_once_with(payment_intent="pi_old", limit=1)
+    assert wallet_calls["freeze_wallet_on_dispute"][0]["user_id"] == USER_A
+
+
+def test_dispute_skips_when_pi_and_session_both_bare(client, wallet_calls):
+    """No user_id anywhere: skipped, nothing frozen."""
+    evt = _dispute_event(event_id="evt_dispute_all_bare")
+    fake_charge = {"id": "ch_test_1", "metadata": {}, "payment_intent": "pi_x"}
+    import stripe
+
+    with patch.object(
+        stripe_webhook, "_verify_signature", return_value=evt
+    ), patch.object(
+        stripe.Charge, "retrieve", return_value=fake_charge
+    ), patch.object(
+        stripe.PaymentIntent, "retrieve", side_effect=RuntimeError("boom")
+    ), patch.object(
+        stripe.checkout.Session, "list", return_value={"data": []}
+    ):
+        resp = _post_event(client, evt)
+    assert resp.get_json()["status"] == "skipped"
+    assert wallet_calls["freeze_wallet_on_dispute"] == []
+
+
 def test_dispute_skips_when_user_unresolvable(client, wallet_calls):
     """A dispute on a charge with no user metadata is logged + skipped."""
     evt = _dispute_event(event_id="evt_dispute_no_user")
