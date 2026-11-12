@@ -264,3 +264,7 @@ The only full live check is a **dry run** with the live key: `pass7_preflight_li
 ## Outcome
 
 PENDING. Pass bar: steps 1, 2, 3, 4, 6, 7 and 9 meet every expectation; step 5 has `retryable=False`, auto-reload off, and no ledger row; step 8 matches the table.
+
+## Follow-up, out of scope for this pass
+
+Stripe's changelog for API version `2026-09-30.endive` (the next major after `2026-08-26.dahlia`) lists removing `payment_method_types` from Checkout Sessions and PaymentIntents. billing/checkout.py:368 sends `"payment_method_types": ["card"]` on the top-up session. It is harmless on 15.x, which pins dahlia. The stripe-python major that pins endive will need that line changed first. UNVERIFIED: read from the changelog by a research agent, not exercised.
