@@ -753,7 +753,8 @@ def job_detail(job_id: str):
     # Its form offers only a built-in preset or a pasted sequence
     # (templates/tools/esmfold2_design_form.html:155-194, the target_mode
     # radio pair over target_name/target_sequence), and its validate reads
-    # only those three fields (tools/esmfold2_design/__init__.py:133-154).
+    # only those three TARGET fields (tools/esmfold2_design/__init__.py:133-154;
+    # the rest of validate reads preset, framework, seed and batch size).
     # Neither mentions target_chain, hotspot_residues or the pdb_source token
     # that blueprints/tools.py::tool_form:1422-1446 writes for a ``from_job``
     # request,

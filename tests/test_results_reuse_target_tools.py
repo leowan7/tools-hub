@@ -124,7 +124,8 @@ def test_the_reuse_list_for_an_rfd4_run_is_the_other_designers():
     # env var, defaulting off (shared/feature_flags.py) -- and whether it is
     # set here depends on which other module's app fixture ran first
     # (tests/conftest.py's module-scoped fixture turns them all on). Including
-    # it made this test's set empty and every assertion below pass on nothing.
+    # it can make this test's set empty, and every assertion below passes on
+    # nothing when it is.
     # The three filters reproduced are the applicability ones, which is what
     # this test is about.
     offered = {a.slug for a in tool_base.all_adapters()
@@ -165,7 +166,8 @@ def test_job_detail_excludes_esmfold2_design_by_slug():
     """A SOURCE assertion, for the same reason as the predicate one below.
 
     The set is a local inside ``job_detail``, so nothing importable carries
-    it; the test above reproduces it from ``_NON_PDB_INPUT_TOOLS``, which
+    it; test_the_reuse_list_for_an_rfd4_run_is_the_other_designers reproduces it
+    from ``_NON_PDB_INPUT_TOOLS``, which
     would keep passing if the view's own set lost the slug. Scoped to the one
     function via ``inspect.getsource``.
     """
