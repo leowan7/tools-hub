@@ -757,7 +757,7 @@ def job_detail(job_id: str):
     # (tools/esmfold2_design/__init__.py:133-154; its other reads are all
     # non-target ones).
     # Neither mentions target_chain, hotspot_residues or the pdb_source token
-    # that blueprints/tools.py::tool_form:1422-1446 writes for a ``from_job``
+    # that blueprints/tools.py::tool_form writes for a ``from_job``
     # request, so the handoff landed on a form that silently dropped all
     # three.
     NON_PDB_INPUT_TOOLS = frozenset({"af2", "esmfold2-design"})
