@@ -28,23 +28,23 @@ seo_faq: list[dict] = [
     {
         "q": "Can I run BoltzGen online without setting up the model locally?",
         "a": (
-            # Scaffold names are the form's own <option> labels, and the
-            # metrics are scoped: designfolding_metrics defaults false on the
-            # peptide protocol, so pLDDT and refolding RMSD are not emitted
-            # there. templates/tools/boltzgen_form.html says the same.
+            # Scaffold names are the form's own <option> labels. The
+            # metric scoping that stood here, "on the mini-protein and
+            # nanobody protocols", existed to exclude peptide-anything,
+            # removed on 2026-11-13. It now names exactly the two protocols
+            # that remain, so it excludes nothing and was dropped.
             "Yes. Ranomics Tools runs BoltzGen on a dedicated GPU through "
             "your browser. Upload a target PDB, pick a scaffold class "
-            "(mini-protein, nanobody, antibody or peptide), and candidates "
+            "(mini-protein or nanobody), and candidates "
             "come back with a structure and the generator's interface score "
-            "per hit \u2014 plus pLDDT and a refolding RMSD on the "
-            "mini-protein, nanobody and antibody protocols."
+            "per hit \u2014 plus pLDDT and a refolding RMSD."
         ),
     },
     {
         "q": "Which modalities does BoltzGen design against the same target?",
         "a": (
-            "BoltzGen can design mini-proteins, nanobodies, antibodies "
-            "(scFv-class), or peptides against the same target with "
+            "BoltzGen can design mini-proteins or nanobodies "
+            "against the same target with "
             "glycan and PTM support. The form switches scaffold class "
             "per run, so you can A/B different modalities cheaply before "
             "committing to wet-lab."
@@ -61,8 +61,8 @@ seo_faq: list[dict] = [
 
 comparison_one_liner: str = (
     "You have a target and have not settled on what shape the "
-    "binder should be. One model here aims mini-proteins, "
-    "nanobodies, antibodies or peptides at the same site, so you "
+    "binder should be. One model here aims mini-proteins "
+    "or nanobodies at the same site, so you "
     "can compare formats instead of guessing. The only design tool "
     "here that handles sugars and modified residues on the target "
     "natively."
@@ -85,8 +85,8 @@ about: dict = {
         "from its own sequence so you can see whether it holds the shape it "
         "was designed as. The interface score is the generator's own read, "
         "not a second opinion, so rank on it and re-fold a shortlist before "
-        "you trust it. Four formats share one target — a small "
-        "de novo protein, a nanobody, an antibody, or a short peptide — "
+        "you trust it. Two formats share one target — a small "
+        "de novo protein or a nanobody — "
         "so you can compare formats on the same epitope rather than "
         "guessing which to commit to. It is the only design tool here "
         "that handles sugars, post-translational modifications and "
@@ -96,7 +96,7 @@ about: dict = {
     "when_to_use": [
         (
             "You have not settled on the binder format and want to aim "
-            "mini-proteins, nanobodies, antibodies and peptides at the same "
+            "mini-proteins and nanobodies at the same "
             "site."
         ),
         (
@@ -129,12 +129,16 @@ about: dict = {
         {
             "name": "Protocol",
             "explanation": (
+                # The values named here are exactly
+                # ``tools/boltzgen/__init__.py::ALLOWED_PROTOCOLS``, the set
+                # ``validate`` refuses anything outside of. The two sets
+                # are compared in tests/test_boltzgen_retired_protocols.py,
+                # so this list cannot drift from the server's.
                 "BoltzGen design protocol. <code>protein-anything</code> "
                 "for general mini-protein binders, "
-                "<code>nanobody-anything</code> for VHH scaffolds, "
-                "<code>antibody-anything</code> for antibody scaffolds, "
-                "<code>peptide-anything</code> for short cyclic or "
-                "linear peptides."
+                "<code>nanobody-anything</code> for a VHH-shaped binder. "
+                "Neither takes a framework or a starting sequence: this "
+                "form has no such field."
             ),
         },
         {
@@ -154,7 +158,7 @@ about: dict = {
             "explanation": (
                 "Residue-count window for the generated binder. Typical "
                 "starting ranges: mini-protein 50 to 100, nanobody "
-                "110 to 130, antibody 110 to 200, peptide 10 to 30. "
+                "110 to 130. "
                 "10 is the shortest binder this tool accepts."
             ),
         },

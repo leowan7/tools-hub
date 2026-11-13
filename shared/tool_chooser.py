@@ -128,14 +128,21 @@ _FACTS: dict[str, _Facts] = {
         shapes=frozenset({"mini-protein"}),
         chemistries=frozenset(),
     ),
-    # Four shapes at one site: "One model here aims mini-proteins,
-    # nanobodies, antibodies or peptides at the same site" — and the
-    # glycan claim, "Your target carries sugars, modified residues or
-    # other chemistry a protein-only model would silently drop"
+    # Two shapes at one site: "One model here aims mini-proteins or
+    # nanobodies at the same site" — and the glycan claim, "Your target
+    # carries sugars, modified residues or other chemistry a protein-only
+    # model would silently drop"
     # — tools/boltzgen/meta.py::comparison_one_liner and about["when_to_use"][1]
+    #
+    # "scfv" and "peptide" were dropped on 2026-11-13 with the
+    # antibody-anything and peptide-anything protocols
+    # (tools/boltzgen/__init__.py::ALLOWED_PROTOCOLS). No _FACTS entry
+    # carries "peptide" any more, so that answer now reaches the empty
+    # branch in templates/tools/comparison.html; whether the question
+    # should still offer it is a product decision, left alone here.
     "boltzgen": _Facts(
         haves=frozenset({"target-structure"}),
-        shapes=frozenset({"mini-protein", "nanobody", "scfv", "peptide"}),
+        shapes=frozenset({"mini-protein", "nanobody"}),
         chemistries=frozenset({"glycan"}),
     ),
     # "You want a nanobody scaffold rather than a de novo mini-protein"
@@ -310,7 +317,7 @@ _FACTS: dict[str, _Facts] = {
 # prerequisite line below.
 #
 # Narrowed to "scfv": the other tools in that bucket already answer
-# mini-protein, nanobody and peptide from the upload itself, and this
+# mini-protein and nanobody from the upload itself, and this
 # one would discard it. The two UNnarrowed answers still reach it, as
 # they reach every tool: ``recommend`` skips the shape filter for
 # "unsure" and for no shape at all (``blueprints/tools.py`` withholds
@@ -748,8 +755,7 @@ def recommend(
             # it, so its absence from TOOL_RULES is not a refusal and must
             # not drop it. esmfold2-design is the tool that showed this:
             # it is the only scFv designer in the target-sequence bucket
-            # (boltzgen also designs scFvs, but only from a target
-            # structure) and needs no PDB (requires_pdb False on the
+            # and needs no PDB (requires_pdb False on the
             # adapter and both presets), so dropping it for having no
             # rules emptied that answer. It IS dropped for a multi-chain
             # patch now, but by _ADAPTER_SINGLE_CHAIN_TARGETS above,
