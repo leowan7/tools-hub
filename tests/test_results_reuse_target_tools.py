@@ -33,12 +33,15 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 # fold panel directly above it (shared/refold.py::DESTINATION_TOOLS).
 _NOT_TARGET_DESIGNERS = ("colabfold", "esmfold", "boltz2", "opendde", "mpnn")
 
-# Tools the view drops for the OTHER reason: they are binder designers and
-# stay in the catalog band, but their forms take no PDB, so the handoff's
-# target structure, chain and hotspots have nowhere to land. af2 is the
-# original member (FASTA input); esmfold2-design joined 2026-11-13 on Leo's
-# ruling -- its target is a built-in preset name or a pasted sequence
-# (templates/tools/esmfold2_design_form.html:155-194,
+# The view's second filter: slugs whose FORM takes no PDB, so the handoff's
+# target structure, chain and hotspots have nowhere to land. Only
+# esmfold2-design needs it -- af2 is in "Predict or check a 3D structure"
+# (shared/tools_catalog.py:104), so the band filter already drops it and its
+# membership here is belt-and-braces, predating that filter.
+#
+# esmfold2-design joined 2026-11-13 on Leo's ruling: its target is a built-in
+# preset name or a pasted sequence (templates/tools/esmfold2_design_form.html,
+# the target_mode radio pair over target_name/target_sequence;
 # tools/esmfold2_design/__init__.py:133-154).
 _NON_PDB_INPUT_TOOLS = ("af2", "esmfold2-design")
 
@@ -117,10 +120,13 @@ def test_the_reuse_list_for_an_rfd4_run_is_the_other_designers():
     from tools import base as tool_base
 
     # The view's fourth filter, ``tool_enabled``, is deliberately NOT
-    # reproduced: it reads deployment flags that are off for every tool under
-    # the test env, so including it empties the set and makes every assertion
-    # below pass on nothing. It is an orthogonal gate; this test is about the
-    # three applicability filters.
+    # reproduced. It is an orthogonal deployment gate -- a slug's FLAG_TOOL_*
+    # env var, defaulting off (shared/feature_flags.py) -- and whether it is
+    # set here depends on which other module's app fixture ran first
+    # (tests/conftest.py's module-scoped fixture turns them all on). Including
+    # it made this test's set empty and every assertion below pass on nothing.
+    # The three filters reproduced are the applicability ones, which is what
+    # this test is about.
     offered = {a.slug for a in tool_base.all_adapters()
                if a.slug != "rfd4"
                and a.slug not in _NON_PDB_INPUT_TOOLS
@@ -134,13 +140,17 @@ def test_the_reuse_list_for_an_rfd4_run_is_the_other_designers():
     assert not (offered & set(_NON_PDB_INPUT_TOOLS)), offered
 
 
-def test_the_non_pdb_input_tools_are_still_binder_designers():
-    """Why they need a second filter at all.
+def test_esmfold2_design_is_still_a_binder_designer():
+    """Why the second filter is needed for it at all.
 
-    Both are in ``TARGET_DESIGN_CATEGORY``, so the band predicate KEEPS them
-    and only ``NON_PDB_INPUT_TOOLS`` takes them out. If one were ever moved
-    to another band this test fails, and its entry in that set becomes dead
-    weight to delete rather than a silent duplicate filter.
+    esmfold2-design is in ``TARGET_DESIGN_CATEGORY``, so the band predicate
+    KEEPS it and only ``NON_PDB_INPUT_TOOLS`` takes it out. If it were ever
+    moved to another band this test fails, and its entry in that set becomes
+    dead weight to delete rather than a silent duplicate filter.
+
+    af2, the set's other member, is NOT in that band
+    (shared/tools_catalog.py:104), so the band filter already drops it --
+    asserted here so the two members are not read as one case.
     """
     for slug in _NON_PDB_INPUT_TOOLS:
         assert slug in _TOOL_CATEGORIES, f"{slug} left the catalog"
@@ -148,8 +158,6 @@ def test_the_non_pdb_input_tools_are_still_binder_designers():
         "esmfold2-design is a binder designer; it is excluded from the reuse "
         "list for its FORM's inputs, not for what the tool does"
     )
-    # af2 predicts a structure, so the band already drops it; its membership
-    # in NON_PDB_INPUT_TOOLS predates the band filter and is belt-and-braces.
     assert not designs_against_a_target("af2")
 
 
