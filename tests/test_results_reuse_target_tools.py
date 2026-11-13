@@ -33,6 +33,15 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 # fold panel directly above it (shared/refold.py::DESTINATION_TOOLS).
 _NOT_TARGET_DESIGNERS = ("colabfold", "esmfold", "boltz2", "opendde", "mpnn")
 
+# Tools the view drops for the OTHER reason: they are binder designers and
+# stay in the catalog band, but their forms take no PDB, so the handoff's
+# target structure, chain and hotspots have nowhere to land. af2 is the
+# original member (FASTA input); esmfold2-design joined 2026-11-13 on Leo's
+# ruling -- its target is a built-in preset name or a pasted sequence
+# (templates/tools/esmfold2_design_form.html:155-194,
+# tools/esmfold2_design/__init__.py:133-154).
+_NON_PDB_INPUT_TOOLS = ("af2", "esmfold2-design")
+
 
 def test_the_target_design_band_is_a_real_category():
     """``TARGET_DESIGN_CATEGORY`` is one string used in three places.
@@ -98,24 +107,68 @@ def test_the_reuse_list_for_an_rfd4_run_is_the_other_designers():
     """The list the blueprint builds, reproduced from its own four filters.
 
     ``blueprints/jobs.py::job_detail`` drops the running tool itself, the
-    non-PDB-input tools (af2), anything outside this band, and anything
-    flag-off. Reproduced here over the live registry rather than asserted as
-    a frozen list of slugs: the point is that the five design-consuming tools
-    are gone and the designers are not.
+    non-PDB-input tools (``NON_PDB_INPUT_TOOLS``), anything outside this
+    band, and anything flag-off. Reproduced here over the live registry
+    rather than asserted as a frozen list of slugs: the point is that the
+    five design-consuming tools are gone and the designers are not.
     """
     import app  # noqa: F401, PLC0415
 
-    from shared.feature_flags import tool_enabled
     from tools import base as tool_base
 
+    # The view's fourth filter, ``tool_enabled``, is deliberately NOT
+    # reproduced: it reads deployment flags that are off for every tool under
+    # the test env, so including it empties the set and makes every assertion
+    # below pass on nothing. It is an orthogonal gate; this test is about the
+    # three applicability filters.
     offered = {a.slug for a in tool_base.all_adapters()
-               if a.slug not in ("rfd4", "af2")
-               and designs_against_a_target(a.slug)
-               and tool_enabled(a.slug)}
+               if a.slug != "rfd4"
+               and a.slug not in _NON_PDB_INPUT_TOOLS
+               and designs_against_a_target(a.slug)}
 
+    # Non-vacuity: every assertion below passes on an empty set, so an
+    # over-wide filter would read as a clean run.
+    assert offered, "the reuse list is empty -- nothing below can fail"
     assert not (offered & set(_NOT_TARGET_DESIGNERS)), offered
     assert "rfd4" not in offered
-    assert "af2" not in offered
+    assert not (offered & set(_NON_PDB_INPUT_TOOLS)), offered
+
+
+def test_the_non_pdb_input_tools_are_still_binder_designers():
+    """Why they need a second filter at all.
+
+    Both are in ``TARGET_DESIGN_CATEGORY``, so the band predicate KEEPS them
+    and only ``NON_PDB_INPUT_TOOLS`` takes them out. If one were ever moved
+    to another band this test fails, and its entry in that set becomes dead
+    weight to delete rather than a silent duplicate filter.
+    """
+    for slug in _NON_PDB_INPUT_TOOLS:
+        assert slug in _TOOL_CATEGORIES, f"{slug} left the catalog"
+    assert designs_against_a_target("esmfold2-design"), (
+        "esmfold2-design is a binder designer; it is excluded from the reuse "
+        "list for its FORM's inputs, not for what the tool does"
+    )
+    # af2 predicts a structure, so the band already drops it; its membership
+    # in NON_PDB_INPUT_TOOLS predates the band filter and is belt-and-braces.
+    assert not designs_against_a_target("af2")
+
+
+def test_job_detail_excludes_esmfold2_design_by_slug():
+    """A SOURCE assertion, for the same reason as the predicate one below.
+
+    The set is a local inside ``job_detail``, so nothing importable carries
+    it; the test above reproduces it from ``_NON_PDB_INPUT_TOOLS``, which
+    would keep passing if the view's own set lost the slug. Scoped to the one
+    function via ``inspect.getsource``.
+    """
+    import inspect
+
+    from blueprints import jobs as jobs_bp
+
+    src = inspect.getsource(jobs_bp.job_detail)
+    assert "NON_PDB_INPUT_TOOLS = frozenset({\"af2\", \"esmfold2-design\"})" in src, (
+        "job_detail's NON_PDB_INPUT_TOOLS no longer holds both slugs"
+    )
 
 
 def test_the_blueprint_imports_the_predicate():
