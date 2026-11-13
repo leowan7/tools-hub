@@ -7,7 +7,7 @@ invokes separately at the fold/refold step. It generates binder backbones
 against a target, then scores each candidate for refolding RMSD, ipTM, and
 pLDDT. The pilot tier accepts a caller-supplied target PDB, optional
 hotspot residues, a configurable binder-length window, and a BoltzGen
-design protocol (mini-protein, nanobody, antibody, or peptide). Runs on
+design protocol (mini-protein or nanobody). Runs on
 A100-40GB and emails results on completion.
 """
 
@@ -25,13 +25,20 @@ from tools.base import (
 
 
 # BoltzGen design protocols the wrapper forwards via ``--protocol``.
-# Mirrors the upstream BoltzGen CLI; protein-small_molecule is omitted
-# because the form does not yet collect a ligand input.
+# A SUBSET of the upstream BoltzGen CLI, not a mirror of it:
+# protein-small_molecule is omitted because the form does not yet collect
+# a ligand input, and antibody-anything and peptide-anything were removed
+# on 2026-11-13 because no record on trunk shows either one ever run
+# through this app: docs/SESSION-HANDOFF-2026-05-30.md files that live
+# proof as deferred and no later doc records it. A peptide-anything run
+# IS on trunk (see shared/score_legends.py, the 0.777 ipTM note), but in
+# the separate boltzgen-workspace pipeline, not through this form. ``validate`` below refuses anything
+# outside this set, so a submit still naming either removed value is
+# rejected rather than coerced;
+# tests/test_boltzgen_retired_protocols.py pins that.
 ALLOWED_PROTOCOLS: frozenset[str] = frozenset({
     "protein-anything",
     "nanobody-anything",
-    "antibody-anything",
-    "peptide-anything",
 })
 
 
@@ -88,8 +95,12 @@ def validate(
     binder_length_min = _parse_int(form.get("binder_length_min"), 50)
     binder_length_max = _parse_int(form.get("binder_length_max"), 100)
 
-    # Lower floor of 10 leaves headroom for peptide-anything (typical
-    # 5-30 aa); upper bound of 200 covers nanobody and antibody-anything.
+    # The floor of 10 was lowered to fit peptide-anything (typical 5-30
+    # aa), and that protocol was removed on 2026-11-13. The number is left
+    # at 10 deliberately: nothing in that removal requires moving it, and
+    # where it should sit now is a product decision, not a consequence.
+    # Upper bound of 200 leaves headroom above the nanobody range
+    # (110-130 aa) that the form's own guidance quotes.
     if binder_length_min < 10 or binder_length_min > 200:
         return None, "binder_length_min must be between 10 and 200."
     if binder_length_max < 10 or binder_length_max > 200:
@@ -179,8 +190,8 @@ adapter = ToolAdapter(
     # against-the-target number comes from the generator instead. Saying both
     # in one clause is what made a run of ordinary scores read as a failure.
     blurb=(
-        "Upload your target, choose the format you want — mini-protein, "
-        "nanobody, antibody or peptide — and get back candidates, each "
+        "Upload your target, choose the format you want — mini-protein "
+        "or nanobody — and get back candidates, each "
         "refolded from its sequence to check the fold holds and ranked on "
         "its predicted interface with your target. Handles sugars and "
         "modified residues on the target natively."

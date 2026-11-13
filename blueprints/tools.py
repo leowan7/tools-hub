@@ -817,6 +817,21 @@ def _clone_missing(adapter, prior_inputs: dict, pre_fill: dict, pdb_source) -> l
     # the user clones a run and gets a different mode with no warning.
     if prior_inputs.get("preset") and preset is None:
         missing.append("Design mode (the mode this run used is no longer offered)")
+    # A protocol the tool has since retired. The failure differs from the
+    # preset one above: a <select> is never left unchosen, so when the
+    # matching <option> is gone the browser selects the FIRST one and the
+    # form posts protein-anything, which ``validate`` accepts. Without this
+    # line the user clones an antibody-anything or peptide-anything run
+    # (both removed 2026-11-13) and is billed for a mini-protein run they
+    # did not ask for, with no warning anywhere. Pinned by
+    # tests/test_boltzgen_retired_protocols.py, which drives this function.
+    if adapter.slug == "boltzgen":
+        from tools import boltzgen  # noqa: PLC0415
+        stored_protocol = prior_inputs.get("protocol")
+        if stored_protocol and stored_protocol not in boltzgen.ALLOWED_PROTOCOLS:
+            missing.append(
+                "Protocol (the protocol this run used is no longer offered)"
+            )
     if pdb_source is None and _needs_pdb(adapter, preset, prior_inputs):
         missing.append("Structure file (upload it again)")
     return missing

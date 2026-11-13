@@ -141,7 +141,7 @@
               <label for="boltzgen__protocol" class="field-label">Protocol</label>
               <select name="boltzgen__protocol" id="boltzgen__protocol"
                       class="field-input" style="max-width: 320px;" disabled>
-                {% for p in ("protein-anything", "nanobody-anything", "antibody-anything", "peptide-anything") %}
+                {% for p in ("protein-anything", "nanobody-anything") %}
                 <option value="{{ p }}"
                   {% if pre_fill.get('boltzgen__protocol') == p %}selected{% endif %}>{{ p }}</option>
                 {% endfor %}
