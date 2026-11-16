@@ -600,10 +600,11 @@ def _jobs_filters(args) -> tuple[dict, dict]:  # noqa: ANN001
     for key, kwarg, shift in (("from", "created_from", 0), ("to", "created_before", 1)):
         try:
             day = datetime.strptime(echo.get(key, ""), "%Y-%m-%d").date()
-        except ValueError:
+            day += timedelta(days=shift)  # 9999-12-31 + 1 raises OverflowError
+        except (ValueError, OverflowError):
             echo.pop(key, None)
             continue
-        kwargs[kwarg] = (day + timedelta(days=shift)).isoformat() + "T00:00:00+00:00"
+        kwargs[kwarg] = day.isoformat() + "T00:00:00+00:00"
     if echo.get("q"):
         kwargs["q"] = echo["q"]
     return echo, kwargs
@@ -695,6 +696,11 @@ def jobs_history_csv():
         batch, total = list_jobs_paginated(
             ctx.user_id, page=page, page_size=page_size, **filter_kwargs,
         )
+        if not batch and rows:
+            # list_jobs_paginated returns ([], 0) on a failed read; a file
+            # cut short there would pass for the whole history.
+            return Response("Could not read every run. Try again.", status=503,
+                            mimetype="text/plain")
         rows.extend(batch)
         if not batch or page * page_size >= total:
             break

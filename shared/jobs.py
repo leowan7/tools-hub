@@ -3231,10 +3231,10 @@ def list_jobs_paginated(
             query = query.gte("created_at", created_from)
         if created_before:
             query = query.lt("created_at", created_before)
-        q = (q or "").strip()
+        q = (q or "").replace("*", "").strip()
         if q:
             # LIKE wildcards in the user's text match literally.
-            like = "*" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "") + "*"
+            like = "*" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "*"
             id_range = _job_id_prefix_range(q)
             if id_range:
                 # Only hex and dashes reach here, so the or= grammar's

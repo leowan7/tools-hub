@@ -204,3 +204,27 @@ def test_the_history_csv_has_no_money_and_counts_designs(client):  # noqa: F811
     assert rows[1][2] == "c-1" and rows[1][7] == "2" and rows[1][6] == "'=HYPERLINK(1)"
     assert rows[1][8].endswith("/jobs/c-1")
     assert rows[2][2] == "c-2" and rows[2][7] == ""
+
+
+def test_the_last_day_on_the_calendar_is_dropped_not_a_500(client):  # noqa: F811
+    resp, seen = _get(client, "/jobs?to=9999-12-31", [_job("x-3", "failed")])
+    assert resp.status_code == 200
+    assert seen[0] == {"page": 1, "page_size": 25}
+
+
+def test_a_bare_star_search_applies_no_filter():
+    assert _query_calls(q="*") == [("eq", ("user_id", "u-1"))]
+
+
+def test_the_history_csv_refuses_a_file_cut_short_by_a_failed_read(client):  # noqa: F811
+    first = [_job(f"r-{i}", "failed") for i in range(100)]
+
+    def _list(user_id, page, **kw):
+        # Page 2 fails the way list_jobs_paginated fails: ([], 0).
+        return (first, 150) if page == 1 else ([], 0)
+
+    with patch("blueprints.jobs.load_user_context", return_value=_CTX), \
+         patch("blueprints.jobs.list_jobs_paginated", side_effect=_list):
+        resp = client.get("/jobs/export.csv")
+    assert resp.status_code == 503
+    assert "job_id" not in resp.get_data(as_text=True)
