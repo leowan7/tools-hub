@@ -157,6 +157,67 @@ def test_a_fold_is_never_screened_as_a_design(real_chains):
     assert designed_chains(row, 0, _DESIGN_TOOL, {}, {}, real_chains) is not None
 
 
+def test_no_tool_outside_the_design_band_is_ever_eligible():
+    """Derived from the catalog, so a fold tool added LATER is covered too.
+
+    WHY THIS MATTERS, and it is the reason this test is written against the
+    registry rather than a hand-written list: if a prediction tool is ever
+    admitted to the eligible set, this page starts measuring A PROTEIN THE
+    CUSTOMER UPLOADED and presenting it as a design of ours, with liability
+    motifs attached. That already happened once -- see
+    test_a_fold_is_never_screened_as_a_design -- and a hand list would not
+    notice the next fold tool to be added to the catalog.
+
+    ``shared/tools_catalog.py::_TOOL_CATEGORIES`` is the workflow band each
+    slug is filed under on the homepage and /tools. Everything outside the
+    design band either predicts a structure for a sequence its user chose
+    ("Predict or check a 3D structure") or picks sequences for a structure its
+    user already has ("Choose sequences for a structure I already have").
+    Neither produces a chain WE designed, so neither may ever be eligible.
+
+    If this test fails because a tool legitimately moved bands, the fix is to
+    decide deliberately whether it has a single identifiable designed chain --
+    not to add it to an exception list here.
+    """
+    from shared.tools_catalog import _TOOL_CATEGORIES
+
+    design_band = "Make new binders for my target"
+    outside = {
+        slug for slug, band in _TOOL_CATEGORIES.items() if band != design_band
+    }
+    assert outside, "the catalog has no non-design tools; this test is vacuous"
+
+    for slug in sorted(outside):
+        assert not designs_its_own_chain(slug), (
+            f"{slug} is filed under {_TOOL_CATEGORIES[slug]!r}, not the design "
+            "band, so it has no chain WE designed -- measuring it would "
+            "present the customer's own input as our design"
+        )
+
+    # Non-vacuity: the design band is not empty either, so the assertion above
+    # is about the band and not about an empty set or a gate that rejects
+    # everything.
+    assert any(
+        designs_its_own_chain(slug)
+        for slug, band in _TOOL_CATEGORIES.items() if band == design_band
+    ), "no design-band tool passes the gate; the gate rejects everything"
+
+
+def test_iggm_is_in_the_design_band_and_still_ineligible():
+    """The gate is not "is this a designer" -- iggm is one and is still out.
+
+    iggm is filed under the design band and genuinely designs chains, so it is
+    excluded for a DIFFERENT reason from a fold tool: an antibody design has a
+    heavy AND a light chain, and this figure describes one chain's surface.
+    That is the reason its meta.py copy gives the reader, and it is why the
+    exclusion is on the science rather than the plumbing.
+    """
+    from shared.tools_catalog import _TOOL_CATEGORIES
+
+    assert _TOOL_CATEGORIES["iggm"] == "Make new binders for my target"
+    assert not designs_its_own_chain("iggm")
+
+
 def test_the_two_tools_that_qualify_pass_the_gate():
     """rfd4 by the target-chain rule, esmfold2-design by the row-sequence rule.
 

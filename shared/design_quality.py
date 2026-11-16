@@ -67,7 +67,14 @@ _EXTRA_DESIGN_TOOLS = frozenset({"esmfold2-design"})
 
 
 def designs_its_own_chain(tool: Optional[str]) -> bool:
-    """Whether a row of ``tool`` can have a DESIGNED chain at all.
+    """Whether a row of ``tool`` can yield ONE identifiable designed chain.
+
+    NOT simply "is this a designer". ``iggm`` is a designer and is still
+    excluded, for a different reason from a fold tool: an antibody design has a
+    heavy AND a light chain, and this figure describes a single chain's
+    surface. So iggm is out on the science (two designed chains), while a fold
+    tool is out because it has no designed chain at all. Both are pinned, with
+    their separate reasons, in tests/test_design_quality.py.
 
     THIS GATE IS WHAT STOPS A FOLD BEING SCREENED AS A DESIGN, and without it
     the page made a false claim about the user's own input. ``shared/jobs.py::
