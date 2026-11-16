@@ -126,10 +126,17 @@ _KNOWN_DECLINE_REASONS = frozenset({
 })
 
 
-def decline_reason(code: object) -> str:
-    """Map a Stripe error ``code`` to a ``_AUTO_RELOAD_REASON_LABELS`` key."""
-    code = str(code or "")
-    return code if code in _KNOWN_DECLINE_REASONS else "card_declined"
+def decline_reason(*codes: object) -> str:
+    """Map Stripe error codes to a ``_AUTO_RELOAD_REASON_LABELS`` key.
+
+    Pass ``decline_code`` before ``code``: Stripe reports insufficient funds
+    as ``code="card_declined"`` with ``decline_code="insufficient_funds"``.
+    The first known code wins; none known gives ``card_declined``.
+    """
+    for code in codes:
+        if str(code or "") in _KNOWN_DECLINE_REASONS:
+            return str(code)
+    return "card_declined"
 
 
 def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
@@ -142,7 +149,10 @@ def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
     if name in _RETRYABLE_STRIPE_ERRORS:
         return True, "card_declined"
     if name == "CardError":
-        return False, decline_reason(getattr(exc, "code", ""))
+        return False, decline_reason(
+            getattr(getattr(exc, "error", None), "decline_code", None),
+            getattr(exc, "code", ""),
+        )
     if name == "InvalidRequestError":
         # Bad customer or payment-method id: the saved card is unusable.
         return False, "no_payment_method"

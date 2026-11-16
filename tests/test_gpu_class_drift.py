@@ -609,10 +609,14 @@ def test_the_prose_scan_is_not_empty() -> None:
     would each leave the test below collecting zero cases and reporting pass.
     The floors are below the counts measured on the commit that added this
     (43 mentions across 14 of the 15 specs) -- a smoke alarm, not a target.
+    The 2026-11-16 P2 batch removed every chip name from the form templates
+    (Leo, 2026-11-06: no customer copy names a GPU chip), leaving 28
+    mentions across 15 slugs, all in tools/*/*.py; the mention floor moved
+    from 30 to 20 with it.
     """
-    assert len(_PROSE_MENTIONS) >= 30, (
+    assert len(_PROSE_MENTIONS) >= 20, (
         f"only {len(_PROSE_MENTIONS)} live GPU-class mentions found; this "
-        "guard was reading 43. Either the scan broke or the labels moved out "
+        "guard was reading 28. Either the scan broke or the labels moved out "
         "of the files it reads."
     )
     slugs = {slug for _, _, _, slug, _ in _PROSE_MENTIONS}
@@ -620,10 +624,13 @@ def test_the_prose_scan_is_not_empty() -> None:
         f"live GPU-class mentions found for only {len(slugs)} slugs "
         f"({sorted(slugs)}); this guard was covering 14."
     )
-    files = {rel.rsplit("/", 1)[0] for rel, _, _, _, _ in _PROSE_MENTIONS}
-    assert any(f.startswith("templates/") for f in files), (
-        "no form-template mentions collected; the second surface this guard "
-        "was written for has dropped out of the scan."
+    in_forms = [
+        f"{rel}:{lineno}" for rel, lineno, _, _, _ in _PROSE_MENTIONS
+        if rel.startswith("templates/")
+    ]
+    assert not in_forms, (
+        f"form templates name a GPU chip: {in_forms}. Customer copy names "
+        "no chip (Leo, 2026-11-06)."
     )
 
 

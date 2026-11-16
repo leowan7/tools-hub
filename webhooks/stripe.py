@@ -490,7 +490,8 @@ def _apply_payment_intent_failed(event: dict) -> dict:
     # auto_reload_if_needed, so a decline both paths report reads the same.
     from billing.checkout import decline_reason  # noqa: PLC0415
 
-    reason = decline_reason((obj.get("last_payment_error") or {}).get("code"))
+    err = obj.get("last_payment_error") or {}
+    reason = decline_reason(err.get("decline_code"), err.get("code"))
 
     client = get_service_client()
     if client is None:
