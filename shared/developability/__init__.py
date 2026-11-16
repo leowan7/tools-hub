@@ -2,7 +2,7 @@
 
 Public API::
 
-    from tools.developability import score_developability
+    from shared.developability import score_developability
 
     result = score_developability("EVQLVESG...", chain_type="VH")
     print(result["composite_score"])
@@ -13,7 +13,7 @@ single composite score plus per-residue flags. See ``score.py`` for
 details.
 """
 
-from tools.developability.score import DEFAULT_WEIGHTS, score_developability
+from shared.developability.score import DEFAULT_WEIGHTS, score_developability
 
 __all__ = ["score_developability", "DEFAULT_WEIGHTS"]
 __version__ = "0.1.0"

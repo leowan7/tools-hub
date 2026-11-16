@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import List
 
-from tools.developability.data.kyte_doolittle import KYTE_DOOLITTLE
+from shared.developability.data.kyte_doolittle import KYTE_DOOLITTLE
 
 VALID_AA = set(KYTE_DOOLITTLE.keys())
 

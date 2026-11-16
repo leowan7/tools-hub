@@ -89,7 +89,7 @@ VALID_VL = (
 def test_two_fasta_records_are_refused_not_fused(client, monkeypatch):
     """A heavy and a light chain pasted as two records used to be joined into
     one string and scored as a single chain, with no warning."""
-    import tools.developability as dev  # noqa: PLC0415
+    import shared.developability as dev  # noqa: PLC0415
 
     def _must_not_score(*a, **kw):
         raise AssertionError("two records reached the scorer as one sequence")
@@ -116,7 +116,7 @@ def test_two_fasta_records_are_refused_not_fused(client, monkeypatch):
     ids=["bare", "one-header", "one-header-wrapped"],
 )
 def test_one_record_or_none_still_scores(client, monkeypatch, sequence):
-    import tools.developability as dev  # noqa: PLC0415
+    import shared.developability as dev  # noqa: PLC0415
 
     seen = []
     real = dev.score_developability

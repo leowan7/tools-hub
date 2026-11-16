@@ -6,7 +6,7 @@ against the Observed Antibody Space k-mer repertoire.
 
 from __future__ import annotations
 
-from tools.developability.data.germlines import get_germlines_for_chain
+from shared.developability.data.germlines import get_germlines_for_chain
 
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
 

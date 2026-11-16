@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from tools.developability.dimensions.aggregation import score_aggregation
-from tools.developability.dimensions.charge import score_charge
-from tools.developability.dimensions.humanness import score_humanness
-from tools.developability.dimensions.hydrophobicity import score_hydrophobicity
-from tools.developability.dimensions.liabilities import score_liabilities
+from shared.developability.dimensions.aggregation import score_aggregation
+from shared.developability.dimensions.charge import score_charge
+from shared.developability.dimensions.humanness import score_humanness
+from shared.developability.dimensions.hydrophobicity import score_hydrophobicity
+from shared.developability.dimensions.liabilities import score_liabilities
 
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
