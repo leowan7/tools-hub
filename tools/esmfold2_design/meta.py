@@ -178,7 +178,20 @@ about: dict = {
         "<code>cdr_distogram_iptm_proxy &ge; 0.5</code> AND "
         "<code>iptm &ge; 0.75</code>). Sweep mode "
         "(<strong>Seeds to run</strong> &gt; 1) merges every seed's "
-        "designs into one globally-ranked table."
+        "designs into one globally-ranked table. "
+        # Reached by the ROW-SEQUENCE rule: run_pipeline.py:1354 writes
+        # "sequence" on every candidate, so the binder chain is the chain of
+        # the delivered structure carrying it. Hedged on purpose -- the
+        # structure is not guaranteed to be retrievable (one 2026-11-12 run
+        # has none), and shared/design_quality.py shows nothing in that case.
+        "Where the design's structure is still retrievable, the results "
+        "page also screens the first design in the table for its largest "
+        "solvent-exposed hydrophobic patch, in square "
+        "&aring;ngstr&ouml;ms, measured on the designed chain alone, plus "
+        "sequence liability motifs with the ones on the surface marked. "
+        "That screen covers that one design, not the others, and it is "
+        "measured on a predicted structure &mdash; it is a thing to look "
+        "at, not a threshold anything passes."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

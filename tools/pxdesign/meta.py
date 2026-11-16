@@ -140,7 +140,10 @@ about: dict = {
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, pAE, and PDBs downloadable "
         "from a run of your own. "
-        "Target ipTM &ge; 0.75 for a tractable epitope."
+        "Target ipTM &ge; 0.75 for a tractable epitope. "
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and a "
+        "PXDesign result does not say which of its chains that is."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

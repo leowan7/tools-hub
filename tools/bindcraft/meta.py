@@ -164,7 +164,10 @@ about: dict = {
         "and PDBs downloadable from a run of your own. An ipTM of 0.75 "
         "or more is a credible binder and 0.85 or more is a strong "
         "candidate. Hand off promising designs to the Ranomics yeast "
-        "display CRO for in vitro validation."
+        "display CRO for in vitro validation. "
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and a "
+        "BindCraft result does not say which of its chains that is."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

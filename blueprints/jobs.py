@@ -939,6 +939,44 @@ def job_detail(job_id: str):
         else {}
     )
 
+    # D6 — the one measured quality figure, for the TOP design only.
+    #
+    # ONE structure read and one SASA pass, whatever the row count: see
+    # shared/design_quality.py for why this is not a column. It is gated on
+    # ``succeeded`` because a running or failed job has no design to measure,
+    # and it is NOT gated on the tool -- shared/design_quality.py returns None
+    # for any row whose designed chain it cannot name, which is the same
+    # data-gate the Length column uses and is why a tool that qualifies for
+    # nothing renders nothing rather than an empty panel.
+    #
+    # ``page_ordered_records`` because "top" means the first row the page
+    # lists, not the row whose ``rank`` field is 1 (shared/jobs.py:261-272).
+    # The same fetcher the exports use, so a page costs no more storage reads
+    # than one row of its own CSV.
+    design_quality = None
+    if job.status == "succeeded":
+        from shared.design_quality import top_design_profile  # noqa: PLC0415
+        from shared.jobs import page_ordered_records  # noqa: PLC0415
+
+        try:
+            design_quality = top_design_profile(
+                page_ordered_records(job.tool, job.result),
+                tool=job.tool,
+                result=job.result if isinstance(job.result, dict) else {},
+                inputs=job.inputs if isinstance(job.inputs, dict) else {},
+                fetch_bytes=_storage_fetcher(ctx.user_id, "design_quality"),
+                job_id=job.id,
+            )
+        except Exception:  # noqa: BLE001
+            # A results page must render without this. The figure is a nicety;
+            # the run's own numbers and downloads are not, and they are on the
+            # same page. Logged so a systematic failure is visible rather than
+            # silently showing nothing on every job.
+            logger.warning(
+                "design quality not computed for job %s", job.id, exc_info=True,
+            )
+            design_quality = None
+
     return render_template(
         "job_detail.html",
         job=job,
@@ -962,6 +1000,7 @@ def job_detail(job_id: str):
         stopped_for_balance=stopped_for_balance(job),
         kept_designs=kept_designs(job),
         refold_scores=refold_scores,
+        design_quality=design_quality,
     )
 
 

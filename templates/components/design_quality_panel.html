@@ -1,0 +1,107 @@
+{# Measured surface and liability screen for the TOP design only.
+
+   Rendered by templates/job_detail.html when ``design_quality`` is truthy;
+   it is None for any run whose top design has no readable structure or no
+   nameable designed chain (shared/design_quality.py::top_design_profile), so
+   there is no empty state to write here.
+
+   THE COPY RULES THIS FILE FOLLOWS, set by the hub lead on 2026-11-16:
+
+   * It names the ONE design it describes and never implies the others were
+     measured. There is no column yet, so no string may read as a ranking or a
+     comparison across designs.
+   * It is a SCREEN, not a verdict. No pass, no fail, no "good"/"bad", no
+     traffic light. The repo already holds this line for the sequence
+     developability pair -- neither of its columns appears in
+     shared/score_legends.py::GATE_COLUMNS, pinned by
+     tests/test_rfd4_results_and_exports.py::
+     test_the_developability_columns_are_not_a_pass_fail_bar -- and this figure
+     sits on the same side of it.
+   * It says the number is measured on a PREDICTED structure and inherits that
+     prediction's error. surface_patch.py's module docstring is explicit that
+     no copy may describe it as a measurement of the physical molecule.
+#}
+<div class="panel" style="margin-top: 1.5rem;">
+  <div class="panel-header">
+    <h2 style="margin: 0; font-size: 1.05rem;">Screening the top design</h2>
+  </div>
+  <div class="panel-body">
+    <p style="margin-top: 0; color: var(--text-secondary);">
+      Measured on design 1 only &mdash; the first row of the table above &mdash;
+      on chain {{ design_quality.chain }} of its predicted structure. The other
+      designs have not been measured, so nothing here ranks them.
+    </p>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 1rem 0;">
+      <div>
+        <div style="font-size: 1.6rem; font-weight: 600;">
+          {{ design_quality.largest_patch_a2 | round(0) | int }}<span
+            style="font-size: 0.9rem; font-weight: 400; color: var(--text-secondary);">
+            &#8491;&sup2;</span>
+        </div>
+        <div style="color: var(--text-secondary); font-size: 0.85rem;">
+          Largest exposed hydrophobic patch
+          <span style="white-space: nowrap;">({{ design_quality.patch_atom_count }}
+            atom{{ '' if design_quality.patch_atom_count == 1 else 's' }})</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size: 1.6rem; font-weight: 600;">
+          {{ design_quality.total_apolar_a2 | round(0) | int }}<span
+            style="font-size: 0.9rem; font-weight: 400; color: var(--text-secondary);">
+            &#8491;&sup2;</span>
+        </div>
+        <div style="color: var(--text-secondary); font-size: 0.85rem;">
+          Total exposed hydrophobic area, {{ design_quality.residues }} residues
+        </div>
+      </div>
+    </div>
+
+    {# The patch figure is a cluster of solvent-exposed carbon and sulfur
+       atoms. "Stickiness is a surface property" is Leo's ruling of 2026-11-16
+       and this sentence is where the page says what the number is, without
+       saying what it means for any particular molecule. #}
+    <p style="color: var(--text-secondary); font-size: 0.9rem;">
+      The patch is the largest connected cluster of solvent-exposed carbon and
+      sulfur atoms on that chain, measured on the structure the run delivered.
+      A large exposed hydrophobic patch is one of the things associated with
+      aggregation and non-specific binding, so it is worth looking at &mdash;
+      but this is a screen on a predicted structure, not a measurement of the
+      real molecule, and it carries whatever error the prediction does. There
+      is no threshold here that passes or fails a design.
+    </p>
+
+    {% if design_quality.liabilities %}
+      <h3 style="font-size: 0.95rem; margin: 1.2rem 0 0.4rem;">
+        Sequence liability motifs on chain {{ design_quality.chain }}
+      </h3>
+      <p style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0;">
+        Chemistry alone finds these. Where the structure shows the motif is on
+        the surface it is marked exposed and ranked one step higher, because a
+        buried motif is far less reachable; a motif we could not measure says
+        nothing either way rather than being called buried.
+      </p>
+      <ul style="font-size: 0.9rem;">
+        {% for lia in design_quality.liabilities %}
+          <li>
+            <strong>{{ lia.motif }}</strong> at {{ lia.position }}
+            &mdash; {{ lia.type | replace('_', ' ') }}
+            ({{ lia.severity }}{% if lia.severity != lia.base_severity %},
+              raised from {{ lia.base_severity }}{% endif %})
+            {%- if lia.exposed %} &middot; <em>measured solvent-exposed</em>
+            {%- elif lia.exposed is none %} &middot; exposure not measured
+            {%- endif %}
+            {%- if lia.detail %} &middot; {{ lia.detail }}{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p style="color: var(--text-secondary); font-size: 0.9rem;">
+        No sequence liability motifs were found on chain
+        {{ design_quality.chain }}. That is the motif list coming back empty,
+        not a clean bill of health &mdash; this screen looks for a fixed set of
+        chemical motifs and nothing else.
+      </p>
+    {% endif %}
+  </div>
+</div>

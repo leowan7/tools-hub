@@ -143,7 +143,13 @@ about: dict = {
     "output_summary": (
         "Ranked candidate sequences with per-position score and overall "
         "ProteinMPNN recovery, downloadable as FASTA from a run of your own. Pair downstream "
-        "with AlphaFold2 or ColabFold to confirm the predicted fold."
+        "with AlphaFold2 or ColabFold to confirm the predicted fold. "
+        # The reason differs from the other tools that get no patch figure:
+        # theirs is an unidentifiable chain, this one has no structure at all
+        # to measure a surface on.
+        "No hydrophobic-patch screen is shown here either, for a simpler "
+        "reason: that figure is measured on a structure, and this tool "
+        "returns sequences. Fold a shortlist first if you want it."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

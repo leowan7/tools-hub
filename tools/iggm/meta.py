@@ -106,7 +106,15 @@ about: dict = {
         "Per design: the predicted antibody-antigen complex PDB, the designed "
         "sequence, and an epitope-contact count (how many of your chosen "
         "epitope residues the designed antibody engages). Sequence statistics "
-        "and amino-acid distribution plots are attached as artifacts."
+        "and amino-acid distribution plots are attached as artifacts. "
+        # A third distinct reason, and the only one that is about the science
+        # rather than the bookkeeping: the patch figure describes ONE chain's
+        # surface, and shared/design_quality.py::designed_chains returns
+        # nothing for a design with two, because a two-chain surface is a
+        # different measurement rather than a sum of two.
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure describes the surface of a single designed chain, and an "
+        "antibody design has a heavy and a light one."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

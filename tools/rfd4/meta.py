@@ -141,7 +141,20 @@ about: dict = {
         "the de-novo binder beside it, downloadable from a run of your "
         "own. There are no score columns: nothing in this run measures "
         "how well a binder holds, so take the structures into a "
-        "predictor before choosing between them."
+        "predictor before choosing between them. "
+        # rfd4 is the one tool reached by the TARGET-CHAIN rule rather than
+        # the row-sequence rule: shared/exports.py::_TARGET_CHAIN_TOOLS is an
+        # allow-list of one, so every other chain of the delivered structure
+        # is the designed one. Deliberately phrased as "the first design" and
+        # not "the best": there is no column, nothing else is measured, and
+        # this run has no score to rank on in the first place.
+        "The results page also screens the FIRST design in the table for "
+        "its largest solvent-exposed hydrophobic patch, in square "
+        "&aring;ngstr&ouml;ms, measured on the binder chain alone, plus "
+        "sequence liability motifs with the ones on the surface marked. "
+        "That screen covers that one design, not the others, and it is "
+        "measured on a predicted structure &mdash; it is a thing to look "
+        "at, not a threshold anything passes."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

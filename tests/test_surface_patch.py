@@ -14,6 +14,7 @@ import pytest
 
 from shared.surface_patch import (
     EXPOSED_ATOM_SASA_A2,
+    EXPOSED_RESIDUE_RSA,
     HYDROPHOBIC_ELEMENTS,
     PATCH_CONTACT_A,
     surface_profile,
@@ -326,6 +327,40 @@ def test_waters_in_the_designed_chain_do_not_bury_the_surface():
         )
     assert got_whole["residue_rsa"] == got_stripped["residue_rsa"]
     assert got_whole["residue_sasa"] == got_stripped["residue_sasa"]
+
+    # WHAT THIS TEST IS PINNING, in numbers, so the next reader can see the
+    # size of the defect rather than taking "waters occlude" on faith.
+    # 1HEW chain A is 129 protein residues and carried 103 HOH records. With
+    # the waters left in, 23 of those 129 residues came out the wrong side of
+    # EXPOSED_RESIDUE_RSA -- every one of them exposed but reported buried,
+    # which in find_liabilities means a reachable liability that is never
+    # escalated. The structure and the count are named here on the hub lead's
+    # instruction of 2026-11-16.
+    # The 23-of-129 figure is recorded here rather than asserted: asserting it
+    # would need the buggy path kept alive to measure against, and a test hook
+    # in production code is a worse thing to own than a number in a comment.
+    # What this test enforces is the INVARIANCE above, which is the actual
+    # property and which fails the moment waters are let back in
+    # (mutation-verified: it reports 99.03 against 114.72).
+    rsa = got_stripped["residue_rsa"]["A"]
+    assert len(rsa) == 129, (
+        f"1HEW chain A is 129 protein residues; measured {len(rsa)}. If this "
+        "changed, the figures in this test's docstring describe a different "
+        "structure and none of them can be trusted."
+    )
+    assert all(v is not None for v in rsa), (
+        "every residue of 1HEW chain A has a known type, so none of its "
+        "accessibilities should be unknown"
+    )
+    # 63, and the arithmetic is the cross-check on the 23 above: the occluded
+    # surface reported 40 of 129 exposed, 23 residues were being called buried
+    # when they are exposed, and 40 + 23 = 63. The two figures were measured
+    # independently -- 40 by me before the fix, 23 by the reviewer who found
+    # it -- so their agreeing is evidence, not a restatement.
+    assert sum(1 for v in rsa if v > EXPOSED_RESIDUE_RSA) == 63, (
+        "63 of the 129 residues sit above EXPOSED_RESIDUE_RSA on the "
+        "heavy-atom, water-free surface"
+    )
 
 
 def test_a_ligand_only_chain_is_not_measured_as_protein():
