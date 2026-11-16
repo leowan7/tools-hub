@@ -121,6 +121,9 @@
     <p class="subtitle">
       Preset <strong>{{ job.preset | preset_label }}</strong> ·
       submitted {{ job.created_at | utc_stamp }}
+      {%- if cost_cell and cost_cell.spend %} ·
+      cost <strong data-run-cost>{{ cost_cell.spend }}</strong>{% if cost_cell.spend_note %} ({{ cost_cell.spend_note }}){% endif %}
+      {%- endif %}
     </p>
   </div>
 
@@ -479,7 +482,7 @@
     {% if job.campaign_id %}
       <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All full-size runs</a>
     {% endif %}
-    <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
+    <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">New run</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
     {% if job.status == 'succeeded' and share_allowed %}
       <button type="button" id="share-result-btn" class="btn-secondary"

@@ -17,28 +17,55 @@
     <button type="button" id="compare-clear" class="btn-secondary" style="margin-left: 0.5rem;">Clear</button>
   </div>
 
-  {# C4 — campaign filter. Only renders when the user has at least one
-     labelled campaign, so the empty-state onboarding ladder for new
-     users is not cluttered with a no-op select. #}
-  {% if all_campaign_labels %}
-    <form method="GET" action="{{ url_for('jobs.jobs_list') }}" id="campaign-filter-form"
-          style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.88rem;">
-      <label for="campaign" style="margin: 0;">Group</label>
-      <select name="campaign" id="campaign" class="field-input"
-              style="max-width: 320px; padding: 0.4rem 0.5rem; font-size: 0.88rem;"
-              onchange="document.getElementById('campaign-filter-form').submit();">
-        <option value="" {% if not selected_campaign %}selected{% endif %}>All groups</option>
-        <option value="__uncategorized__" {% if selected_campaign == '__uncategorized__' %}selected{% endif %}>Uncategorized</option>
-        {% for label in all_campaign_labels %}
-          <option value="{{ label }}" {% if selected_campaign == label %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-      </select>
-      {% if selected_campaign %}
-        <a class="btn-secondary" href="{{ url_for('jobs.jobs_list') }}" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Clear filter</a>
+  {# Filters. Shown once the user has a run, or while a filter is set, so the
+     empty-state onboarding ladder for a new user stays uncluttered. Every
+     field is a plain GET parameter (blueprints/jobs.py::_jobs_filters). #}
+  {% if jobs or filters %}
+    <form method="GET" action="{{ url_for('jobs.jobs_list') }}" id="jobs-filter-form" class="jobs-filter-form"
+          style="margin-bottom: 1rem; display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.88rem;">
+      <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">Search
+        <input type="search" name="q" value="{{ filters.q or '' }}" class="field-input"
+               placeholder="Group name or job id" style="width: 14rem; padding: 0.4rem 0.5rem; font-size: 0.88rem;">
+      </label>
+      <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">Tool
+        <select name="tool" class="field-input" style="padding: 0.4rem 0.5rem; font-size: 0.88rem;">
+          <option value="">All tools</option>
+          {% for slug, label in tool_choices %}
+            <option value="{{ slug }}" {% if filters.tool == slug %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">Status
+        <select name="status" class="field-input" style="padding: 0.4rem 0.5rem; font-size: 0.88rem;">
+          <option value="">Any status</option>
+          {% for st in status_choices %}
+            <option value="{{ st }}" {% if filters.status == st %}selected{% endif %}>{{ st }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% if all_campaign_labels %}
+        <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">Group
+          <select name="campaign" id="campaign" class="field-input" style="max-width: 320px; padding: 0.4rem 0.5rem; font-size: 0.88rem;">
+            <option value="" {% if not selected_campaign %}selected{% endif %}>All groups</option>
+            <option value="__uncategorized__" {% if selected_campaign == '__uncategorized__' %}selected{% endif %}>Uncategorized</option>
+            {% for label in all_campaign_labels %}
+              <option value="{{ label }}" {% if selected_campaign == label %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
       {% endif %}
-      <noscript>
-        <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Filter</button>
-      </noscript>
+      <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">Submitted from
+        <input type="date" name="from" value="{{ filters['from'] or '' }}" class="field-input" style="padding: 0.35rem 0.5rem; font-size: 0.88rem;">
+      </label>
+      <label style="display: flex; flex-direction: column; gap: 0.2rem; margin: 0;">to
+        <input type="date" name="to" value="{{ filters.to or '' }}" class="field-input" style="padding: 0.35rem 0.5rem; font-size: 0.88rem;">
+      </label>
+      <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Filter</button>
+      {% if filters %}
+        <a class="btn-secondary" href="{{ url_for('jobs.jobs_list') }}" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Clear filters</a>
+      {% endif %}
+      <a class="btn-secondary" href="{{ url_for('jobs.jobs_history_csv', **filters) }}" data-history-csv
+         style="padding: 0.35rem 0.7rem; font-size: 0.82rem; margin-left: auto;">Download CSV</a>
     </form>
   {% endif %}
 
@@ -67,6 +94,7 @@
                 <th>Runtime</th>
                 <th>Spend</th>
                 <th>Submitted</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -101,6 +129,13 @@
                     {% if c.spend_note %}<span class="jobs-spend-note">{{ c.spend_note }}</span>{% endif %}
                   </td>
                   <td class="jobs-muted">{{ job.created_at | utc_stamp }}</td>
+                  <td>
+                    {# Opens the prefilled form (tools.tool_form clone_from);
+                       nothing runs until the user submits it. #}
+                    {% if job.tool %}
+                      <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" data-rerun>Re-run</a>
+                    {% endif %}
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>
@@ -116,18 +151,21 @@
             </div>
             <div style="display: flex; gap: 0.5rem;">
               {% if page > 1 %}
-                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page-1, campaign=selected_campaign) if selected_campaign else url_for('jobs.jobs_list', page=page-1) }}">Previous</a>
+                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page-1, **filters) }}">Previous</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Previous</span>
               {% endif %}
               {% if page < total_pages %}
-                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page+1, campaign=selected_campaign) if selected_campaign else url_for('jobs.jobs_list', page=page+1) }}">Next</a>
+                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page+1, **filters) }}">Next</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Next</span>
               {% endif %}
             </div>
           </nav>
         {% endif %}
+      {% elif filters %}
+        <p class="subtitle" style="margin: 1rem 0;" data-no-match>No runs match these filters.
+          <a href="{{ url_for('jobs.jobs_list') }}">Clear filters</a></p>
       {% else %}
         {% set _has_starter_credit = nav_wallet_usd is not none and nav_wallet_usd > 0 %}
         <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 2.5rem 1rem;">

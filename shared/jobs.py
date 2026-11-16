@@ -3149,6 +3149,25 @@ def list_jobs_for_user(user_id: str, *, limit: int = 20) -> list[ToolJob]:
         return []
 
 
+def _job_id_prefix_range(q: str) -> Optional[tuple[str, str]]:
+    """The lowest and highest uuid starting with ``q``, or None.
+
+    ``tool_jobs.id`` is a uuid (supabase/migrations/0005_tool_jobs.sql), which
+    PostgREST cannot LIKE-match, so a prefix becomes a range. ``q`` is
+    padded with ``0`` and ``f`` into the 8-4-4-4-12 layout.
+    """
+    q = q.strip().lower()
+    hex_part = q.replace("-", "")
+    if not hex_part or len(hex_part) > 32 or not re.fullmatch(r"[0-9a-f-]+", q):
+        return None
+
+    def _uuid(fill: str) -> str:
+        h = hex_part.ljust(32, fill)
+        return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
+    return _uuid("0"), _uuid("f")
+
+
 def list_jobs_paginated(
     user_id: str,
     *,
@@ -3156,6 +3175,11 @@ def list_jobs_paginated(
     page_size: int = 25,
     campaign_label: Optional[str] = None,
     standalone_only: bool = False,
+    tool: Optional[str] = None,
+    status: Optional[str] = None,
+    created_from: Optional[str] = None,
+    created_before: Optional[str] = None,
+    q: Optional[str] = None,
 ) -> tuple[list[ToolJob], int]:
     """Paginated owner-scoped job list. Returns (rows, total_count).
 
@@ -3172,6 +3196,12 @@ def list_jobs_paginated(
     IS NULL), so the unified campaign list can show single runs as
     campaigns-of-one without a campaign's sub-jobs appearing as their own
     cards.
+
+    ``tool`` and ``status`` filter by equality. ``created_from`` and
+    ``created_before`` bound ``created_at`` (``>=`` and ``<``) with the ISO
+    strings the caller passes. ``q`` matches the campaign label as a
+    case-insensitive substring, or, when it is only hex digits and dashes,
+    also a job-id prefix (:func:`_job_id_prefix_range`).
     """
     page = max(1, int(page))
     page_size = max(1, min(100, int(page_size)))
@@ -3193,6 +3223,28 @@ def list_jobs_paginated(
                 query = query.eq("campaign_label", campaign_label)
         if standalone_only:
             query = query.is_("campaign_id", "null")
+        if tool:
+            query = query.eq("tool", tool)
+        if status:
+            query = query.eq("status", status)
+        if created_from:
+            query = query.gte("created_at", created_from)
+        if created_before:
+            query = query.lt("created_at", created_before)
+        q = (q or "").strip()
+        if q:
+            # LIKE wildcards in the user's text match literally.
+            like = "*" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "") + "*"
+            id_range = _job_id_prefix_range(q)
+            if id_range:
+                # Only hex and dashes reach here, so the or= grammar's
+                # commas and parentheses cannot appear in the value.
+                query = query.or_(
+                    f"campaign_label.ilike.{like},"
+                    f"and(id.gte.{id_range[0]},id.lte.{id_range[1]})"
+                )
+            else:
+                query = query.ilike("campaign_label", like)
         response = (
             query
             .order("created_at", desc=True)
