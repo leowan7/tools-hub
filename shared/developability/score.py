@@ -106,13 +106,22 @@ def score_developability(
     sequence: str,
     chain_type: str = "VH",
     weights: Dict[str, float] = None,
+    residue_rsa=None,
 ) -> dict:
     """Score a single antibody-variable-region sequence for developability.
 
     Args:
         sequence: Amino acid sequence (one-letter code).
-        chain_type: Chain class. Accepted: "VH", "VK", "VL". Affects the CDR
-            boundary heuristic for liability severity.
+        chain_type: Chain class, echoed back on the result as a LABEL only.
+            It affects no number here: its two former consumers were the
+            deleted human-likeness dimension and the CDR span heuristic that
+            the liability severity rule replaced with measured exposure.
+        residue_rsa: Optional per-residue relative solvent accessibility for
+            ``sequence``, in sequence order, from
+            ``shared/surface_patch.py::surface_profile``. Supplying it raises
+            the severity of liability motifs measured solvent-exposed. Without
+            it every motif keeps its chemistry-only base severity and reports
+            ``exposed: None``.
         weights: Optional override of dimension weights. Keys must be a
             subset of :data:`_DIMENSIONS` and values must sum to 1.0.
 
@@ -139,7 +148,7 @@ def score_developability(
             raise ValueError(f"weights must sum to 1.0 (got {total:.4f})")
 
     dimensions = {
-        "liabilities": score_liabilities(cleaned, chain_type=chain_type),
+        "liabilities": score_liabilities(cleaned, residue_rsa=residue_rsa),
         "charge": score_charge(cleaned),
         "aggregation": score_aggregation(cleaned),
     }

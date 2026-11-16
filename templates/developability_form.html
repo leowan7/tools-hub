@@ -61,8 +61,10 @@
             <option value="other" {% if chain_type == 'OTHER' %}selected{% endif %}>Other</option>
           </select>
           <p class="field-hint">
-            Chain type affects the CDR position heuristic used to weight
-            oxidation and deamidation liabilities.
+            Recorded on the result as a label. It no longer changes any
+            score: liability severity now comes from measured solvent
+            exposure, which needs a structure, and this form takes only a
+            sequence.
           </p>
         </div>
 
@@ -75,13 +77,13 @@
           <p>
             A composite score as a percentage plus three per-dimension
             breakdowns. Each
-            flagged motif is returned with its 1-based position, severity, and
-            whether it falls in an approximated CDR. The sequence is rendered
-            with liability positions highlighted.
+            flagged motif is returned with its 1-based position and severity.
+            The sequence is rendered with liability positions highlighted.
           </p>
           <p>
-            This is a prototype scorer. CDR boundaries are estimated from
-            length.
+            This is a prototype scorer. Severities here are from each motif's
+            chemistry alone: raising them for the motifs that are actually on
+            the surface needs a structure, which this form does not take.
           </p>
         </details>
       </form>

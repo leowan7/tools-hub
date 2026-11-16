@@ -61,7 +61,7 @@
           {% for lia in liabilities.liabilities[:12] %}
             <span class="dev-lia-pill dev-lia-{{ lia.type }} dev-lia-sev-{{ lia.severity }}">
               {{ lia.motif }}@{{ lia.position }}
-              {% if lia.in_cdr %}<em>CDR</em>{% endif %}
+              {% if lia.exposed %}<em>exposed</em>{% endif %}
             </span>
           {% endfor %}
           {% if liabilities.liabilities | length > 12 %}
@@ -127,7 +127,7 @@
     <div class="panel-body">
       <p class="dev-seq-legend">
         Highlighted residues carry one or more liability annotations. Hover
-        for the motif, type, severity, and CDR assignment.
+        for the motif, type and severity.
       </p>
       <div class="dev-seq-view">
         {% for flag in result.per_residue_flags %}
@@ -136,7 +136,7 @@
             {% set tooltip = flag.liabilities | map(attribute='type') | join(', ') %}
             <span
               class="dev-seq-res dev-lia-{{ first.type }} dev-lia-sev-{{ first.severity }}"
-              title="Pos {{ flag.position }} ({{ flag.residue }}): {{ tooltip }} [{{ first.severity }}]{% if first.in_cdr %} · in CDR{% endif %}"
+              title="Pos {{ flag.position }} ({{ flag.residue }}): {{ tooltip }} [{{ first.severity }}]{% if first.exposed %} · measured solvent-exposed{% endif %}"
             >{{ flag.residue }}</span>
           {% else %}
             <span class="dev-seq-res">{{ flag.residue }}</span>

@@ -125,6 +125,24 @@ def _parse_model(data: bytes):
         return None
 
 
+# Empirical maximum solvent-accessible area per residue, Å², from Tien et al.
+# 2013 (PLoS ONE 8:e80635), the "theoretical" column. Used only to turn an
+# absolute per-residue SASA into a RELATIVE one: a buried tryptophan can carry
+# more absolute area than an exposed glycine, so an absolute cut-off would call
+# large residues exposed and small ones buried regardless of where they sit.
+_MAX_ASA_A2 = {
+    "A": 129.0, "R": 274.0, "N": 195.0, "D": 193.0, "C": 167.0,
+    "E": 223.0, "Q": 225.0, "G": 104.0, "H": 224.0, "I": 197.0,
+    "L": 201.0, "K": 236.0, "M": 224.0, "F": 240.0, "P": 159.0,
+    "S": 155.0, "T": 172.0, "W": 285.0, "Y": 263.0, "V": 174.0,
+}
+
+# A residue counts as solvent-exposed above this relative accessibility
+# (its SASA over the maximum above). CHOSEN: 0.25 is the conventional
+# exposed/buried cut in the RSA literature. Nothing here measures it.
+EXPOSED_RESIDUE_RSA = 0.25
+
+
 def _is_protein_residue(residue) -> bool:
     """Whether ``residue`` is one ``structure_chain_sequences`` would read.
 
@@ -148,12 +166,18 @@ def surface_profile(
           "patch_atom_count": int,     # apolar exposed atoms in that patch
           "total_apolar_a2": float,    # exposed apolar area over all chains
           "residue_sasa": {chain_id: [per-residue Å², in chain order]},
+          "residue_rsa":  {chain_id: [per-residue 0-1, in chain order]},
         }
 
-    ``residue_sasa`` lists one entry per protein residue in file order, so a
-    1-based position into the chain's sequence indexes ``[position - 1]``. It
-    is what the liability severity rule reads: an exposed motif ranks above a
-    buried one.
+    Both per-residue lists carry one entry per protein residue in file order,
+    so a 1-based position into the chain's sequence indexes ``[position - 1]``.
+
+    ``residue_rsa`` is the relative accessibility -- SASA over the residue
+    type's maximum (:data:`_MAX_ASA_A2`) -- and is what the liability severity
+    rule reads, so that an exposed motif ranks above a buried one. It is
+    ``None`` for a residue whose type is not one of the twenty (a modified
+    residue Biopython mapped into the sequence still has no maximum here), so
+    a caller must treat ``None`` as "exposure unknown" and not as buried.
 
     ``None`` -- never a zero, never an exception -- when the bytes do not
     parse, when none of ``designed_chains`` is present in the file, or when no
@@ -201,8 +225,24 @@ def surface_profile(
         logger.warning("surface patch: SASA failed (%s)", type(exc).__name__)
         return None
 
+    from Bio.Data.PDBData import protein_letters_3to1_extended  # noqa: PLC0415
+
     residue_sasa = {
         cid: [round(sum(float(a.sasa) for a in r), 2) for r in rs]
+        for cid, rs in residues.items()
+    }
+    residue_rsa = {
+        cid: [
+            None
+            if (
+                maximum := _MAX_ASA_A2.get(
+                    protein_letters_3to1_extended.get(r.get_resname().strip(), "")
+                )
+            )
+            is None
+            else round(min(1.0, area / maximum), 3)
+            for r, area in zip(rs, residue_sasa[cid])
+        ]
         for cid, rs in residues.items()
     }
 
@@ -224,6 +264,7 @@ def surface_profile(
             "patch_atom_count": 0,
             "total_apolar_a2": 0.0,
             "residue_sasa": residue_sasa,
+            "residue_rsa": residue_rsa,
         }
 
     largest_area, largest_count = _largest_cluster(exposed)
@@ -232,6 +273,7 @@ def surface_profile(
         "patch_atom_count": largest_count,
         "total_apolar_a2": total_apolar,
         "residue_sasa": residue_sasa,
+        "residue_rsa": residue_rsa,
     }
 
 

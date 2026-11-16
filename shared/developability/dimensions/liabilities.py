@@ -1,24 +1,44 @@
 """Sequence liability motif scanner.
 
-Flags common chemical-stability and developability liabilities:
-deamidation, isomerization, N-linked glycosylation, oxidation-prone
-residues (elevated severity in CDRs), free cysteines, integrin binding
-motifs, and Asp-Pro fragmentation sites.
+Flags common chemical-stability and developability liabilities: deamidation,
+isomerization, N-linked glycosylation, oxidation-prone residues, free
+cysteines, integrin binding motifs, and Asp-Pro fragmentation sites.
 
-CDR boundaries are estimated using a very simple positional heuristic
-(roughly Kabat-like for a standard V-domain). Production would use ANARCI
-or HMMER with IMGT numbering for accurate CDR assignment.
+SEVERITY COMES FROM MEASURED EXPOSURE, OR NOT AT ALL
+----------------------------------------------------
+Each motif has a base severity from its chemistry alone. A motif the caller
+has MEASURED to be solvent-exposed is escalated one step
+(:func:`_escalate`), because a buried motif is far less reachable by solvent,
+enzymes or a neighbouring molecule than an exposed one. Exposure is passed in
+as relative accessibility by
+``shared/surface_patch.py::surface_profile``'s ``residue_rsa``; with no
+exposure supplied, every record keeps its base severity and reports
+``exposed: None``, meaning unknown rather than buried.
+
+This replaced a CDR-based escalation, and the reason is worth keeping. That
+rule raised the severity of any motif falling inside a CDR, with the CDR
+boundaries guessed from sequence LENGTH -- CDR-H3 was "the stretch from
+``len - 25`` to ``len - 10``" -- rather than from any numbering scheme. The
+hub lead's ruling of 2026-11-16 generalised Leo's surface rule to it: a flag
+rests on something measured, not on a guessed region. The length heuristic,
+the ``in_cdr`` key, and the ``chain_type`` argument that selected heavy- or
+light-chain spans are all gone with it. Nothing here now varies by chain type.
 """
 
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import List, Optional, Sequence
+
+from shared.surface_patch import EXPOSED_RESIDUE_RSA
 
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
 # Severity weights contribute to the deducted fraction of the score.
 SEVERITY_WEIGHT = {"high": 1.0, "medium": 0.5, "low": 0.25}
+
+# One step up, for a motif measured solvent-exposed. "high" is the top.
+_ESCALATION = {"low": "medium", "medium": "high", "high": "high"}
 
 DEAMIDATION_HIGH = {"NG", "NS", "NT"}
 DEAMIDATION_LOW = {"NH", "NA"}
@@ -53,170 +73,154 @@ def _validate_sequence(sequence: str) -> str:
     return cleaned
 
 
-def _approximate_cdr_spans(length: int, chain_type: str) -> List[tuple]:
-    """Return 1-based (start, end) inclusive CDR spans from length heuristic.
+def _motif_exposed(
+    residue_rsa: Optional[Sequence], position: int, length: int
+) -> Optional[bool]:
+    """Whether a motif starting at 1-based ``position`` is solvent-exposed.
 
-    Heuristic spans are based on canonical Kabat-like positions for a ~120 aa
-    V-domain. These are approximate; accurate CDR annotation requires
-    numbering schemes (Kabat/Chothia/IMGT) via ANARCI.
+    ``length`` is the motif's length in residues: the MOST exposed residue of
+    a motif decides, because a dipeptide or triplet is reachable if any part
+    of it is on the surface.
 
-    Args:
-        length: Sequence length in residues.
-        chain_type: "VH", "VK", or "VL". Heavy and light use slightly
-            different defaults.
-
-    Returns:
-        List of (start, end) 1-based inclusive CDR residue ranges.
+    Returns ``None`` -- unknown, NOT buried -- when no exposure was supplied,
+    when the motif runs past the end of the exposure list, or when every
+    residue of it has unknown accessibility. A caller must not read ``None``
+    as "buried": it means the question was not answered, and the severity
+    stays at its base.
     """
-    normalized = chain_type.strip().upper() if chain_type else "VH"
-
-    if normalized in {"VH", "HEAVY", "H", "VHH"}:
-        # Heavy chain Kabat-like: CDR-H1 ~26-35, CDR-H2 ~50-65, CDR-H3 ~95-102
-        # Scale endpoints slightly if the sequence is materially longer/shorter.
-        cdr1 = (26, min(35, length))
-        cdr2 = (50, min(65, length))
-        cdr3_start = max(1, length - 25)
-        cdr3_end = min(length - 10, length)
-        cdr3 = (cdr3_start, cdr3_end)
-    else:
-        # Light chain approximate spans.
-        cdr1 = (24, min(34, length))
-        cdr2 = (50, min(56, length))
-        cdr3 = (89, min(97, length))
-
-    # Filter spans to valid ranges.
-    spans = []
-    for start, end in (cdr1, cdr2, cdr3):
-        if start <= length and end >= start:
-            spans.append((start, min(end, length)))
-    return spans
+    if residue_rsa is None:
+        return None
+    values = [
+        residue_rsa[i]
+        for i in range(position - 1, position - 1 + length)
+        if 0 <= i < len(residue_rsa) and residue_rsa[i] is not None
+    ]
+    if not values:
+        return None
+    return max(values) > EXPOSED_RESIDUE_RSA
 
 
-def _is_in_cdr(position_1based: int, cdr_spans: List[tuple]) -> bool:
-    """Check whether a 1-based residue position lies in any CDR span."""
-    return any(start <= position_1based <= end for start, end in cdr_spans)
+def _escalate(base: str, exposed: Optional[bool]) -> str:
+    """``base`` raised one step if ``exposed`` is True, else ``base``.
+
+    An unknown exposure (``None``) is treated exactly like a buried one: it
+    does not escalate. The difference between the two is recorded on the
+    record's ``exposed`` key, not in the severity.
+    """
+    return _ESCALATION[base] if exposed else base
 
 
-def find_liabilities(sequence: str, chain_type: str = "VH") -> List[dict]:
+def _record(
+    position: int,
+    motif: str,
+    kind: str,
+    base: str,
+    residue_rsa: Optional[Sequence],
+) -> dict:
+    """One liability record, with severity resolved against measured exposure."""
+    exposed = _motif_exposed(residue_rsa, position, len(motif))
+    return {
+        "position": position,
+        "motif": motif,
+        "type": kind,
+        "base_severity": base,
+        "severity": _escalate(base, exposed),
+        "exposed": exposed,
+    }
+
+
+def find_liabilities(
+    sequence: str, residue_rsa: Optional[Sequence] = None
+) -> List[dict]:
     """Scan for canonical developability liability motifs.
 
     Args:
         sequence: Protein sequence to scan.
-        chain_type: Chain type used to approximate CDR boundaries for
-            oxidation severity elevation.
+        residue_rsa: Optional per-residue relative solvent accessibility for
+            THIS sequence, in sequence order, as
+            ``surface_profile()["residue_rsa"][chain]`` returns it. Index
+            ``i`` must be the accessibility of ``sequence[i]``; a caller that
+            cannot guarantee that alignment must pass ``None`` rather than a
+            list from a different chain. Entries may be ``None`` for a
+            residue of unknown type.
 
     Returns:
-        List of liability records. Each record has keys ``position`` (1-based),
-        ``motif``, ``type``, ``severity`` (``low``, ``medium``, ``high``), and
-        ``in_cdr`` (bool).
+        List of liability records. Each has ``position`` (1-based), ``motif``,
+        ``type``, ``base_severity`` (chemistry alone), ``severity`` (after
+        exposure escalation) and ``exposed`` (``True``/``False``/``None`` for
+        unknown). Free-cysteine records carry a ``detail`` string too.
     """
     cleaned = _validate_sequence(sequence)
-    cdr_spans = _approximate_cdr_spans(len(cleaned), chain_type)
     findings: List[dict] = []
 
     # Dipeptide scans (deamidation, isomerization, fragmentation).
     for i in range(len(cleaned) - 1):
         dipeptide = cleaned[i : i + 2]
         position = i + 1
-        in_cdr = _is_in_cdr(position, cdr_spans)
 
         if dipeptide in DEAMIDATION_HIGH:
             findings.append(
-                {
-                    "position": position,
-                    "motif": dipeptide,
-                    "type": "deamidation",
-                    "severity": "high" if in_cdr else "medium",
-                    "in_cdr": in_cdr,
-                }
+                _record(position, dipeptide, "deamidation", "medium", residue_rsa)
             )
         elif dipeptide in DEAMIDATION_LOW:
             findings.append(
-                {
-                    "position": position,
-                    "motif": dipeptide,
-                    "type": "deamidation",
-                    "severity": "low",
-                    "in_cdr": in_cdr,
-                }
+                _record(position, dipeptide, "deamidation", "low", residue_rsa)
             )
         elif dipeptide in ISOMERIZATION:
             findings.append(
-                {
-                    "position": position,
-                    "motif": dipeptide,
-                    "type": "isomerization",
-                    "severity": "high" if in_cdr else "medium",
-                    "in_cdr": in_cdr,
-                }
+                _record(position, dipeptide, "isomerization", "medium", residue_rsa)
             )
         elif dipeptide in FRAGMENTATION:
             findings.append(
-                {
-                    "position": position,
-                    "motif": dipeptide,
-                    "type": "fragmentation",
-                    "severity": "medium",
-                    "in_cdr": in_cdr,
-                }
+                _record(position, dipeptide, "fragmentation", "medium", residue_rsa)
             )
 
     # N-linked glycosylation (N-X-S/T, X != P) — 3-residue regex scan.
     for match in N_GLYCOSYLATION_REGEX.finditer(cleaned):
-        position = match.start() + 1
         findings.append(
-            {
-                "position": position,
-                "motif": match.group(),
-                "type": "n_glycosylation",
-                "severity": "high",
-                "in_cdr": _is_in_cdr(position, cdr_spans),
-            }
+            _record(
+                match.start() + 1,
+                match.group(),
+                "n_glycosylation",
+                "high",
+                residue_rsa,
+            )
         )
 
     # Integrin binding tripeptide RGD.
     for i in range(len(cleaned) - 2):
-        tripeptide = cleaned[i : i + 3]
-        if tripeptide in INTEGRIN:
-            position = i + 1
+        if cleaned[i : i + 3] in INTEGRIN:
             findings.append(
-                {
-                    "position": position,
-                    "motif": tripeptide,
-                    "type": "integrin_binding",
-                    "severity": "high",
-                    "in_cdr": _is_in_cdr(position, cdr_spans),
-                }
+                _record(i + 1, cleaned[i : i + 3], "integrin_binding", "high", residue_rsa)
             )
 
-    # Oxidation-prone residues: M and W. Elevate severity in CDRs.
+    # Oxidation-prone residues: M and W. Base severity is low; an exposed one
+    # escalates, which is the whole point -- a buried methionine is not
+    # readily oxidised, and this used to be decided by a guessed CDR span.
     for index, residue in enumerate(cleaned):
         if residue in {"M", "W"}:
-            position = index + 1
-            in_cdr = _is_in_cdr(position, cdr_spans)
             findings.append(
-                {
-                    "position": position,
-                    "motif": residue,
-                    "type": "oxidation",
-                    "severity": "high" if in_cdr else "low",
-                    "in_cdr": in_cdr,
-                }
+                _record(index + 1, residue, "oxidation", "low", residue_rsa)
             )
 
-    # Free cysteine check: odd number of cysteines indicates unpaired disulfide.
+    # Free cysteine: an odd cysteine count means an unpaired thiol. Reported
+    # once, at the first cysteine, as the whole-chain property it is.
+    #
+    # Deliberately NOT exposure-escalated: the finding is about the count of
+    # cysteines in the chain, not about the residue its position names, so the
+    # accessibility of that one residue says nothing about it. ``exposed`` is
+    # None (unknown) for the same reason, and the base severity is already the
+    # top of the scale.
     cys_positions = [i + 1 for i, r in enumerate(cleaned) if r == "C"]
     if len(cys_positions) % 2 == 1:
-        # Flag every cysteine so caller can see context, but as a single
-        # liability the unpaired residue is the concern; we add a summary
-        # finding at the first cysteine position for simplicity.
         findings.append(
             {
                 "position": cys_positions[0] if cys_positions else 0,
                 "motif": "C",
                 "type": "free_cysteine",
+                "base_severity": "high",
                 "severity": "high",
-                "in_cdr": False,
+                "exposed": None,
                 "detail": f"odd cysteine count ({len(cys_positions)})",
             }
         )
@@ -224,19 +228,23 @@ def find_liabilities(sequence: str, chain_type: str = "VH") -> List[dict]:
     return findings
 
 
-def score_liabilities(sequence: str, chain_type: str = "VH") -> dict:
+def score_liabilities(
+    sequence: str, residue_rsa: Optional[Sequence] = None
+) -> dict:
     """Return liability count, per-motif list, and normalized score.
 
     Args:
         sequence: Protein sequence.
-        chain_type: Chain type passed to the scanner (affects CDR severity).
+        residue_rsa: Per-residue relative accessibility, as for
+            :func:`find_liabilities`. Supplying it raises the severity of
+            motifs measured exposed, which LOWERS ``score``.
 
     Returns:
-        Dictionary with ``liabilities`` (list), ``weighted_count`` (float),
-        ``score`` (0 to 1, higher is better).
+        Dictionary with ``liabilities`` (list), ``count``, ``weighted_count``
+        (float) and ``score`` (0 to 1, higher is better).
     """
     cleaned = _validate_sequence(sequence)
-    liability_records = find_liabilities(cleaned, chain_type=chain_type)
+    liability_records = find_liabilities(cleaned, residue_rsa=residue_rsa)
     weighted_count = sum(
         SEVERITY_WEIGHT.get(record.get("severity", "low"), 0.25)
         for record in liability_records
