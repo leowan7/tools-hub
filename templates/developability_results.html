@@ -36,7 +36,6 @@
 
   {% set liabilities = result.dimensions.liabilities %}
   {% set charge = result.dimensions.charge %}
-  {% set hydro = result.dimensions.hydrophobicity %}
   {% set agg = result.dimensions.aggregation %}
 
   <div class="dev-dim-grid">
@@ -90,21 +89,6 @@
         <dd>{{ (charge.pI_score * 100) | round(0, 'floor') | int }}%</dd>
         <dt>Charge subscore</dt>
         <dd>{{ (charge.charge_score * 100) | round(0, 'floor') | int }}%</dd>
-      </dl>
-    </div>
-
-    <div class="dev-dim-card">
-      <div class="dev-dim-header">
-        <span class="dev-dim-name">Hydrophobic patches</span>
-        <span class="dev-dim-score">{{ (hydro.score * 100) | round(0, 'floor') | int }}%</span>
-      </div>
-      <p class="dev-dim-interp">
-        Kyte-Doolittle sliding-window hydropathy. Patches are contiguous
-        windows with mean hydropathy above +1.5.
-      </p>
-      <dl class="dev-dim-stats">
-        <dt>Patch count</dt>
-        <dd>{{ hydro.patch_count }}</dd>
       </dl>
     </div>
 
