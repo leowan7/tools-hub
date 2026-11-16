@@ -145,16 +145,22 @@ about: dict = {
         # rfd4 is the one tool reached by the TARGET-CHAIN rule rather than
         # the row-sequence rule: shared/exports.py::_TARGET_CHAIN_TOOLS is an
         # allow-list of one, so every other chain of the delivered structure
-        # is the designed one. Deliberately phrased as "the first design" and
-        # not "the best": there is no column, nothing else is measured, and
-        # this run has no score to rank on in the first place.
-        "The results page also screens the FIRST design in the table for "
-        "its largest solvent-exposed hydrophobic patch, in square "
-        "&aring;ngstr&ouml;ms, measured on the binder chain alone, plus "
+        # is the designed one.
+        #
+        # "ANY DESIGN, WHEN YOU ASK FOR IT" is the shape that ships
+        # (blueprints/jobs.py::job_candidate_surface): the figure is computed
+        # per design on request, so no string here may imply the designs have
+        # been compared -- none of them is measured until someone asks, and
+        # there is no column and no ranking. This run has no score to rank on
+        # in the first place.
+        "Open any design's row and you can measure its largest "
+        "solvent-exposed hydrophobic patch, in square "
+        "&aring;ngstr&ouml;ms, on the binder chain alone, plus its "
         "sequence liability motifs with the ones on the surface marked. "
-        "That screen covers that one design, not the others, and it is "
-        "measured on a predicted structure &mdash; it is a thing to look "
-        "at, not a threshold anything passes."
+        "Each design is measured only when you ask for it, so nothing "
+        "here compares one design with another, and it is measured on a "
+        "predicted structure &mdash; it is a thing to look at, not a "
+        "threshold anything passes."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

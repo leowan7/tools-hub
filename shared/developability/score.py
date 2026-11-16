@@ -5,12 +5,16 @@ developability profile with a 0-to-1 composite score and per-residue flags
 suitable for downstream visualization.
 
 EVERY FINDING IS DETECTED FROM THE SEQUENCE ALONE, so this module scores an
-ordered sequence with no structure in hand, and that is the only mode any
-caller in the request path uses today (no production call site passes
-``residue_rsa``). A structure is OPTIONAL and does one thing: the
+ordered sequence with no structure in hand. That is the only mode
+:func:`score_developability` is called in: ``blueprints/tools.py`` passes a
+sequence and a ``chain_type`` and no ``residue_rsa``. It is NOT true of the
+package as a whole -- ``shared/design_quality.py`` calls
+``shared/developability/dimensions/liabilities.py::find_liabilities`` directly, with a measured
+``residue_rsa``, from the request that serves the on-demand surface screen.
+A structure is OPTIONAL here and does one thing: the
 ``residue_rsa`` argument, measured by
 ``shared/surface_patch.py::surface_profile``, raises the severity of liability
-motifs found to be solvent-exposed (``dimensions/liabilities.py::_escalate``).
+motifs found to be solvent-exposed (``shared/developability/dimensions/liabilities.py::_escalate``).
 It changes no dimension's findings and no other dimension reads it. Without it
 every motif keeps its chemistry-only base severity and reports
 ``exposed: None``.

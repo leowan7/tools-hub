@@ -184,14 +184,14 @@ about: dict = {
         # the delivered structure carrying it. Hedged on purpose -- the
         # structure is not guaranteed to be retrievable (one 2026-11-12 run
         # has none), and shared/design_quality.py shows nothing in that case.
-        "Where the design's structure is still retrievable, the results "
-        "page also screens the first design in the table for its largest "
-        "solvent-exposed hydrophobic patch, in square "
-        "&aring;ngstr&ouml;ms, measured on the designed chain alone, plus "
+        "Where a design's structure is still retrievable, you can open its "
+        "row and measure its largest solvent-exposed hydrophobic patch, in "
+        "square &aring;ngstr&ouml;ms, on the designed chain alone, plus its "
         "sequence liability motifs with the ones on the surface marked. "
-        "That screen covers that one design, not the others, and it is "
-        "measured on a predicted structure &mdash; it is a thing to look "
-        "at, not a threshold anything passes."
+        "Each design is measured only when you ask for it, so nothing "
+        "here compares one design with another, and it is measured on a "
+        "predicted structure &mdash; it is a thing to look at, not a "
+        "threshold anything passes."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

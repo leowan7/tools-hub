@@ -301,11 +301,17 @@ def test_waters_in_the_designed_chain_do_not_bury_the_surface():
     very solvent this figure measures accessibility to. static/example/1HEW.pdb
     carries 103 HOH records in chain A.
 
-    The assertion is INVARIANCE, not a pinned number: stripping the waters out
-    of the file by hand must give the same answer as handing the file over
-    whole, because surface_profile drops them itself. Before that fix the two
-    differed -- 1277.67 against 2032.02 total apolar area, and 99.03 against
-    114.72 for the patch.
+    The PRIMARY assertion is INVARIANCE: stripping the waters out of the file
+    by hand must give the same answer as handing the file over whole, because
+    surface_profile drops them itself. Before that fix the two differed --
+    1277.67 against 2032.02 total apolar area, and 99.03 against 114.72 for the
+    patch.
+
+    It is not invariance ALONE. The test also pins the shape of what it
+    measured -- 129 residues in the rsa list and 63 of them above
+    EXPOSED_RESIDUE_RSA -- so that a future change which happened to break both
+    paths identically could not pass, and so the next reader can see what the
+    figures describe. Those two numbers are the water-free heavy-atom surface.
     """
     whole = _REAL_PDB.read_bytes()
     stripped = b"\n".join(

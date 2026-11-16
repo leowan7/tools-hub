@@ -1352,6 +1352,40 @@
             </div>
             {% endif %}
             <div id="mol-viewer-{{ idx }}" class="mol-viewer-container"></div>
+
+            {# ── Measured surface screen, ON REQUEST ──────────────────────
+               A BUTTON AND AN EMPTY DIV, deliberately: no figure is rendered
+               here at page load. This row is inside the per-row {% for %}
+               loop and is merely hidden with display:none, so anything Jinja
+               put here would be computed for all fifty rows on every page
+               view -- the measurement costs a Storage fetch and a SASA pass
+               per design, which shared/design_quality.py has the numbers for.
+               Fetching it on click is what makes the cost land on the reader
+               who asked for it.
+
+               Gated on ``has_pdb`` because the measurement needs a structure;
+               a row with no stored structure gets no button rather than a
+               button that always answers "nothing to show". Whether the
+               designed chain can be NAMED is not knowable here and is decided
+               server-side, so a tool that qualifies for nothing still shows
+               the button and gets the panel's honest empty state.
+
+               ``src_job`` not ``job_id``: on a campaign or target page the
+               rows come from many jobs (see its definition above), and the
+               structure belongs to the job that produced it. #}
+            {% if has_pdb and not is_example %}
+            <div class="cand-surface" style="border-top:1px solid var(--border);">
+              <div style="padding:.75rem 1.25rem;">
+                <button class="cand-surface-btn btn-secondary"
+                        style="padding:.2rem .5rem;font-size:.8rem;"
+                        data-target="cand-surface-body-{{ idx }}"
+                        data-surface-url="/api/jobs/{{ src_job }}/surface/{{ pdb_key | urlencode }}">
+                  Measure exposed hydrophobic surface
+                </button>
+              </div>
+              <div id="cand-surface-body-{{ idx }}"></div>
+            </div>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}

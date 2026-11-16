@@ -33,23 +33,31 @@ Chain A of ``static/example/1HEW.pdb`` -- 129 residues and 1001 heavy protein
 atoms, which is what reaches ShrakeRupley after the detach loops below drop
 the 103 waters and any hydrogens. Whole call: parse, detach, SASA, cluster.
 
-    n_points=100 (the ShrakeRupley default)   270-350 ms per structure
-    n_points=960                              ~2.6 s per structure
+    n_points=100 (the ShrakeRupley default)   ~180 ms on an idle machine,
+                                              270-350 ms under load
+    n_points=960                              1.5-2.6 s per structure
 
-STATED AS A RANGE ON PURPOSE. This machine is shared with other sessions, and
-a single min-of-7 is not reproducible on it: successive runs of the same call
-gave a 179 ms minimum, then 274 ms minimum with a 353 ms median over 25 reps,
-and an independent reviewer measured 319 ms. The honest figure is a few hundred
-milliseconds, and no copy should quote one number to three digits. An earlier
-version of this block said "~180 ms", which was the quietest moment rather
-than the cost.
+THE SPREAD IS MACHINE LOAD, NOT INPUT, and the history is worth keeping
+because it misled this file twice in opposite directions. Four measurement
+sessions on the same call and the same bytes: min-of-7 gave 179 ms; a later
+25-rep run during a full test suite gave min 274 / median 353 ms; an
+independent reviewer measured min 178 / median 180 ms; a final 25-rep run gave
+min 178 / median 180 / p90 188 / max 488 ms. So ~180 ms is the REPRODUCIBLE
+figure and the 270-350 ms band was contention -- the opposite of what an
+earlier version of this block concluded when it called 180 ms "the quietest
+moment rather than the cost". The max of 488 ms is the tail a shared box
+gives you.
+
+Quote it as "a few hundred milliseconds" and never to three digits. Nothing
+below depends on which end of the range is right.
 
 Total SASA at the default is within 0.29% of the n_points=960 figure on that
 structure, so the default is kept. Scaling is close to linear in atom count:
 ~1.3 ms per residue measured from 40 to 100 residues of the same chain, so a
 designed binder of 60-120 residues sits at the low end of the range above.
 
-At 300 ms, fifty rows is ~15 s of CPU and a hundred rows ~30 s, BEFORE any
+Even at the fast end fifty rows is ~9 s of CPU and a hundred rows ~18 s; at
+the loaded end, ~15 s and ~30 s. Taking the slower figure, BEFORE any
 storage fetch -- and the results page fetches no structures at all today, so a
 per-row figure would add a Storage round trip per row on top of the CPU. The
 web tier dies at gunicorn's ``timeout`` (120 s by default, see
@@ -229,10 +237,23 @@ def surface_profile(
 
     ``residue_rsa`` is the relative accessibility -- SASA over the residue
     type's maximum (:data:`_MAX_ASA_A2`) -- and is what the liability severity
-    rule reads, so that an exposed motif ranks above a buried one. It is
-    ``None`` for a residue whose type is not one of the twenty (a modified
-    residue Biopython mapped into the sequence still has no maximum here), so
-    a caller must treat ``None`` as "exposure unknown" and not as buried.
+    rule reads, so that an exposed motif ranks above a buried one.
+
+    A ``None`` entry means "exposure unknown" and a caller must not read it as
+    buried. IN PRACTICE NO ENTRY IS EVER ``None``, and the earlier claim here
+    that a modified residue has no maximum was simply wrong. Every residue
+    name :func:`_is_protein_residue` admits is a key of
+    ``protein_letters_3to1_extended``, every value of that table is one of the
+    twenty canonical letters, and every one of those twenty is a key of
+    :data:`_MAX_ASA_A2` -- so the lookup below always finds a maximum. The
+    ``None`` branch is defensive against a future edit to either table, not a
+    case real structures reach.
+
+    WHAT ACTUALLY HAPPENS TO A MODIFIED RESIDUE is that it is normalised to its
+    parent type and scored against that type's maximum: selenomethionine (MSE)
+    maps to M and is divided by methionine's 224 A2. That is an approximation,
+    not an exact figure for the modified residue, and it is the reason a
+    selenomethionine-rich structure's RSA should not be read to three digits.
 
     ``None`` -- never a zero, never an exception -- when the bytes do not
     parse, when none of ``designed_chains`` is present in the file, or when no
@@ -299,9 +320,13 @@ def surface_profile(
     # 144.92 with them stripped. A fully protonated file is far worse -- one to
     # three H on every carbon rather than polar-only.
     #
-    # This also restores the basis the thresholds were set on: the percolation
-    # table was measured on 1HEW, 3ave and 3s7g, none of which contain
-    # hydrogens, so a heavy-atom surface is the surface those numbers describe.
+    # This also makes the percolation table above describe one surface rather
+    # than two. THREE of its four structures carry no hydrogens at all (1HEW 0,
+    # 3ave 0, 3s7g 0, counted on the element column) and the fourth, 1igt,
+    # carries 351 -- so before this detach the table mixed heavy-atom rows with
+    # one protonated row. Stripping them makes every row a heavy-atom surface,
+    # which is what the thresholds are set on. It moved only the 1igt-A floor-10
+    # row, by 0.01, as the re-derivation note above records.
     # Held by test_hydrogens_do_not_bury_the_surface.
     for chain in model:
         for residue in [r for r in chain if not _is_protein_residue(r)]:

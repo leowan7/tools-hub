@@ -320,14 +320,14 @@
       <div id="results-container">
         {% if (job.status == 'succeeded' or kept_designs) and job.result %}
           {% include tool_results_partial %}
-          {# AFTER the tool's own results, and only when the figure exists.
-             ``design_quality`` is None for any run whose top design has no
-             readable structure or no nameable designed chain
-             (shared/design_quality.py), so a tool that qualifies for nothing
-             renders nothing here -- not an empty panel, and not a zero. #}
-          {% if design_quality %}
-            {% include "components/design_quality_panel.html" %}
-          {% endif %}
+          {# The measured surface screen is NOT included here. It is fetched
+             per design, on request, from
+             blueprints/jobs.py::job_candidate_surface and dropped into the
+             expanded row by static/js/candidate_table.js. Rendering it at page
+             load -- here or inside the row's detail block, which is also part
+             of the per-row loop -- would compute it for every row of every
+             page view, which shared/design_quality.py has the measurements
+             for. #}
         {% endif %}
         {# Not an `elif`: a timed-out run that kept designs shows BOTH, so it
            does not lose the money sentence `failure_money` renders below

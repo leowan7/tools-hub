@@ -530,6 +530,37 @@
       }
     });
 
+    // Measured surface screen, fetched on click. The server returns a
+    // rendered HTML fragment (components/design_quality_panel.html) rather
+    // than JSON, so no user-facing wording lives in this file; see
+    // blueprints/jobs.py::job_candidate_surface. One request per design, and
+    // only for a design whose row someone opened and then asked about.
+    table.addEventListener('click', function (e) {
+      var btn = e.target.closest('.cand-surface-btn');
+      if (!btn || btn.disabled) return;
+      var body = document.getElementById(btn.dataset.target);
+      if (!body) return;
+      btn.disabled = true;
+      btn.textContent = 'Measuring…';
+      fetch(btn.dataset.surfaceUrl, { credentials: 'same-origin' })
+        .then(function (r) {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.text();
+        })
+        .then(function (html) {
+          body.innerHTML = html;
+          btn.remove();
+        })
+        .catch(function () {
+          // The run's own results are already on the page; a failed screen
+          // must not look like they are in doubt. Re-enable so it can be
+          // retried rather than leaving a dead button.
+          btn.disabled = false;
+          btn.textContent = 'Measure exposed hydrophobic surface';
+          body.textContent = 'The measurement could not be loaded. Try again.';
+        });
+    });
+
     // "Starred only (CSV)". The selection lives in sessionStorage, so the
     // hidden `refs` field is filled at submit time rather than at render time;
     // a value stamped into the HTML would be whatever was starred on the
