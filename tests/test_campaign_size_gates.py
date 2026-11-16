@@ -630,7 +630,7 @@ def test_other_tools_are_refused_above_their_own_cap(client, slug, branch):
     # font URL, so ``str(over_aa) in body and str(cap) in body`` proved
     # nothing about this tool's own numbers.
     assert f"have {over_aa} residues" in body, body[-600:]
-    assert f"tops out around {cap} on" in body, body[-600:]
+    assert f"tops out around {cap}." in body, body[-600:]
     # Their copy is the literature-backed one, NOT the cautious wording that
     # proteina's measured (non-literature) basis earns.
     assert "precaution rather than a measured failure point" not in body

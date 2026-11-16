@@ -141,7 +141,7 @@ about: dict = {
             "name": "Seeds to run",
             "explanation": (
                 "Number of parallel seeds to sweep (1 to 64). Each seed "
-                "gets its own H100 worker, all run in parallel, so a "
+                "gets its own GPU worker, all run in parallel, so a "
                 "16-seed sweep finishes in about the same wall-clock as "
                 "one seed. Results from every seed merge into one "
                 "globally-ranked table. Use this when you need to build "
@@ -154,7 +154,7 @@ about: dict = {
             "name": "Batch size",
             "explanation": (
                 "Designs produced per gradient run (1 to 6). They share "
-                "one H100 container, so a higher batch adds no container "
+                "one GPU container, so a higher batch adds no container "
                 "&mdash; but you pay for the GPU time your run uses, and "
                 "a bigger batch runs longer: measured wall-clock grew a "
                 "little faster than in proportion to the batch. (It used "

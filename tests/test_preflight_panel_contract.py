@@ -616,6 +616,17 @@ def test_the_ready_panel_renders_the_gates_number_and_the_cap():
     )
 
 
+def test_neither_panel_names_the_gpu_chip():
+    """Leo ruled 2026-11-06 that customer copy should not name a GPU chip. The payload still
+    carries ``size_envelope.gpu`` (shared/pdb_preflight_rules.py); neither
+    panel may render it."""
+    twin = (_ROOT / "templates" / "components" / "preflight_panel.html").read_text(
+        encoding="utf-8"
+    )
+    assert "size_envelope.gpu" not in twin
+    assert "env.gpu" not in _JS_SOURCE and "env2.gpu" not in _JS_SOURCE
+
+
 def test_the_two_panels_agree_on_what_they_show():
     """The AJAX panel and its server-rendered twin describe the same verdict.
 

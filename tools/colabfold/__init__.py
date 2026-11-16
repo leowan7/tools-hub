@@ -390,8 +390,8 @@ adapter = ToolAdapter(
             label="Standalone with your FASTA",
             description=(
                 "Paste a FASTA (monomer or multimer up to 600 aa total) "
-                "and get pLDDT, PAE, and pTM/ipTM. Runs on an "
-                "A100-40GB. No MSA, no templates. Pair with D2 AF2 if "
+                "and get pLDDT, PAE, and pTM/ipTM. "
+                "No MSA, no templates. Pair with D2 AF2 if "
                 "you need the full MSA-backed fold."
             ),
         ),

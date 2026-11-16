@@ -1918,7 +1918,7 @@ def _check_size_envelope(
         # rather than on the OOM claim.
         hard_msg = (
             f"{counted}, above the {env.hard_cap_target_aa}-residue limit "
-            f"currently set for {rules.slug.title()} on {rules.gpu}. That "
+            f"currently set for {rules.slug.title()}. That "
             f"limit is a precaution rather than a measured failure point: "
             f"targets this large have not been run here yet, and a run that "
             f"stalls is still billed for the GPU time it uses."
@@ -1926,7 +1926,7 @@ def _check_size_envelope(
     elif over_hard:
         hard_msg = (
             f"{counted} — {rules.slug.title()}'s GPU envelope tops out around "
-            f"{env.hard_cap_target_aa} on {rules.gpu}. The job would likely "
+            f"{env.hard_cap_target_aa}. The job would likely "
             f"run out of memory partway through."
         )
     elif over_combined:
