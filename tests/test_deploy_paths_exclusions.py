@@ -401,7 +401,7 @@ def test_the_developability_package_is_outside_the_deploy_trigger():
     for path in (
         "shared/developability/score.py",
         "shared/developability/dimensions/liabilities.py",
-        "shared/developability/data/kyte_doolittle.py",
+        "shared/developability/data/aggrescan_scale.py",
     ):
         assert not _trigger_matches(path), (
             f"{path} fires .github/workflows/deploy-modal.yml's push.paths "

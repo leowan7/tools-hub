@@ -21,9 +21,11 @@ Two dimensions this module shipped with are gone, both on purpose:
   the composite as well as from the page: the composite is displayed, so
   leaving it in would have kept a displayed number derived from the screen.
 
-``shared/developability/data/kyte_doolittle.py`` survives the second removal --
-``shared/surface_patch.py`` uses the same scale to decide which residues count
-as hydrophobic, now applied to atoms whose exposure has been measured.
+The Kyte-Doolittle scale that screen used went with it
+(``shared/developability/data/kyte_doolittle.py``). The replacement figure in
+``shared/surface_patch.py`` does not need it: it classifies APOLAR ATOMS by
+element (carbon and sulfur), the usual definition of the apolar surface, rather
+than scoring residues on a hydropathy scale.
 """
 
 from __future__ import annotations
