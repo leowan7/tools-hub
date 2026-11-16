@@ -1,1 +1,1 @@
-"""Scoring dimensions: humanness, liabilities, charge, hydrophobicity, aggregation."""
+"""Scoring dimensions: liabilities, charge, hydrophobicity, aggregation."""

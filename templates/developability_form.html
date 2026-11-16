@@ -11,9 +11,9 @@
     <h1>Binder Developability Scout</h1>
     <p class="subtitle">
       Flag chemical stability and biophysical liabilities in antibody or
-      nanobody variable regions before you order them. Five dimensions:
-      humanness, sequence liabilities, net charge and pI, hydrophobic
-      patches, aggregation propensity.
+      nanobody variable regions before you order them. Four dimensions:
+      sequence liabilities, net charge and pI, hydrophobic patches,
+      aggregation propensity.
     </p>
   </div>
 
@@ -59,9 +59,8 @@
             <option value="other" {% if chain_type == 'OTHER' %}selected{% endif %}>Other</option>
           </select>
           <p class="field-hint">
-            Chain type affects the germline pool used for humanness and the
-            CDR position heuristic used to weight oxidation and deamidation
-            liabilities.
+            Chain type affects the CDR position heuristic used to weight
+            oxidation and deamidation liabilities.
           </p>
         </div>
 
@@ -72,7 +71,7 @@
         <details class="dev-help">
           <summary>What you get back</summary>
           <p>
-            A composite score as a percentage plus five per-dimension
+            A composite score as a percentage plus four per-dimension
             breakdowns. Each
             flagged motif is returned with its 1-based position, severity, and
             whether it falls in an approximated CDR. The sequence is rendered
@@ -80,8 +79,7 @@
           </p>
           <p>
             This is a prototype scorer. CDR boundaries are estimated from
-            length. Humanness compares against 11 human germline V genes
-            (5 heavy, 3 kappa, 3 lambda).
+            length.
           </p>
         </details>
       </form>

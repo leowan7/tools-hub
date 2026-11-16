@@ -34,32 +34,12 @@
     </div>
   </div>
 
-  {% set humanness = result.dimensions.humanness %}
   {% set liabilities = result.dimensions.liabilities %}
   {% set charge = result.dimensions.charge %}
   {% set hydro = result.dimensions.hydrophobicity %}
   {% set agg = result.dimensions.aggregation %}
 
   <div class="dev-dim-grid">
-
-    <div class="dev-dim-card">
-      <div class="dev-dim-header">
-        <span class="dev-dim-name">Humanness</span>
-        <span class="dev-dim-score">{{ (humanness.score * 100) | round(0, 'floor') | int }}%</span>
-      </div>
-      <p class="dev-dim-interp">
-        Fraction of input 7-mers that also occur in the human germline
-        reference pool, rescaled. Higher is more human-like.
-      </p>
-      <dl class="dev-dim-stats">
-        <dt>Top matching germline</dt>
-        <dd>{{ humanness.top_germline or 'none' }}</dd>
-        <dt>Germline overlap</dt>
-        <dd>{{ (humanness.top_germline_overlap * 100) | round(1) }}%</dd>
-        <dt>Matched k-mers</dt>
-        <dd>{{ humanness.matched_kmers }} / {{ humanness.total_kmers }}</dd>
-      </dl>
-    </div>
 
     <div class="dev-dim-card">
       <div class="dev-dim-header">

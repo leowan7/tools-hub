@@ -1,8 +1,15 @@
 """Composite developability scoring entry point.
 
-Combines five independent scientific dimensions into a single developability
+Combines four independent scientific dimensions into a single developability
 profile with a 0-to-1 composite score and per-residue flags suitable for
 downstream visualization.
+
+There is no human-likeness dimension, and its absence is a product decision
+rather than an omission: Leo ruled on 2026-11-16 that human-likeness will not
+be a Tools Hub feature, so the dimension and its germline reference data were
+deleted rather than gated off. Nothing displayed is derived from it. The
+weights below therefore cover four dimensions, not the five this module
+shipped with.
 """
 
 from __future__ import annotations
@@ -11,7 +18,6 @@ from typing import Dict, List
 
 from shared.developability.dimensions.aggregation import score_aggregation
 from shared.developability.dimensions.charge import score_charge
-from shared.developability.dimensions.humanness import score_humanness
 from shared.developability.dimensions.hydrophobicity import score_hydrophobicity
 from shared.developability.dimensions.liabilities import score_liabilities
 
@@ -20,11 +26,10 @@ VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
 # Equal weights across dimensions. Exposed here so callers (or future
 # Flask wrapper) can tune them without touching the dimension modules.
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "humanness": 0.2,
-    "liabilities": 0.2,
-    "charge": 0.2,
-    "hydrophobicity": 0.2,
-    "aggregation": 0.2,
+    "liabilities": 0.25,
+    "charge": 0.25,
+    "hydrophobicity": 0.25,
+    "aggregation": 0.25,
 }
 
 
@@ -89,11 +94,10 @@ def score_developability(
 
     Args:
         sequence: Amino acid sequence (one-letter code).
-        chain_type: Chain class. Accepted: "VH", "VK", "VL". Affects
-            germline pool for humanness and CDR boundary heuristic for
-            liability severity.
+        chain_type: Chain class. Accepted: "VH", "VK", "VL". Affects the CDR
+            boundary heuristic for liability severity.
         weights: Optional override of dimension weights. Keys must be a
-            subset of {"humanness", "liabilities", "charge", "hydrophobicity",
+            subset of {"liabilities", "charge", "hydrophobicity",
             "aggregation"} and values must sum to 1.0.
 
     Returns:
@@ -118,15 +122,13 @@ def score_developability(
         if abs(total - 1.0) > 1e-6:
             raise ValueError(f"weights must sum to 1.0 (got {total:.4f})")
 
-    humanness_result = score_humanness(cleaned, chain_type=chain_type)
     liabilities_result = score_liabilities(cleaned, chain_type=chain_type)
     charge_result = score_charge(cleaned)
     hydrophobicity_result = score_hydrophobicity(cleaned)
     aggregation_result = score_aggregation(cleaned)
 
     composite = (
-        used_weights["humanness"] * humanness_result["score"]
-        + used_weights["liabilities"] * liabilities_result["score"]
+        used_weights["liabilities"] * liabilities_result["score"]
         + used_weights["charge"] * charge_result["score"]
         + used_weights["hydrophobicity"] * hydrophobicity_result["score"]
         + used_weights["aggregation"] * aggregation_result["score"]
@@ -144,7 +146,6 @@ def score_developability(
         "chain_type": chain_type.upper(),
         "length": len(cleaned),
         "dimensions": {
-            "humanness": humanness_result,
             "liabilities": liabilities_result,
             "charge": charge_result,
             "hydrophobicity": hydrophobicity_result,
