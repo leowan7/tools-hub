@@ -1696,6 +1696,17 @@ def test_classify_off_session_error_retryable_vs_permanent():
 
     retryable, reason = _classify_off_session_error(CardError())
     assert retryable is False and reason == "expired_card"
+
+    class _Err:
+        decline_code = "insufficient_funds"
+
+    class DeclinedCardError(Exception):
+        code = "card_declined"
+        error = _Err()
+
+    DeclinedCardError.__name__ = "CardError"
+    retryable, reason = _classify_off_session_error(DeclinedCardError())
+    assert retryable is False and reason == "insufficient_funds"
     retryable, reason = _classify_off_session_error(InvalidRequestError())
     assert retryable is False and reason == "no_payment_method"
     retryable, _ = _classify_off_session_error(APIConnectionError())

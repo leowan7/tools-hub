@@ -142,7 +142,7 @@ def validate(
     if len(seq) > SEQ_LEN_MAX:
         return None, (
             f"sequence is {len(seq)} aa — max {SEQ_LEN_MAX}. "
-            "ESMFold-3B on A100-40GB fits monomers up to 400 aa."
+            "ESMFold-3B fits monomers up to 400 aa."
         )
     non_canonical = set(seq) - CANONICAL_AA
     if non_canonical:
@@ -200,7 +200,7 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
         if len(seq) > SEQ_LEN_MAX:
             return None, (
                 f"Record {name!r} is {len(seq)} aa — max {SEQ_LEN_MAX}. "
-                "ESMFold-3B on A100-40GB fits monomers up to 400 aa."
+                "ESMFold-3B fits monomers up to 400 aa."
             )
         bad = find_non_canonical_residues(seq, frozenset(CANONICAL_AA))
         if bad:
@@ -272,8 +272,8 @@ adapter = ToolAdapter(
             label="Standalone with your FASTA",
             description=(
                 "Paste a single-chain FASTA (10 to 400 aa monomer) and "
-                "get pLDDT plus predicted structure. Runs the 3B model "
-                "on an A100-40GB. No MSA, no multimer. Pair "
+                "get pLDDT plus predicted structure. Runs the 3B model. "
+                "No MSA, no multimer. Pair "
                 "with ColabFold (D3) or AF2 (D2) when you need those."
             ),
         ),

@@ -150,7 +150,7 @@ adapter = ToolAdapter(
                 "Real PXDesign run against your uploaded target with "
                 "AF2-IG validation. Up to 24 candidates with real "
                 "ipTM, pLDDT, and pAE scores; results emailed when "
-                "complete. Runs on A100-80GB, measured at 2 to 25 "
+                "complete. Runtime measured at 2 to 25 "
                 "designs; allow more time above that."
             ),
             requires_pdb=True,

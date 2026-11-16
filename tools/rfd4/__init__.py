@@ -172,7 +172,7 @@ def validate(
     if len(target_chains) > 1:
         return None, (
             "This tool designs against one target chain. Pick the chain "
-            "carrying the epitope, or use Proteina for a multi-chain target."
+            "carrying the epitope, or use Proteina-Complexa for a multi-chain target."
         )
     if len(target_chains[0]) > 4:
         return None, (

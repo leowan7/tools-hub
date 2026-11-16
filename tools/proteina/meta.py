@@ -110,7 +110,7 @@ seo_faq: list[dict] = [
         "q": "Can I run Proteina-Complexa online without a GPU cluster?",
         "a": (
             "Yes. Ranomics Tools runs Proteina-Complexa as a wallet-funded "
-            "full-size run of independent search shards on dedicated A100-80GB "
+            "full-size run of independent search shards on dedicated "
             "GPUs. Upload your protein target (or pick a curated benchmark "
             "task), choose how many designs you want, and the run is split "
             "into pieces that run on our GPUs and bill as they finish. You "
