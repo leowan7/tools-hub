@@ -11,14 +11,17 @@ _top_score_for_share move in at module level.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import (
     Blueprint,
+    Response,
     current_app,
     jsonify,
     redirect,
@@ -511,7 +514,8 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         hold = wallet.get("hold_tx_id") if isinstance(wallet, dict) else None
         return str(hold) if isinstance(hold, (str, int)) and hold else None
 
-    spend = job_spend_by_hold(user_id, [h for h in map(_hold_id, jobs) if h])
+    holds = [h for h in map(_hold_id, jobs) if h]
+    spend = job_spend_by_hold(user_id, holds) if holds else {}
     cells = {}
     for job in jobs:
         status = getattr(job, "status", None)
@@ -537,11 +541,14 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
             )
             if not ledger["settled"]:
                 spend_note = "so far" if live else "reserved"
-            elif getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES:
-                # A released hold nets zero, and "$0.00 refunded" reads as a
-                # refund that failed. The job page says the same thing in
-                # words ("the hold was returned ... not charged").
-                spend_note = "refunded" if usd > 0 else "not charged"
+            elif (getattr(job, "failure_class", None) in _REFUNDED_FAILURE_CLASSES
+                  and usd == 0):
+                # A released hold nets zero. A refunded class that still nets
+                # above zero means a charge stood before the release, which
+                # returns nothing once the hold has a child
+                # (supabase/migrations/0018_wallet_rpcs.sql, release_hold), so
+                # the figure is a charge and gets no note.
+                spend_note = "not charged"
 
         progress = None
         prog = _inputs(job).get("_progress")
@@ -564,6 +571,46 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
     return cells
 
 
+_JOBS_FILTER_ARGS = ("campaign", "tool", "status", "from", "to", "q")
+
+
+def _jobs_filters(args) -> tuple[dict, dict]:  # noqa: ANN001
+    """``(echo, query_kwargs)`` for the /jobs filters in ``args``.
+
+    ``echo`` holds the non-empty raw values, for the form and the pager links.
+    ``query_kwargs`` are :func:`list_jobs_paginated` keywords. ``from`` and
+    ``to`` are ``YYYY-MM-DD`` days in UTC, both inclusive; an unparseable day
+    or an unknown status is dropped rather than refused.
+    """
+    from shared.jobs import VALID_STATUSES  # noqa: PLC0415
+
+    echo = {k: v.strip() for k in _JOBS_FILTER_ARGS
+            if (v := args.get(k)) is not None and v.strip()}
+    kwargs: dict = {}
+    # C4 — ``?campaign=__uncategorized__`` selects the rows where
+    # campaign_label IS NULL. Missing means "all rows".
+    campaign = echo.get("campaign")
+    if campaign is not None:
+        kwargs["campaign_label"] = "" if campaign == "__uncategorized__" else campaign
+    if echo.get("tool"):
+        kwargs["tool"] = echo["tool"]
+    if echo.get("status") in VALID_STATUSES:
+        kwargs["status"] = echo["status"]
+    else:
+        echo.pop("status", None)
+    for key, kwarg, shift in (("from", "created_from", 0), ("to", "created_before", 1)):
+        try:
+            day = datetime.strptime(echo.get(key, ""), "%Y-%m-%d").date()
+            day += timedelta(days=shift)  # 9999-12-31 + 1 raises OverflowError
+        except (ValueError, OverflowError):
+            echo.pop(key, None)
+            continue
+        kwargs[kwarg] = day.isoformat() + "T00:00:00+00:00"
+    if echo.get("q"):
+        kwargs["q"] = echo["q"]
+    return echo, kwargs
+
+
 @jobs_bp.route("/jobs", methods=["GET"])
 @login_required
 def jobs_list():
@@ -575,29 +622,17 @@ def jobs_list():
     except ValueError:
         page = 1
     page_size = 25
-    # C4 — campaign filter. ``?campaign=<label>`` narrows the list to
-    # a single campaign; ``?campaign=__uncategorized__`` selects the
-    # rows where campaign_label IS NULL. Missing means "all rows".
-    raw_campaign = request.args.get("campaign")
-    campaign_filter: str | None
-    if raw_campaign is None:
-        campaign_filter = None
-    elif raw_campaign == "__uncategorized__":
-        campaign_filter = ""
-    else:
-        campaign_filter = raw_campaign.strip() or None
+    filters, filter_kwargs = _jobs_filters(request.args)
+    raw_campaign = filters.get("campaign")
     jobs, total = list_jobs_paginated(
         ctx.user_id,
         page=page,
         page_size=page_size,
-        campaign_label=campaign_filter,
+        **filter_kwargs,
     )
     total_pages = max(1, (total + page_size - 1) // page_size)
     if page > total_pages:
-        redirect_args = {"page": total_pages}
-        if raw_campaign is not None:
-            redirect_args["campaign"] = raw_campaign
-        return redirect(url_for("jobs.jobs_list", **redirect_args))
+        return redirect(url_for("jobs.jobs_list", page=total_pages, **filters))
     # Group rows by campaign_label for the per-campaign h3 headers.
     # Uncategorized rows sort last. Preserves the newest-first order
     # within each group since list_jobs_paginated already ordered by
@@ -628,7 +663,91 @@ def jobs_list():
         campaign_groups=campaign_groups,
         all_campaign_labels=all_campaign_labels,
         selected_campaign=raw_campaign,
+        filters=filters,
+        tool_choices=sorted(
+            ((a.slug, a.label) for a in tool_base.all_adapters()),
+            key=lambda t: t[1].lower(),
+        ),
+        status_choices=("pending", "running", "succeeded", "failed",
+                        "timeout", "cancelled"),
     )
+
+
+_HISTORY_CSV_MAX_ROWS = 2000
+
+
+@jobs_bp.route("/jobs/export.csv", methods=["GET"])
+@login_required
+def jobs_history_csv():
+    """The /jobs list, with the same filters, as CSV.
+
+    One row per run, newest first, up to ``_HISTORY_CSV_MAX_ROWS``. No money
+    column: cost stays on screen (Leo, 2026-11-16).
+    """
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    _, filter_kwargs = _jobs_filters(request.args)
+    page_size = 100
+    rows: list = []
+    page = 1
+    first_total = None
+    while len(rows) < _HISTORY_CSV_MAX_ROWS:
+        try:
+            batch, total = list_jobs_paginated(
+                ctx.user_id, page=page, page_size=page_size,
+                raise_errors=True, **filter_kwargs,
+            )
+        except Exception:  # noqa: BLE001 - a failed read
+            batch, total = None, 0
+        if batch is None or (not batch and rows):
+            # A failed read, or a later page that came back empty: a file
+            # cut short here would pass for the whole history.
+            return Response("Could not read every run. Try again.", status=503,
+                            mimetype="text/plain")
+        if first_total is None:
+            first_total = total
+        rows.extend(batch)
+        if not batch or page * page_size >= total:
+            break
+        page += 1
+    rows = rows[:_HISTORY_CSV_MAX_ROWS]
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["submitted_utc", "completed_utc", "job_id", "tool",
+                     "preset", "status", "group", "designs", "url"])
+    for job in rows:
+        succeeded = job.status == "succeeded"
+        writer.writerow([_csv_text(v) for v in (
+            job.created_at or "",
+            job.completed_at or "",
+            job.id,
+            job.tool or "",
+            job.preset or "",
+            job.status or "",
+            job.campaign_label or "",
+            len(candidate_records(job.result)) if succeeded else "",
+            url_for("jobs.job_detail", job_id=job.id, _external=True),
+        )])
+    if (first_total or 0) > len(rows):
+        writer.writerow([f"# truncated: the newest {len(rows)} of {first_total} "
+                         "runs. Narrow the filters to export the rest."])
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="run-history.csv"'},
+    )
+
+
+def _csv_text(value):  # noqa: ANN001, ANN202
+    """``value`` with a leading ``= + - @`` neutralised, so a spreadsheet
+    does not run a group name as a formula."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 @jobs_bp.route("/jobs/compare", methods=["GET"])
@@ -836,6 +955,8 @@ def job_detail(job_id: str):
         handoff=handoff,
         scale_up=scale_up_quote(ctx.user_id, job),
         failure_money=_failure_money(ctx.user_id, job),
+        # The /jobs Spend cell for this one row, so the two cannot differ.
+        cost_cell=_jobs_table_cells([job], ctx.user_id, datetime.now(timezone.utc)).get(job.id, {}),
         preflight=job_preflight_for_display(job.inputs),
         run_notices=run_notices(job),
         stopped_for_balance=stopped_for_balance(job),
