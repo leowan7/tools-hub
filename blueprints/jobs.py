@@ -514,7 +514,8 @@ def _jobs_table_cells(jobs, user_id: str, now: datetime) -> dict:  # noqa: ANN00
         hold = wallet.get("hold_tx_id") if isinstance(wallet, dict) else None
         return str(hold) if isinstance(hold, (str, int)) and hold else None
 
-    spend = job_spend_by_hold(user_id, [h for h in map(_hold_id, jobs) if h])
+    holds = [h for h in map(_hold_id, jobs) if h]
+    spend = job_spend_by_hold(user_id, holds) if holds else {}
     cells = {}
     for job in jobs:
         status = getattr(job, "status", None)
