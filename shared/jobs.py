@@ -3180,6 +3180,7 @@ def list_jobs_paginated(
     created_from: Optional[str] = None,
     created_before: Optional[str] = None,
     q: Optional[str] = None,
+    raise_errors: bool = False,
 ) -> tuple[list[ToolJob], int]:
     """Paginated owner-scoped job list. Returns (rows, total_count).
 
@@ -3202,11 +3203,17 @@ def list_jobs_paginated(
     strings the caller passes. ``q`` matches the campaign label as a
     case-insensitive substring, or, when it is only hex digits and dashes,
     also a job-id prefix (:func:`_job_id_prefix_range`).
+
+    A failed read returns ``([], 0)``, the same as no rows; with
+    ``raise_errors`` it raises instead, for a caller that must not mistake
+    one for the other.
     """
     page = max(1, int(page))
     page_size = max(1, min(100, int(page_size)))
     client = get_service_client()
     if client is None:
+        if raise_errors:
+            raise RuntimeError("no Supabase client")
         return [], 0
     start = (page - 1) * page_size
     end = start + page_size - 1
@@ -3264,6 +3271,8 @@ def list_jobs_paginated(
             page,
             exc_info=True,
         )
+        if raise_errors:
+            raise
         return [], 0
 
 

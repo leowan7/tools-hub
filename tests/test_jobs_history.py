@@ -228,3 +228,40 @@ def test_the_history_csv_refuses_a_file_cut_short_by_a_failed_read(client):  # n
         resp = client.get("/jobs/export.csv")
     assert resp.status_code == 503
     assert "job_id" not in resp.get_data(as_text=True)
+
+
+def _csv(client, side_effect):  # noqa: F811
+    with patch("blueprints.jobs.load_user_context", return_value=_CTX),          patch("blueprints.jobs.list_jobs_paginated", side_effect=side_effect):
+        return client.get("/jobs/export.csv")
+
+
+def test_a_failed_first_read_is_an_error_not_an_empty_history(client):  # noqa: F811
+    def _list(user_id, **kw):
+        assert kw["raise_errors"] is True
+        raise RuntimeError("read failed")
+
+    resp = _csv(client, _list)
+    assert resp.status_code == 503
+    assert "job_id" not in resp.get_data(as_text=True)
+
+
+def test_list_jobs_paginated_raises_only_when_asked():
+    with patch.object(jobs_mod, "get_service_client", return_value=None):
+        assert jobs_mod.list_jobs_paginated("u-1") == ([], 0)
+        with pytest.raises(RuntimeError):
+            jobs_mod.list_jobs_paginated("u-1", raise_errors=True)
+
+
+def test_the_history_csv_says_when_the_cap_cut_it(client):  # noqa: F811
+    def _list(user_id, page, page_size, **kw):
+        return [_job(f"t-{page}-{i}", "failed") for i in range(page_size)], 2500
+
+    rows = list(csv.reader(io.StringIO(_csv(client, _list).get_data(as_text=True))))
+    assert len(rows) == 1 + 2000 + 1
+    assert rows[-1] == ["# truncated: the newest 2000 of 2500 runs. "
+                        "Narrow the filters to export the rest."]
+
+
+def test_a_history_under_the_cap_has_no_truncation_row(client):  # noqa: F811
+    resp, _ = _get(client, "/jobs/export.csv", [_job("u-1", "failed")])
+    assert "truncated" not in resp.get_data(as_text=True)

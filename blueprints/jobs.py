@@ -692,15 +692,22 @@ def jobs_history_csv():
     page_size = 100
     rows: list = []
     page = 1
+    first_total = None
     while len(rows) < _HISTORY_CSV_MAX_ROWS:
-        batch, total = list_jobs_paginated(
-            ctx.user_id, page=page, page_size=page_size, **filter_kwargs,
-        )
-        if not batch and rows:
-            # list_jobs_paginated returns ([], 0) on a failed read; a file
-            # cut short there would pass for the whole history.
+        try:
+            batch, total = list_jobs_paginated(
+                ctx.user_id, page=page, page_size=page_size,
+                raise_errors=True, **filter_kwargs,
+            )
+        except Exception:  # noqa: BLE001 - a failed read
+            batch, total = None, 0
+        if batch is None or (not batch and rows):
+            # A failed read, or a later page that came back empty: a file
+            # cut short here would pass for the whole history.
             return Response("Could not read every run. Try again.", status=503,
                             mimetype="text/plain")
+        if first_total is None:
+            first_total = total
         rows.extend(batch)
         if not batch or page * page_size >= total:
             break
@@ -724,6 +731,9 @@ def jobs_history_csv():
             len(candidate_records(job.result)) if succeeded else "",
             url_for("jobs.job_detail", job_id=job.id, _external=True),
         )])
+    if (first_total or 0) > len(rows):
+        writer.writerow([f"# truncated: the newest {len(rows)} of {first_total} "
+                         "runs. Narrow the filters to export the rest."])
     return Response(
         buf.getvalue(),
         mimetype="text/csv",
