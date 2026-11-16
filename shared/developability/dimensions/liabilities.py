@@ -86,10 +86,12 @@ def _motif_exposed(
     of it is on the surface.
 
     Returns ``None`` -- unknown, NOT buried -- when no exposure was supplied,
-    when the motif runs past the end of the exposure list, or when every
-    residue of it has unknown accessibility. A caller must not read ``None``
-    as "buried": it means the question was not answered, and the severity
-    stays at its base.
+    when the motif runs past the end of the exposure list, or when ANY residue
+    of it has unknown accessibility. Any, not every: one unmeasured residue
+    makes the motif's exposure unknown rather than letting its neighbours
+    decide it, which is the same conservative rule as the out-of-range case
+    below. A caller must not read ``None`` as "buried": it means the question
+    was not answered, and the severity stays at its base.
     """
     if residue_rsa is None:
         return None

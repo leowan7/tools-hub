@@ -9,6 +9,7 @@ apart (exposed / buried / unknown) and the absence of the old one.
 from __future__ import annotations
 
 import inspect
+import pathlib
 
 import pytest
 
@@ -255,18 +256,21 @@ def test_every_written_out_dimension_list_matches_the_code():
     ``result.dimensions | length`` instead of a written-out number
     (templates/developability_results.html), so its count cannot drift.
     """
-    import io
-
     from shared.developability import score as score_mod
 
     live = set(score_mod._DIMENSIONS)
     gone = {"hydrophobicity", "humanness", "human-likeness"}
 
-    for path in (
+    # Anchored on this file, not the cwd, so the test passes when pytest is
+    # invoked from anywhere. Same pattern as tests/test_surface_patch.py.
+    repo = pathlib.Path(__file__).resolve().parent.parent
+
+    for rel in (
         "shared/developability/__init__.py",
         "shared/developability/dimensions/__init__.py",
     ):
-        text = io.open(path, encoding="utf-8").read()
+        path = repo / rel
+        text = path.read_text(encoding="utf-8")
         doc = text.split('"""')[1]
         named = {d for d in live if d in doc}
         assert named == live, (

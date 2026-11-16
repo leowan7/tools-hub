@@ -336,3 +336,69 @@ def test_a_ligand_only_chain_is_not_measured_as_protein():
         "END\n"
     ).encode()
     assert surface_profile(water_only, ["A"]) is None
+
+
+def test_hydrogens_do_not_bury_the_surface():
+    """Same bug as the waters, and the same invariance assertion.
+
+    A hydrogen occludes the carbon or sulfur it hangs off, and only C/S count
+    toward the patch, so a protonated file would report a smaller patch than
+    the same structure unprotonated -- making the figure depend on whether
+    whoever produced the file ran a protonation step. It also matters for the
+    thresholds: the percolation table was measured on files with no hydrogens
+    at all, so a heavy-atom surface is the surface those numbers describe.
+
+    tests/fixtures/rfd4/1igt_fv_trimmed.pdb carries polar hydrogens.
+    """
+    fixture = _REPO / "tests" / "fixtures" / "rfd4" / "1igt_fv_trimmed.pdb"
+    whole = fixture.read_bytes()
+
+    def _is_h_line(line: bytes) -> bool:
+        if not line.startswith((b"ATOM", b"HETATM")):
+            return False
+        # Element column (77-78), falling back to the atom name (13-16).
+        element = line[76:78].strip().upper()
+        name = line[12:16].strip().upper()
+        return element == b"H" or name.startswith(b"H") or (
+            len(name) > 1 and name[0:1].isdigit() and name[1:2] == b"H"
+        )
+
+    h_lines = [ln for ln in whole.splitlines() if _is_h_line(ln)]
+    assert h_lines, "fixture carries no hydrogens; this test would be vacuous"
+
+    stripped = b"\n".join(
+        ln for ln in whole.splitlines() if not _is_h_line(ln)
+    ) + b"\nEND\n"
+
+    got_whole = surface_profile(whole, ["B"])
+    got_stripped = surface_profile(stripped, ["B"])
+    assert got_whole is not None and got_stripped is not None
+
+    for key in ("largest_patch_a2", "total_apolar_a2", "patch_atom_count"):
+        assert got_whole[key] == got_stripped[key], (
+            f"{key} differs with and without hydrogens "
+            f"({got_whole[key]} vs {got_stripped[key]}), so hydrogens are "
+            "still occluding the measured surface."
+        )
+    assert got_whole["residue_rsa"] == got_stripped["residue_rsa"]
+
+
+def test_a_hydrogen_named_with_a_leading_digit_is_still_a_hydrogen():
+    """PDB names them 1HB, 2HG1. Element-less files rely on the name path."""
+    from shared.surface_patch import _is_hydrogen
+
+    class _FakeAtom:
+        def __init__(self, name, element):
+            self._name, self.element = name, element
+
+        def get_name(self):
+            return self._name
+
+    for name in ("H", "HB", "1HB", "2HG1", "HA2"):
+        assert _is_hydrogen(_FakeAtom(name, "")), name
+    # The heavy atoms this must never drop.
+    for name in ("N", "CA", "C", "O", "CB", "SG", "OXT", "NE2"):
+        assert not _is_hydrogen(_FakeAtom(name, "")), name
+    # An explicit element column wins over the name.
+    assert _is_hydrogen(_FakeAtom("CA", "H"))
+    assert not _is_hydrogen(_FakeAtom("HB", "C"))

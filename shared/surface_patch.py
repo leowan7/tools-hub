@@ -29,31 +29,36 @@ It is a measurement of a prediction.
 
 MEASURED COST (not an estimate)
 -------------------------------
-Min of 7 reps (the development machine is shared, so the minimum is the only
-honest figure), chain A of ``static/example/1HEW.pdb`` -- 129 residues and
-1001 protein atoms, which is what reaches ShrakeRupley after the detach loop
-below drops the 103 waters:
+Chain A of ``static/example/1HEW.pdb`` -- 129 residues and 1001 heavy protein
+atoms, which is what reaches ShrakeRupley after the detach loops below drop
+the 103 waters and any hydrogens. Whole call: parse, detach, SASA, cluster.
 
-    n_points=100 (the ShrakeRupley default)   ~180 ms per structure
-    n_points=960                              ~2.6 s per structure (min of 3)
+    n_points=100 (the ShrakeRupley default)   270-350 ms per structure
+    n_points=960                              ~2.6 s per structure
 
-RE-MEASURED after the detach loop landed, and the first two figures recorded
-here (~350 ms and 1104 atoms) were measured with those waters still in the
-model. Dropping them nearly halves the cost, so every number in this block
-moved in the cheaper direction; the conclusion below did not change.
+STATED AS A RANGE ON PURPOSE. This machine is shared with other sessions, and
+a single min-of-7 is not reproducible on it: successive runs of the same call
+gave a 179 ms minimum, then 274 ms minimum with a 353 ms median over 25 reps,
+and an independent reviewer measured 319 ms. The honest figure is a few hundred
+milliseconds, and no copy should quote one number to three digits. An earlier
+version of this block said "~180 ms", which was the quietest moment rather
+than the cost.
 
 Total SASA at the default is within 0.29% of the n_points=960 figure on that
 structure, so the default is kept. Scaling is close to linear in atom count:
-~1.3 ms per residue from 40 to 100 residues on the same chain.
+~1.3 ms per residue measured from 40 to 100 residues of the same chain, so a
+designed binder of 60-120 residues sits at the low end of the range above.
 
-At ~180 ms, fifty rows is ~9 s of CPU and a hundred rows ~18 s, BEFORE the
-per-row storage fetch -- and the results page fetches no structures at all
-today, so a per-row figure would add a Storage round trip per row as well as
-the CPU. The web tier dies at gunicorn's ``timeout`` (120 s by default, see
+At 300 ms, fifty rows is ~15 s of CPU and a hundred rows ~30 s, BEFORE any
+storage fetch -- and the results page fetches no structures at all today, so a
+per-row figure would add a Storage round trip per row on top of the CPU. The
+web tier dies at gunicorn's ``timeout`` (120 s by default, see
 ``gunicorn.conf.py``), and ``shared/exports.py`` already caps structure reads
-for the same reason. So this still cannot be computed for every row of a
-results page inside the request: a caller wanting a value on every row has to
-precompute. Computing it for ONE design on demand is affordable.
+for the same reason. So this cannot be computed for every row of a results
+page inside the request: a caller wanting a value on every row has to
+precompute. Computing it for ONE design on demand is affordable. That
+conclusion holds across the whole measured range, which is why the spread
+above does not change it.
 
 Those timings are from the development machine under contention, not from
 production, and the minimum of several reps rather than the mean -- the spread
@@ -84,22 +89,25 @@ HYDROPHOBIC_ELEMENTS = frozenset({"C", "S"})
 #   floor  1 Å²   1HEW-A 0.20/0.90/1.00   3ave-A 0.12/0.56/1.00
 #                 3s7g-A 0.40/0.80/1.00   1igt-A 0.43/0.57/1.00
 #   floor 10 Å²   1HEW-A 0.05/0.06/0.06   3ave-A 0.03/0.03/0.05
-#                 3s7g-A 0.07/0.09/0.11   1igt-A 0.11/0.14/0.14
+#                 3s7g-A 0.07/0.09/0.11   1igt-A 0.11/0.13/0.13
 #
-# RE-DERIVED after non-protein residues stopped occluding the surface (see the
-# detach loop in surface_profile). The earlier figures here were measured with
-# crystallographic waters still burying the apolar surface, which flattered the
-# floor-1 row on the two structures that carry them: 1HEW-A at 4.5 Å read 0.59
-# and now reads 0.90, 3ave-A 0.18 and now 0.56. The direction is that floor 1
-# is WORSE than first recorded, not better, and the floor-10 row moved by at
-# most 0.02. The conclusion it was chosen on is unchanged.
+# RE-DERIVED TWICE, because two fixes to surface_profile each invalidated the
+# table the thresholds had been chosen on. The first figures here were measured
+# with crystallographic waters occluding the surface, and the second with
+# hydrogens still occluding it; both are now detached. Waters flattered the
+# floor-1 row on the two structures carrying them (1HEW-A at 4.5 Å read 0.59
+# and is really 0.90; 3ave-A 0.18, really 0.56), and hydrogens moved only the
+# 1igt-A floor-10 row, by 0.01. Against the original table the floor-10 row has
+# moved by at most 0.03 (1HEW-A at 4.0 Å, 0.08 to 0.05); the direction is that
+# floor 1 is WORSE than first recorded, not better. The conclusion the
+# thresholds were chosen on survived both re-derivations unchanged.
 #
 # At 1 Å² the figure reaches the whole surface on all four at a 5 Å cutoff --
 # one cluster covering everything, which is "total exposed apolar area" under
-# another name -- and it swings by up to 5x across a 1 Å change in a cutoff
-# nobody can derive. At 10 Å² nothing percolates on any of the four and the
-# figure barely moves with the cutoff. A free carbon's sphere is ~121 Å², so
-# 10 Å² is roughly 8% relative exposure.
+# another name -- and it swings by up to 8x across a 1 Å change in a cutoff
+# nobody can derive (3ave-A, 0.12 at 4.0 Å to 1.00 at 5.0 Å). At 10 Å² nothing
+# percolates on any of the four and the figure barely moves with the cutoff. A
+# free carbon's sphere is ~121 Å², so 10 Å² is roughly 8% relative exposure.
 #
 # test_the_patch_does_not_percolate_on_any_committed_structure pins the
 # non-percolation property, so loosening this back into the percolating regime
@@ -110,7 +118,7 @@ EXPOSED_ATOM_SASA_A2 = 10.0
 # this distance, in Å. CHOSEN: a little over the 3.4-4.0 Å contact distance of
 # two apolar atoms. The figure is not independent of it -- across 4.0 to 5.0 Å
 # the floor-10 row of the table above spreads by 1.2x (1HEW-A, 0.05 to 0.06),
-# 1.3x (1igt-A), 1.6x (3s7g-A) and 1.7x (3ave-A) -- so this value is part of
+# 1.2x (1igt-A), 1.6x (3s7g-A) and 1.7x (3ave-A) -- so this value is part of
 # the definition of the number, not a detail. Any copy quoting an area must
 # not imply more precision than that.
 #
@@ -180,6 +188,27 @@ def _is_protein_residue(residue) -> bool:
     return residue.get_resname().strip() in protein_letters_3to1_extended
 
 
+def _is_hydrogen(atom) -> bool:
+    """Whether ``atom`` is a hydrogen or deuterium.
+
+    Reads ``element`` where the file supplies it and falls back to the atom
+    NAME, because the element column is optional in PDB and a file written
+    without it leaves ``element`` empty or guessed. The fallback uses the PDB
+    convention that an H atom's name begins with H, or with a digit followed by
+    H ("1HB", "2HG1"); a leading-digit name is why the test is not simply
+    ``startswith("H")``. Deliberately conservative: no standard amino-acid
+    heavy atom is named H* (they are N, CA, C, O, CB, SG and so on), so this
+    cannot drop a carbon or sulfur by mistake.
+    """
+    element = (atom.element or "").strip().upper()
+    if element:
+        return element in {"H", "D"}
+    name = atom.get_name().strip().upper()
+    return name.startswith(("H", "D")) or (
+        len(name) > 1 and name[0].isdigit() and name[1] in {"H", "D"}
+    )
+
+
 def surface_profile(
     data: bytes, designed_chains: Iterable[str]
 ) -> Optional[dict]:
@@ -209,6 +238,14 @@ def surface_profile(
     parse, when none of ``designed_chains`` is present in the file, or when no
     protein residue survives. A zero would read as "measured, and flat", which
     is a different claim from "not measured". Callers show nothing instead.
+
+    KNOWN LIMITATION, not a bug to work around: a structure whose chain column
+    is blank parses to a chain whose id is ``" "``, and no caller can name it.
+    Both ``[" "]`` and ``[""]`` strip to an empty set, so such a file always
+    returns ``None``. That is the safe direction -- nothing shown rather than
+    a figure attributed to the wrong chain -- and it is left as is because the
+    eligible tools all label their chains. It is recorded here so a future
+    reader does not mistake the silence for a parse failure.
 
     The patch area is the SUM of its member atoms' SASA, not a projected or
     fitted area.
@@ -250,9 +287,29 @@ def surface_profile(
     # A predicted structure carries no waters, so this changes nothing for the
     # design tools; it is the uploaded-or-crystal case it fixes. Held by
     # test_waters_in_the_designed_chain_do_not_bury_the_surface.
+    #
+    # HYDROGENS GO FOR THE SAME REASON, and it is the same bug: an H occludes
+    # the carbon or sulfur it hangs off, and only C/S above EXPOSED_ATOM_SASA_A2
+    # are counted, so a protonated file reports a smaller patch than the same
+    # structure without hydrogens. That makes the figure depend on whether
+    # whoever produced the file ran a protonation step, which is not a property
+    # of the molecule. Measured on tests/fixtures/rfd4/1igt_fv_trimmed.pdb,
+    # which carries 351 polar hydrogens: chain B alone read total_apolar_a2
+    # 2237.40 and largest_patch_a2 138.88 with them in, against 2434.32 and
+    # 144.92 with them stripped. A fully protonated file is far worse -- one to
+    # three H on every carbon rather than polar-only.
+    #
+    # This also restores the basis the thresholds were set on: the percolation
+    # table was measured on 1HEW, 3ave and 3s7g, none of which contain
+    # hydrogens, so a heavy-atom surface is the surface those numbers describe.
+    # Held by test_hydrogens_do_not_bury_the_surface.
     for chain in model:
         for residue in [r for r in chain if not _is_protein_residue(r)]:
             chain.detach_child(residue.get_id())
+    for chain in model:
+        for residue in chain:
+            for atom in [a for a in residue if _is_hydrogen(a)]:
+                residue.detach_child(atom.get_id())
 
     residues = {
         str(chain.get_id()).strip(): list(chain)

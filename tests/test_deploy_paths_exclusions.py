@@ -385,6 +385,15 @@ def _trigger_matches(path: str) -> bool:
 def test_the_developability_package_is_outside_the_deploy_trigger():
     """``shared/developability/`` must not redeploy the ten GPU apps.
 
+    THIS IS EVIDENCE ABOUT THE DESTINATION, NOT ABOUT THE MERGE THAT MOVES THE
+    PACKAGE THERE. It proves that editing the scorer in its new home cannot
+    fire the trigger from here on. It says nothing about the commit that
+    performs the move, which DELETES nine non-negated paths under
+    ``tools/developability/`` and therefore does satisfy the trigger: landing
+    that redeploys all ten apps, once. Do not cite this test as proof any
+    particular merge is free of a redeploy -- for that, cite the path filter
+    that excludes each changed file.
+
     The package was moved out of ``tools/`` for exactly this reason: every
     file under ``tools/**`` that is not named ``meta.py`` or ``__init__.py``
     and is not under an ``example/**`` directory fires the trigger, so editing
