@@ -29,20 +29,31 @@ It is a measurement of a prediction.
 
 MEASURED COST (not an estimate)
 -------------------------------
-Min of 7 reps, chain A of ``static/example/1HEW.pdb`` (129 residues, 1104
-atoms), on the development machine while other work was running:
+Min of 7 reps (the development machine is shared, so the minimum is the only
+honest figure), chain A of ``static/example/1HEW.pdb`` -- 129 residues and
+1001 protein atoms, which is what reaches ShrakeRupley after the detach loop
+below drops the 103 waters:
 
-    n_points=100 (the ShrakeRupley default)   ~350 ms per structure
-    n_points=960                              ~1.6 s per structure
+    n_points=100 (the ShrakeRupley default)   ~180 ms per structure
+    n_points=960                              ~2.6 s per structure (min of 3)
 
-Total SASA at the default is within 0.42% of the n_points=960 figure on that
-structure, so the default is kept. At ~350 ms, fifty rows is ~17 s of CPU and
-a hundred rows ~35 s, BEFORE the per-row storage fetch. The web tier dies at
-gunicorn's ``timeout`` (120 s by default, see ``gunicorn.conf.py``), and
-``shared/exports.py`` already caps structure reads for the same reason. So this
-cannot be computed for every row of a results page inside the request: a caller
-wanting a value on every row has to precompute. Computing it for ONE design on
-demand is affordable.
+RE-MEASURED after the detach loop landed, and the first two figures recorded
+here (~350 ms and 1104 atoms) were measured with those waters still in the
+model. Dropping them nearly halves the cost, so every number in this block
+moved in the cheaper direction; the conclusion below did not change.
+
+Total SASA at the default is within 0.29% of the n_points=960 figure on that
+structure, so the default is kept. Scaling is close to linear in atom count:
+~1.3 ms per residue from 40 to 100 residues on the same chain.
+
+At ~180 ms, fifty rows is ~9 s of CPU and a hundred rows ~18 s, BEFORE the
+per-row storage fetch -- and the results page fetches no structures at all
+today, so a per-row figure would add a Storage round trip per row as well as
+the CPU. The web tier dies at gunicorn's ``timeout`` (120 s by default, see
+``gunicorn.conf.py``), and ``shared/exports.py`` already caps structure reads
+for the same reason. So this still cannot be computed for every row of a
+results page inside the request: a caller wanting a value on every row has to
+precompute. Computing it for ONE design on demand is affordable.
 
 Those timings are from the development machine under contention, not from
 production, and the minimum of several reps rather than the mean -- the spread
@@ -70,17 +81,25 @@ HYDROPHOBIC_ELEMENTS = frozenset({"C", "S"})
 # committed to this repo, as largest-patch area over total exposed apolar
 # area, at contact cutoffs of 4.0/4.5/5.0 Å:
 #
-#   floor  1 Å²   1HEW-A 0.08/0.59/0.98   3ave-A 0.08/0.18/0.54
+#   floor  1 Å²   1HEW-A 0.20/0.90/1.00   3ave-A 0.12/0.56/1.00
 #                 3s7g-A 0.40/0.80/1.00   1igt-A 0.43/0.57/1.00
-#   floor 10 Å²   1HEW-A 0.08/0.08/0.08   3ave-A 0.05/0.05/0.06
+#   floor 10 Å²   1HEW-A 0.05/0.06/0.06   3ave-A 0.03/0.03/0.05
 #                 3s7g-A 0.07/0.09/0.11   1igt-A 0.11/0.14/0.14
 #
-# At 1 Å² the figure reaches 98-100% of the total on two of the four -- one
-# cluster covering the whole surface, which is "total exposed apolar area"
-# under another name -- and it swings by an order of magnitude across a 1 Å
-# change in a cutoff nobody can derive. At 10 Å² nothing percolates on any of
-# the four and the figure barely moves with the cutoff. A free carbon's sphere
-# is ~121 Å², so 10 Å² is roughly 8% relative exposure.
+# RE-DERIVED after non-protein residues stopped occluding the surface (see the
+# detach loop in surface_profile). The earlier figures here were measured with
+# crystallographic waters still burying the apolar surface, which flattered the
+# floor-1 row on the two structures that carry them: 1HEW-A at 4.5 Å read 0.59
+# and now reads 0.90, 3ave-A 0.18 and now 0.56. The direction is that floor 1
+# is WORSE than first recorded, not better, and the floor-10 row moved by at
+# most 0.02. The conclusion it was chosen on is unchanged.
+#
+# At 1 Å² the figure reaches the whole surface on all four at a 5 Å cutoff --
+# one cluster covering everything, which is "total exposed apolar area" under
+# another name -- and it swings by up to 5x across a 1 Å change in a cutoff
+# nobody can derive. At 10 Å² nothing percolates on any of the four and the
+# figure barely moves with the cutoff. A free carbon's sphere is ~121 Å², so
+# 10 Å² is roughly 8% relative exposure.
 #
 # test_the_patch_does_not_percolate_on_any_committed_structure pins the
 # non-percolation property, so loosening this back into the percolating regime
@@ -89,10 +108,17 @@ EXPOSED_ATOM_SASA_A2 = 10.0
 
 # Two exposed apolar atoms are in the same patch if their centres are within
 # this distance, in Å. CHOSEN: a little over the 3.4-4.0 Å contact distance of
-# two apolar atoms. The figure is not independent of it -- on the table above
-# the 4.0-to-5.0 spread is nil on 1HEW and up to ~1.7x on the two smallest
-# structures -- so this value is part of the definition of the number, not a
-# detail. Any copy quoting an area must not imply more precision than that.
+# two apolar atoms. The figure is not independent of it -- across 4.0 to 5.0 Å
+# the floor-10 row of the table above spreads by 1.2x (1HEW-A, 0.05 to 0.06),
+# 1.3x (1igt-A), 1.6x (3s7g-A) and 1.7x (3ave-A) -- so this value is part of
+# the definition of the number, not a detail. Any copy quoting an area must
+# not imply more precision than that.
+#
+# Both figures in the previous version of this sentence were wrong: it said the
+# spread was "nil on 1HEW", which was true only while waters were occluding
+# that structure, and attributed the widest spread to "the two smallest
+# structures", when 3ave-A has the largest total apolar area of the four and
+# the widest spread of them. The spread does not track structure size.
 PATCH_CONTACT_A = 4.5
 
 
@@ -207,8 +233,29 @@ def surface_profile(
         )
         return None
 
+    # Drop non-protein residues BEFORE computing, not just when summing.
+    #
+    # ShrakeRupley occludes with every atom in the model it is handed, so a
+    # crystallographic water left in a designed chain buries the protein
+    # surface underneath it -- and a water is solvent, which is exactly what
+    # this figure is supposed to be measuring the accessibility TO. Measured on
+    # static/example/1HEW.pdb chain A, which carries 103 HOH records in the
+    # designed chain: leaving them in reports total_apolar_a2 1277.67 against
+    # 2032.02 with them gone, largest_patch_a2 99.03 against 114.72, and 23 of
+    # 129 residues fall the wrong side of EXPOSED_RESIDUE_RSA (residue 37 reads
+    # 0.126 rather than 0.436). Every one of those errors is in the direction
+    # of calling an exposed residue buried, which in find_liabilities means
+    # failing to escalate a liability that is in fact reachable.
+    #
+    # A predicted structure carries no waters, so this changes nothing for the
+    # design tools; it is the uploaded-or-crystal case it fixes. Held by
+    # test_waters_in_the_designed_chain_do_not_bury_the_surface.
+    for chain in model:
+        for residue in [r for r in chain if not _is_protein_residue(r)]:
+            chain.detach_child(residue.get_id())
+
     residues = {
-        str(chain.get_id()).strip(): [r for r in chain if _is_protein_residue(r)]
+        str(chain.get_id()).strip(): list(chain)
         for chain in model
     }
     if not any(residues.values()):

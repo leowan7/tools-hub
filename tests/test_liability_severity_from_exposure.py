@@ -131,13 +131,62 @@ def test_a_multi_residue_motif_is_exposed_if_any_residue_is():
     assert neither["exposed"] is False
 
 
-def test_an_rsa_list_shorter_than_the_sequence_is_unknown_not_buried():
-    """A truncated list must not silently call the tail buried."""
-    short = _rsa({_M_POSITION}, length=2)
-    records = find_liabilities(SEQ, short)
-    tail = [r for r in records if r["position"] > 3]
-    assert tail, "fixture produced no record past the truncation point"
-    assert all(r["exposed"] is None for r in tail)
+def test_a_misaligned_rsa_list_is_discarded_entirely():
+    """A length mismatch means the positional mapping is untrustworthy.
+
+    An earlier version of this test filtered to ``position > 3`` and asserted
+    the tail was unknown. For this fixture the only such record is the
+    free-cysteine at 8, whose ``exposed`` is hard-coded None, so the test
+    passed whatever the truncation logic did -- including the wrong answer it
+    actually gave, which was to call a straddling motif measured-buried. It
+    now asserts the whole behaviour, including position 1, which the old
+    truncation logic reported as exposed=True off a short list.
+    """
+    short = _rsa({_M_POSITION}, length=len(SEQ) - 1)
+    long = _rsa({_M_POSITION}, length=len(SEQ) + 1)
+
+    for bad in (short, long):
+        records = find_liabilities(SEQ, bad)
+        assert records, "fixture produced no records at all"
+        assert all(r["exposed"] is None for r in records), (
+            "a misaligned residue_rsa must be discarded, so every motif "
+            f"reports unknown exposure: {[(r['position'], r['exposed']) for r in records]}"
+        )
+    # Non-vacuity: the SAME positions do get measured off a correct-length list.
+    good = _only(find_liabilities(SEQ, _rsa({_M_POSITION})), "oxidation", _M_POSITION)
+    assert good["exposed"] is True
+
+
+def test_a_misaligned_rsa_list_does_not_change_the_score():
+    """Discarded exposure must land on the no-structure score, not a third one."""
+    assert (
+        score_liabilities(SEQ, _rsa({_M_POSITION}, length=len(SEQ) - 1))["score"]
+        == score_liabilities(SEQ, None)["score"]
+    )
+
+
+def test_a_motif_straddling_the_end_of_the_list_is_unknown():
+    """Unit-level, because find_liabilities' length check makes it unreachable.
+
+    ``_motif_exposed`` is the one place that indexes the list, and its contract
+    is that an index it cannot read makes the motif unknown. The length guard
+    in :func:`find_liabilities` means no motif reaches it out of range today,
+    so this pins the helper's own contract rather than a path through the
+    scanner. Dropping the out-of-range indices and answering from the rest --
+    the earlier behaviour -- reported a measured False here.
+    """
+    two_buried = [0.0, 0.0]
+    assert lia._motif_exposed(two_buried, 1, 1) is False  # fully in range
+    assert lia._motif_exposed(two_buried, 2, 2) is None   # second residue past end
+    assert lia._motif_exposed(two_buried, 3, 1) is None   # starts past the end
+
+
+def test_one_unknown_residue_makes_the_whole_motif_unknown():
+    """Reachable: an RSA entry is None for a residue of unknown type."""
+    rsa = _rsa({2})          # NG at 2-3: position 2 exposed, 3 buried
+    assert _only(find_liabilities(SEQ, rsa), "deamidation", 2)["exposed"] is True
+    rsa[2] = None            # now residue 3's accessibility is unknown
+    assert _only(find_liabilities(SEQ, rsa), "deamidation", 2)["exposed"] is None
 
 
 def test_free_cysteine_is_not_escalated_by_exposure():
@@ -186,3 +235,50 @@ def test_chain_type_changes_no_number(chain_type):
     assert got["composite_score"] == baseline["composite_score"]
     assert got["dimensions"] == baseline["dimensions"]
     assert got["chain_type"] == chain_type.upper()
+
+
+# ---------------------------------------------------------------------------
+# The dimension list, wherever it is written out in prose.
+# ---------------------------------------------------------------------------
+
+def test_every_written_out_dimension_list_matches_the_code():
+    """Prose that names the dimensions must name the ones that exist.
+
+    This defect landed three times in one branch: the package docstring and
+    the dimensions docstring both still listed ``hydrophobicity`` after it was
+    deleted, and the results template claimed "five scientific dimensions"
+    over three cards -- a figure that had been wrong before either deletion.
+    Two deletions went past all three because nothing tied the prose to
+    ``_DIMENSIONS``. This does.
+
+    The template is not checked here: it now renders
+    ``result.dimensions | length`` instead of a written-out number
+    (templates/developability_results.html), so its count cannot drift.
+    """
+    import io
+
+    from shared.developability import score as score_mod
+
+    live = set(score_mod._DIMENSIONS)
+    gone = {"hydrophobicity", "humanness", "human-likeness"}
+
+    for path in (
+        "shared/developability/__init__.py",
+        "shared/developability/dimensions/__init__.py",
+    ):
+        text = io.open(path, encoding="utf-8").read()
+        doc = text.split('"""')[1]
+        named = {d for d in live if d in doc}
+        assert named == live, (
+            f"{path} writes out a dimension list that is missing "
+            f"{sorted(live - named)}. _DIMENSIONS is {sorted(live)}."
+        )
+        # A deleted dimension may be NAMED as deleted ("why there is no
+        # hydrophobicity dimension"); what it must not do is sit in the list
+        # of what the pipeline combines. The lists above are comma-separated,
+        # so test the comma-joined run rather than the whole docstring.
+        for stale in gone:
+            assert f"{stale}," not in doc and f", {stale}" not in doc, (
+                f"{path} still lists the deleted dimension {stale!r} as one "
+                f"of the scored dimensions."
+            )

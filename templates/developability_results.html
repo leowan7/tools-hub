@@ -22,7 +22,15 @@
     <h1>Developability report</h1>
     <p class="subtitle">
       {{ result.chain_type }} variable region, {{ result.length }} residues.
-      Composite score aggregates five scientific dimensions at equal weight.
+      {# COUNTED, not written out. This said "five" while the page rendered
+         four cards, then survived two deletions (human-likeness, then the
+         sequence-window hydrophobicity screen) to sit at "five" over three.
+         Reading it off the result makes the sentence true by construction:
+         ``dimensions`` is built from score.py::_DIMENSIONS, which is also what
+         DEFAULT_WEIGHTS is derived from, so the count and the equal-weight
+         claim come from the same place. #}
+      Composite score aggregates {{ result.dimensions | length }} scientific
+      dimensions at equal weight.
     </p>
 
     <div class="dev-composite {{ tier_class }}">

@@ -290,3 +290,49 @@ def test_the_exposure_floor_actually_excludes_something():
         f"{EXPOSED_ATOM_SASA_A2} -- this fixture no longer tests the floor"
     )
     assert got["patch_atom_count"] == 6
+
+
+def test_waters_in_the_designed_chain_do_not_bury_the_surface():
+    """A crystallographic water must not occlude the surface being measured.
+
+    ShrakeRupley occludes with every atom in the model it is given, so a HOH
+    left in the designed chain buries the protein under it -- while being the
+    very solvent this figure measures accessibility to. static/example/1HEW.pdb
+    carries 103 HOH records in chain A.
+
+    The assertion is INVARIANCE, not a pinned number: stripping the waters out
+    of the file by hand must give the same answer as handing the file over
+    whole, because surface_profile drops them itself. Before that fix the two
+    differed -- 1277.67 against 2032.02 total apolar area, and 99.03 against
+    114.72 for the patch.
+    """
+    whole = _REAL_PDB.read_bytes()
+    stripped = b"\n".join(
+        line for line in whole.splitlines()
+        if not line.startswith(b"HETATM")
+    ) + b"\nEND\n"
+
+    assert b"HOH" in whole, "fixture no longer carries waters; this test is vacuous"
+
+    got_whole = surface_profile(whole, ["A"])
+    got_stripped = surface_profile(stripped, ["A"])
+    assert got_whole is not None and got_stripped is not None
+
+    for key in ("largest_patch_a2", "total_apolar_a2", "patch_atom_count"):
+        assert got_whole[key] == got_stripped[key], (
+            f"{key} differs with and without the waters "
+            f"({got_whole[key]} vs {got_stripped[key]}), so HETATM residues "
+            "are still occluding the measured surface."
+        )
+    assert got_whole["residue_rsa"] == got_stripped["residue_rsa"]
+    assert got_whole["residue_sasa"] == got_stripped["residue_sasa"]
+
+
+def test_a_ligand_only_chain_is_not_measured_as_protein():
+    """Dropping non-protein residues must not turn an empty chain into a zero."""
+    water_only = (
+        "HETATM    1  O   HOH A   1      10.000  10.000  10.000  1.00  0.00           O\n"
+        "HETATM    2  O   HOH A   2      14.000  10.000  10.000  1.00  0.00           O\n"
+        "END\n"
+    ).encode()
+    assert surface_profile(water_only, ["A"]) is None

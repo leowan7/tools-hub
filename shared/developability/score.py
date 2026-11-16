@@ -1,12 +1,22 @@
 """Composite developability scoring entry point.
 
-Combines three independent SEQUENCE dimensions into a single developability
-profile with a 0-to-1 composite score and per-residue flags suitable for
-downstream visualization. Sequence-only by design: every dimension here takes
-an amino-acid string and nothing else, so this module can score an ordered
-sequence with no structure in hand. Anything that needs a structure lives
-elsewhere -- see ``shared/surface_patch.py`` for the measured hydrophobic-patch
-figure.
+Combines the three dimensions in :data:`_DIMENSIONS` into a single
+developability profile with a 0-to-1 composite score and per-residue flags
+suitable for downstream visualization.
+
+EVERY FINDING IS DETECTED FROM THE SEQUENCE ALONE, so this module scores an
+ordered sequence with no structure in hand, and that is the only mode any
+caller in the request path uses today (no production call site passes
+``residue_rsa``). A structure is OPTIONAL and does one thing: the
+``residue_rsa`` argument, measured by
+``shared/surface_patch.py::surface_profile``, raises the severity of liability
+motifs found to be solvent-exposed (``dimensions/liabilities.py::_escalate``).
+It changes no dimension's findings and no other dimension reads it. Without it
+every motif keeps its chemistry-only base severity and reports
+``exposed: None``.
+
+The patch figure itself is not computed here; it lives in
+``shared/surface_patch.py``.
 
 Two dimensions this module shipped with are gone, both on purpose:
 

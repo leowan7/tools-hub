@@ -27,10 +27,13 @@ light-chain spans are all gone with it. Nothing here now varies by chain type.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import List, Optional, Sequence
 
 from shared.surface_patch import EXPOSED_RESIDUE_RSA
+
+logger = logging.getLogger(__name__)
 
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -90,12 +93,17 @@ def _motif_exposed(
     """
     if residue_rsa is None:
         return None
-    values = [
-        residue_rsa[i]
-        for i in range(position - 1, position - 1 + length)
-        if 0 <= i < len(residue_rsa) and residue_rsa[i] is not None
-    ]
-    if not values:
+    window = range(position - 1, position - 1 + length)
+    # A motif that straddles the end of the list is UNKNOWN, not buried. The
+    # earlier version dropped the out-of-range indices and answered from
+    # whatever was left, so an NG whose G lay past the end reported
+    # exposed=False -- a measurement of a residue nobody measured.
+    if any(not (0 <= i < len(residue_rsa)) for i in window):
+        return None
+    values = [residue_rsa[i] for i in window]
+    # Same rule for a residue of unknown type inside the motif: one None makes
+    # the motif's exposure unknown rather than deciding it from its neighbours.
+    if any(v is None for v in values):
         return None
     return max(values) > EXPOSED_RESIDUE_RSA
 
@@ -151,6 +159,30 @@ def find_liabilities(
         unknown). Free-cysteine records carry a ``detail`` string too.
     """
     cleaned = _validate_sequence(sequence)
+
+    # A MISALIGNED RSA LIST IS WORSE THAN NO RSA LIST, so refuse it.
+    #
+    # residue_rsa is applied positionally: index i is taken to be the
+    # accessibility of cleaned[i]. If the structure is missing one residue the
+    # ordered sequence has -- an unresolved terminus, a cleaved tag -- every
+    # later index shifts, and the severities come from the wrong residues'
+    # exposure with nothing to show it happened. A length mismatch is the one
+    # cheap signal of that, so it discards the exposure data and every motif
+    # reports exposed=None (unknown). Silently trusting a short or long list
+    # was the earlier behaviour.
+    #
+    # This cannot catch an internal gap that leaves the length equal; it is a
+    # floor, not a proof of alignment. The caller is still responsible for
+    # passing the RSA of THIS sequence's own chain.
+    if residue_rsa is not None and len(residue_rsa) != len(cleaned):
+        logger.warning(
+            "liabilities: residue_rsa has %d entries for a %d-residue "
+            "sequence; discarding it as misaligned",
+            len(residue_rsa),
+            len(cleaned),
+        )
+        residue_rsa = None
+
     findings: List[dict] = []
 
     # Dipeptide scans (deamidation, isomerization, fragmentation).
