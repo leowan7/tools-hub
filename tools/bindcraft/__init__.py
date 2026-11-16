@@ -132,7 +132,7 @@ adapter = ToolAdapter(
             slug="pilot",
             label="Your target, a small batch on a small target",
             description=(
-                "BindCraft against your uploaded PDB on A100-80GB. "
+                "BindCraft against your uploaded PDB. "
                 "Pick 1 to 500 trajectories. Start with a small batch "
                 "(4 trajectories) to confirm your target and hotspots, "
                 "then scale up. A batch too long for the limit one run "

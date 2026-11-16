@@ -400,7 +400,7 @@ adapter = ToolAdapter(
             description=(
                 "Paste or upload FASTA (single chain or multimer). "
                 "ColabFold MMseqs2 MSA plus AF2. Up to 1500 AA total "
-                "across chains. Runs on an A100-80GB."
+                "across chains."
             ),
             # FASTA ships inline in the payload, not via PDB upload —
             # leave requires_pdb False.

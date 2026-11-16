@@ -452,7 +452,7 @@ adapter = ToolAdapter(
                 "YAML ``msa: empty`` per chain. The right choice for "
                 "designed sequences (MPNN, RFantibody, BindCraft, "
                 "BoltzGen, RFdiffusion, PXDesign outputs) where no "
-                "informative MSA exists. Runs on an A100-40GB."
+                "informative MSA exists."
             ),
             requires_pdb=True,
         ),

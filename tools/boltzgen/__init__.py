@@ -217,7 +217,7 @@ adapter = ToolAdapter(
                 "scores. 4 is enough to read through while you confirm "
                 "your target and binder length, and raising it on a later "
                 "run returns more candidates out of the same search. "
-                "Results emailed when complete; A100-40GB."
+                "Results emailed when complete."
             ),
             requires_pdb=True,
             long_running=True,

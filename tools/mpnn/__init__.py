@@ -309,7 +309,7 @@ adapter = ToolAdapter(
             label="Standalone with your backbone",
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
-                "up to 1000 candidate sequences. Runs on an A10G-24GB."
+                "up to 1000 candidate sequences."
             ),
             requires_pdb=True,
         ),

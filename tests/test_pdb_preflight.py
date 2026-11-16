@@ -1569,7 +1569,7 @@ def test_proteina_hard_cap_boundary_is_exact():
 def test_proteina_oversized_target_is_refused_with_an_actionable_reason():
     """The refusal has to name the size and the cap — a bare "too big"
     leaves the user with no way to pick a selection that would run. It must
-    not name the GPU chip (Leo, 2026-11-06: no customer copy names one)."""
+    not name the GPU chip (Leo ruled 2026-11-06 that customer copy should not name one)."""
     v = _proteina_size(600)
     assert v.kind is VerdictKind.NEEDS_FIX
     assert v.size_envelope.over_hard_cap
