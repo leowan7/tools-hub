@@ -486,10 +486,11 @@ def _apply_payment_intent_failed(event: dict) -> dict:
         )
         return {"status": "skipped", "reason": "missing_user_id"}
 
-    reason = (
-        ((obj.get("last_payment_error") or {}).get("message"))
-        or "card_declined"
-    )
+    # Same reason key as the synchronous sender in shared.wallet
+    # auto_reload_if_needed, so a decline both paths report reads the same.
+    from billing.checkout import decline_reason  # noqa: PLC0415
+
+    reason = decline_reason((obj.get("last_payment_error") or {}).get("code"))
 
     client = get_service_client()
     if client is None:

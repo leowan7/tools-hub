@@ -372,11 +372,9 @@
     if (env.runtime_cap_target_aa) {
       return `(cap ${env.runtime_cap_target_aa} aa at ${
         escapeHtml(env.runtime_basis || "")
-      } on <code>${escapeHtml(env.gpu || "")}</code>).`;
+      }).`;
     }
-    return `(cap ${env.hard_cap_target_aa} aa on <code>${
-      escapeHtml(env.gpu || "")
-    }</code>).`;
+    return `(cap ${env.hard_cap_target_aa} aa).`;
   }
 
   function maxBinderLen() {

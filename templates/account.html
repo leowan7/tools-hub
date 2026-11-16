@@ -19,7 +19,7 @@
 
   {% if request.args.get('portal_error') %}
     <div class="error-box" style="margin-bottom: 1rem;">
-      Could not open the Stripe Billing Portal. Top up your wallet first to create a billing profile, or contact leo@ranomics.com.
+      Could not open the Stripe Billing Portal. Top up your wallet first to create a billing profile, or contact {{ support_email }}.
     </div>
   {% endif %}
 

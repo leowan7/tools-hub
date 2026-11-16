@@ -126,6 +126,12 @@ _KNOWN_DECLINE_REASONS = frozenset({
 })
 
 
+def decline_reason(code: object) -> str:
+    """Map a Stripe error ``code`` to a ``_AUTO_RELOAD_REASON_LABELS`` key."""
+    code = str(code or "")
+    return code if code in _KNOWN_DECLINE_REASONS else "card_declined"
+
+
 def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
     """Return ``(retryable, reason)`` for an off-session charge failure.
 
@@ -136,9 +142,7 @@ def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
     if name in _RETRYABLE_STRIPE_ERRORS:
         return True, "card_declined"
     if name == "CardError":
-        code = str(getattr(exc, "code", "") or "")
-        reason = code if code in _KNOWN_DECLINE_REASONS else "card_declined"
-        return False, reason
+        return False, decline_reason(getattr(exc, "code", ""))
     if name == "InvalidRequestError":
         # Bad customer or payment-method id: the saved card is unusable.
         return False, "no_payment_method"

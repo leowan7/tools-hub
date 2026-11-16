@@ -255,6 +255,7 @@ def _payment_intent_failed_event(
     user_id: str = USER_A,
     pi_id: str = "pi_ar_2",
     error_message: str = "Your card was declined.",
+    error_code: str = "card_declined",
     kind: str = "auto_reload",
 ) -> dict:
     return {
@@ -264,7 +265,9 @@ def _payment_intent_failed_event(
             "object": {
                 "id": pi_id,
                 "metadata": {"user_id": user_id, "kind": kind},
-                "last_payment_error": {"message": error_message},
+                "last_payment_error": {
+                    "message": error_message, "code": error_code,
+                },
             }
         },
     }
@@ -532,10 +535,18 @@ def test_payment_intent_failed_ignores_non_auto_reload_kind(
     assert body["status"] == "ignored"
 
 
+@pytest.mark.parametrize("code, expected", [
+    ("expired_card", "expired_card"),
+    ("card_declined", "card_declined"),
+    ("processing_error", "card_declined"),
+    (None, "card_declined"),
+])
 def test_payment_intent_failed_records_reason_from_last_payment_error(
-    client, store, email_log
+    client, store, email_log, code, expected
 ):
-    """The failure email carries the Stripe message verbatim."""
+    """The webhook sends the same reason key as the synchronous sender
+    (billing.checkout.decline_reason), not Stripe's free-text message, so
+    the two emails one decline can produce word the reason the same."""
     store.tables["user_wallets"].append({
         "user_id": USER_A,
         "balance_usd": 5.0,
@@ -543,7 +554,8 @@ def test_payment_intent_failed_records_reason_from_last_payment_error(
     })
     evt = _payment_intent_failed_event(
         event_id="evt_ar_decline",
-        error_message="Insufficient funds.",
+        error_message="Your card has expired.",
+        error_code=code,
     )
     with patch.object(stripe_webhook, "_verify_signature", return_value=evt):
         _post_event(client, evt)
@@ -552,7 +564,7 @@ def test_payment_intent_failed_records_reason_from_last_payment_error(
         if name == "send_auto_reload_failed_email"
     ]
     assert len(failed_calls) == 1
-    assert failed_calls[0]["reason"] == "Insufficient funds."
+    assert failed_calls[0]["reason"] == expected
 
 
 # ---------------------------------------------------------------------------
