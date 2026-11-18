@@ -54,11 +54,15 @@ RUN python3 -m pip install --no-cache-dir \
     "torchvision==0.16.0+cu118" \
     --extra-index-url https://download.pytorch.org/whl/cu118
 
+# biopython<2 / requests<3 are major-boundary ceilings, not pins: both were
+# installed with no version at all until 2026-11-18. biopython 1.88 and
+# requests 2.34.2 were newest on PyPI that day, so neither ceiling can
+# downgrade what this image already carries.
 RUN python3 -m pip install --no-cache-dir \
     "transformers==4.35.2" \
     "accelerate==0.24.1" \
-    "biopython" \
-    "requests"
+    "biopython<2" \
+    "requests<3"
 
 # ESMFold in transformers lazily imports openfold.np.residue_constants
 # + openfold.utils.rigid_utils for its structure module. Install the
@@ -70,6 +74,11 @@ RUN python3 -m pip install --no-cache-dir \
 # compiling softmax_cuda_kernel.cu. CXXFLAGS env var does NOT propagate
 # through PyTorch's CUDAExtension build flow, so we clone + sed-patch
 # setup.py inline to inject -std=c++17 into both compiler flag lists.
+# openfold declares no runtime dependency metadata at this commit: setup.py has
+# no install_requires, and there is no pyproject.toml, requirements.txt or
+# setup.cfg (all three 404 on raw.githubusercontent.com at this SHA, checked
+# 2026-11-18). So this `pip install .` installs no runtime dependency of its
+# own and cannot move the biopython/requests ceilings set above.
 RUN git clone https://github.com/aqlaboratory/openfold.git /tmp/openfold && \
     cd /tmp/openfold && \
     git checkout 4b41059694619831a7db195b7e0988fc4ff3a307 && \

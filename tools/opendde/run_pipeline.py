@@ -207,8 +207,10 @@ def parse_payload() -> dict[str, Any]:
 def _cif_to_pdb(cif_bytes: bytes) -> bytes | None:
     """Best-effort mmCIF -> PDB for the browser viewer. None on any failure.
 
-    OpenDDE writes AF3-style mmCIF. gemmi (0.6.7 in the image) has no string
-    reader, so parse via a temp file with ``read_structure`` (format auto-detect).
+    OpenDDE writes AF3-style mmCIF. The image's gemmi is bounded but not pinned
+    (Dockerfile.modal installs ``gemmi<0.8``), so parse via a temp file with
+    ``read_structure`` (format auto-detect) rather than relying on a
+    string-reader API being present.
     Multi-entity complexes (ligands / ions / nucleic acids / multi-char chains)
     that overflow legacy PDB, or any parse that yields no atoms, return None and
     are served as native mmCIF by the caller.

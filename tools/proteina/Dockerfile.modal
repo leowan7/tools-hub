@@ -117,7 +117,12 @@ RUN /opt/proteina/.venv/bin/python -m ensurepip --upgrade || true
 # the bottom of this file now imports `requests` for this reason, and
 # tests/test_proteina_smoke.py pins that this line still exists, still names
 # both packages, and still targets /opt/proteina/.venv.
-RUN /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
+# requests<3 / rdkit<2027.1 are boundary ceilings, not pins: both floated until
+# 2026-11-18. RDKit versions are date-based (YYYY.MM.patch), so its ceiling is
+# expressed in that scheme rather than as a semver major. Both ceilings are
+# above the newest release on PyPI on 2026-11-18 (requests 2.34.2, rdkit
+# 2026.9.2), so neither can downgrade what this image already carries.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-cache-dir "requests<3" "rdkit<2027.1"
 
 # Community inverse-folding weights for the EVALUATE designability metric. The
 # ligand variant's evaluate runs LigandMPNN (metrics/inverse_folding_models.py

@@ -46,9 +46,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # on the SAME interpreter as opendde — no symlink needed. Add our two host-side
 # deps (gemmi for mmCIF->PDB, requests for presigned uploads) into it with uv. The
 # fallback chain covers uv's system / PEP-668 externally-managed modes.
-RUN /root/.local/bin/uv pip install --python /usr/bin/python3 --no-cache gemmi requests \
-    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --no-cache gemmi requests \
-    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --break-system-packages --no-cache gemmi requests
+#
+# gemmi<0.8 / requests<3 are boundary ceilings, not pins: both floated until
+# 2026-11-18. gemmi is 0.x, where a MINOR bump is the breaking one, so its
+# ceiling is the next minor; requests is 2.x and stable, so the next major.
+# Both sit above the newest release on PyPI on 2026-11-18 (gemmi 0.7.5,
+# requests 2.34.2), so neither can downgrade what this image already carries.
+# All three fallback invocations carry the same specifiers — a ceiling on only
+# the first would be skipped whenever the first branch fails.
+RUN /root/.local/bin/uv pip install --python /usr/bin/python3 --no-cache "gemmi<0.8" "requests<3" \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --no-cache "gemmi<0.8" "requests<3" \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --break-system-packages --no-cache "gemmi<0.8" "requests<3"
 
 # certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
 # layer, so every layer above keeps its build cache.

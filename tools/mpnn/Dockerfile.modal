@@ -76,7 +76,12 @@ RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 # raises ``RuntimeError: Numpy is not available`` at runtime even though
 # both modules import cleanly. Remove the pin once torch >=2.3 (which
 # ships NumPy-2-compatible bindings) lands in this image.
-RUN python3 -m pip install --no-cache-dir requests biopython "numpy<2"
+# requests<3 / biopython<2 are major-boundary ceilings, not pins: both floated
+# until 2026-11-18, so every rebuild re-resolved them to whatever PyPI served
+# that day. Each ceiling is above the newest release on PyPI on 2026-11-18
+# (requests 2.34.2, biopython 1.88), so it cannot downgrade what this image
+# already carries.
+RUN python3 -m pip install --no-cache-dir "requests<3" "biopython<2" "numpy<2"
 
 # certifi: the requirements.txt floor (#452, eMudhra key compromise). Its own
 # layer, so every layer above keeps its build cache.
