@@ -60,7 +60,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ponytail: second-order deps (pandas' own tzdata, hydra's omegaconf, and so on) are
 # still unpinned, so this is not a full lock. Add a constraints file if a rebuild
 # ever breaks on a package named nowhere in this Dockerfile.
-RUN pip install --no-cache-dir --upgrade pip \
+# pip<27 bounds the one floating install in this file: `--upgrade pip` re-
+# resolved on every rebuild. pip was 26.3 on PyPI on 2026-11-18, so a
+# major-boundary ceiling admits it and cannot downgrade it. Every package on
+# the line below is pinned exactly.
+RUN pip install --no-cache-dir --upgrade "pip<27" \
     && pip install --no-cache-dir "boltz==2.2.1" "torch==2.4.0" "requests==2.32.3" \
         "numpy==1.26.4" "pandas==2.3.2" "rdkit==2025.3.6" "types-requests==2.32.4.20250809"
 
