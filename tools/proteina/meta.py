@@ -334,7 +334,10 @@ about: dict = {
         "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
         "RF3 score for ligand / motif), a self-consistency re-fold RMSD, "
         "and downloadable structures. The "
-        "ligand and motif variants score on RF3 only."
+        "ligand and motif variants score on RF3 only. "
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and a Proteina "
+        "result does not say which of its chains that is."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

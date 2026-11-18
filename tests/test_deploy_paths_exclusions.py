@@ -114,6 +114,7 @@ the ``opaque`` assertion.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import json
 import pathlib
 import shlex
@@ -360,6 +361,76 @@ def test_workflow_still_carries_every_trigger_entry_in_order():
         "re-includes nothing); they are pinned last only to keep the negation "
         "block contiguous under the `tools/**` it qualifies."
     )
+
+
+def _trigger_matches(path: str) -> bool:
+    """Whether ``path`` fires the deploy trigger, by GitHub's later-wins rule.
+
+    ``fnmatchcase`` rather than a ``**``-aware matcher: its ``*`` already
+    crosses ``/``, so ``tools/*`` decides exactly what ``tools/**`` decides
+    for the question asked here (does a path under some OTHER top-level
+    directory match). It is wrong in the narrow direction of treating
+    ``tools/*`` as reaching into subdirectories, which is what ``tools/**``
+    means anyway. Not a general GitHub glob engine -- the non-vacuity floor
+    in the test below is what keeps it honest.
+    """
+    verdict = False
+    for pattern in _EXPECTED_PATHS:
+        negated = pattern.startswith("!")
+        if fnmatch.fnmatchcase(path, pattern.lstrip("!").replace("**", "*")):
+            verdict = not negated
+    return verdict
+
+
+def test_the_developability_package_is_outside_the_deploy_trigger():
+    """``shared/developability/`` must not redeploy the ten GPU apps.
+
+    THIS IS EVIDENCE ABOUT THE DESTINATION, NOT ABOUT THE MERGE THAT MOVES THE
+    PACKAGE THERE. It proves that editing the scorer in its new home cannot
+    fire the trigger from here on. It says nothing about the commit that
+    performs the move, which DELETES nine non-negated paths under
+    ``tools/developability/`` and therefore does satisfy the trigger: landing
+    that redeploys all ten apps, once. Do not cite this test as proof any
+    particular merge is free of a redeploy -- for that, cite the path filter
+    that excludes each changed file.
+
+    The package was moved out of ``tools/`` for exactly this reason: every
+    file under ``tools/**`` that is not named ``meta.py`` or ``__init__.py``
+    and is not under an ``example/**`` directory fires the trigger, so editing
+    a pure-Python scorer there rebuilt and redeployed ten GPU images. Nothing
+    in the package reaches a container -- no ``Dockerfile.modal`` COPYs it
+    (``test_dockerfile_copies_no_adapter_package`` covers the adapter
+    packages; the developability package is named in no COPY pattern at all)
+    and no ``tools/`` module imports it.
+
+    The floor below is the point of the test: it asserts the OLD path DID
+    match, so a matcher that silently stopped matching anything cannot make
+    this pass.
+    """
+    for path in (
+        "shared/developability/score.py",
+        "shared/developability/dimensions/liabilities.py",
+        "shared/developability/data/aggrescan_scale.py",
+    ):
+        assert not _trigger_matches(path), (
+            f"{path} fires .github/workflows/deploy-modal.yml's push.paths "
+            f"({_EXPECTED_PATHS}). Editing the developability scorer would "
+            "redeploy all ten GPU apps."
+        )
+
+    # Non-vacuity floor: the pre-move path, and a real pipeline file, MUST
+    # match -- otherwise `_trigger_matches` returning False for everything
+    # would satisfy the assertions above.
+    assert _trigger_matches("tools/developability/score.py"), (
+        "_trigger_matches no longer matches the PRE-MOVE path, so the "
+        "assertions above prove nothing about the move."
+    )
+    assert _trigger_matches("tools/esmfold2_design/run_pipeline.py"), (
+        "_trigger_matches no longer matches a pipeline file that IS on the "
+        "trigger, so this test certifies nothing."
+    )
+    # And the negations still carve out what they are supposed to.
+    assert not _trigger_matches("tools/boltzgen/meta.py")
 
 
 # ---------------------------------------------------------------------------

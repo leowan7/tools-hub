@@ -939,6 +939,11 @@ def job_detail(job_id: str):
         else {}
     )
 
+    # The measured surface figure is NOT computed here. It is fetched on
+    # request, one design at a time, by ``job_candidate_surface`` below -- see
+    # shared/design_quality.py for the measurements that ruled out both a
+    # column and a page-load figure. A page nobody expands pays nothing.
+
     return render_template(
         "job_detail.html",
         job=job,
@@ -1929,6 +1934,72 @@ def job_candidate_pdb(job_id: str, filename: str):
         mimetype="text/plain",
         status=404,
     )
+
+@jobs_bp.route("/api/jobs/<job_id>/surface/<path:filename>", methods=["GET"])
+@login_required
+def job_candidate_surface(job_id: str, filename: str):
+    """The measured surface screen for ONE design, rendered on request.
+
+    THE WHOLE POINT OF THIS ROUTE IS THAT NOBODY PAYS FOR IT UNLESS THEY ASK.
+    shared/design_quality.py records the measurements that ruled out the two
+    alternatives: a column costs a Storage fetch and a SASA pass per row, and
+    the expandable detail block is no cheaper because it is rendered inside the
+    per-row loop at page load. Here the cost is one fetch and one pass, once,
+    for the design whose row the reader opened.
+
+    Addressed by STRUCTURE NAME, like the 3D viewer and the download link
+    beside it (:func:`job_candidate_pdb`), never by row number: the candidate
+    table is also drawn for campaigns and targets, where a row's position in
+    the table is unrelated to its position in the job that produced it.
+
+    RETURNS AN HTML FRAGMENT, not JSON, so that every user-facing word lives in
+    templates/components/design_quality_panel.html with the rest of the copy
+    rather than being assembled in JavaScript -- which is also what keeps the
+    copy guards in tests/test_design_quality.py able to read it.
+
+    Always 200 for a job the caller owns, including when there is nothing to
+    show. "No measurement for this design" is an ANSWER, not an error: the
+    panel degrades to saying so rather than to a zero or a stack trace, which
+    was a requirement of this work -- at least one real run has no retrievable
+    structure. 404 only when the job is not the caller's or does not exist.
+    """
+    ctx = load_user_context()
+    if ctx is None:
+        return jsonify({"error": "unauthenticated"}), 401
+    job = get_job(job_id, user_id=ctx.user_id)
+    if job is None:
+        return jsonify({"error": "not_found"}), 404
+
+    profile = None
+    try:
+        from shared.design_quality import (  # noqa: PLC0415
+            profile_for_structure_name,
+        )
+        from shared.jobs import page_ordered_records  # noqa: PLC0415
+
+        profile = profile_for_structure_name(
+            page_ordered_records(job.tool, job.result),
+            filename,
+            tool=job.tool,
+            result=job.result if isinstance(job.result, dict) else {},
+            inputs=job.inputs if isinstance(job.inputs, dict) else {},
+            fetch_bytes=_storage_fetcher(ctx.user_id, "design_surface"),
+            job_id=job.id,
+        )
+    except Exception:  # noqa: BLE001
+        # The reader asked for a screening figure, not for a 500 on a page
+        # whose real results are already rendered. Logged so a systematic
+        # failure is visible rather than every design quietly showing nothing.
+        logger.warning(
+            "design surface not computed for job %s / %s",
+            job.id, filename, exc_info=True,
+        )
+        profile = None
+
+    return render_template(
+        "components/design_quality_panel.html", design_quality=profile,
+    )
+
 
 @jobs_bp.route("/jobs/<job_id>/af2.pdb", methods=["GET"])
 @login_required

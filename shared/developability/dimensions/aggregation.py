@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import List
 
-from tools.developability.data.aggrescan_scale import AGGRESCAN_A3V
+from shared.developability.data.aggrescan_scale import AGGRESCAN_A3V
 
 VALID_AA = set(AGGRESCAN_A3V.keys())
 

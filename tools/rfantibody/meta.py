@@ -105,7 +105,10 @@ about: dict = {
     "output_summary": (
         "Ranked VHH candidates with pAE, pLDDT, ipAE, and "
         "PDBs downloadable from a run of your own. Filter at pAE &le; 5 / ipAE &le; 6 for "
-        "downstream wet-lab work."
+        "downstream wet-lab work. "
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and an "
+        "RFantibody result does not say which of its chains that is."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

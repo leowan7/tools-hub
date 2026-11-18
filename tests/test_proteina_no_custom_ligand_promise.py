@@ -122,11 +122,22 @@ _REVIEWED = {
     # clause. No shard uses a force field -- tools/proteina/meta.py:157-162
     # records that, citing Dockerfile.modal:229-231. The molecule vocabulary
     # this test matches on ("ligand") is unchanged by the edit.
+    # 2026-11-16: the hydrophobic-patch sentence was appended. Reviewed
+    # against what this test guards: it promises no molecule of any kind, and
+    # says nothing about ligands, benchmarks or uploads. It is about which
+    # CHAIN of a delivered structure is the designed one -- a Proteina result
+    # does not say, so no patch figure is shown (shared/design_quality.py).
+    # The molecule vocabulary this test matches on ("ligand") is unchanged by
+    # the edit; the string is listed again only because the guard compares
+    # whole strings.
     (
         "Ranked designs with reward scores (AF2 pLDDT / ipTM for protein, "
         "RF3 score for ligand / motif), a self-consistency re-fold RMSD, "
         "and downloadable structures. The "
-        "ligand and motif variants score on RF3 only."
+        "ligand and motif variants score on RF3 only. "
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and a Proteina "
+        "result does not say which of its chains that is."
     ),
     (
         "RoseTTAFold3 via RosettaCommons foundry (BSD) — ligand + "

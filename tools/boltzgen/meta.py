@@ -232,7 +232,17 @@ about: dict = {
         "pLDDT at or above 80; the number is the design measured against "
         "its own refold. That says the binder folds as designed, not that "
         "it binds &mdash; re-fold a shortlist against your target to check "
-        "that."
+        "that. "
+        # This milestone began as "BoltzGen shows only four numbers, add the
+        # hydrophobic-patch figure", and the answer turned out to be that
+        # BoltzGen is one of the tools that cannot have it. Said here rather
+        # than left as a silent absence. The patch is measured on the designed
+        # chain ALONE (shared/surface_patch.py detaches every other chain), so
+        # naming that chain is a precondition; the rules that name it are
+        # shared/design_quality.py::designed_chains.
+        "No hydrophobic-patch screen is shown for these designs: that "
+        "figure is measured on the designed chain by itself, and a BoltzGen "
+        "result does not say which of its chains that is."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

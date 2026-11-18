@@ -150,7 +150,7 @@ def developability_score():
     query) has none would be inconsistent. Request-rate control belongs at
     the edge/proxy, not in one view.
     """
-    from tools.developability import score_developability  # noqa: PLC0415
+    from shared.developability import score_developability  # noqa: PLC0415
 
     raw_sequence = request.form.get("sequence", "")
     chain_type = request.form.get("chain_type", "VH").strip() or "VH"

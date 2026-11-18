@@ -1,0 +1,125 @@
+{# Measured surface and liability screen for ONE design, fetched on request.
+
+   Rendered as a standalone fragment by
+   blueprints/jobs.py::job_candidate_surface and dropped into the expanded row
+   by static/js/candidate_table.js. ``design_quality`` is None whenever the
+   measurement could not be made, which is a normal answer and not an error --
+   see the module docstring of shared/design_quality.py for the full list, but
+   the common ones are: a tool whose rows have no identifiable designed chain,
+   a fold rather than a design, and a run whose structure is no longer
+   retrievable.
+
+   THE COPY RULES THIS FILE FOLLOWS, set by the hub lead on 2026-11-16:
+
+   * It names the ONE design it describes and never implies the others were
+     measured. There is no column, so no string may read as a ranking or a
+     comparison across designs. The figure is available per design, on
+     request, which is what the tool copy in tools/*/meta.py says too.
+   * It is a SCREEN, not a verdict. No pass, no fail, no "good"/"bad", no
+     traffic light. The repo already holds this line for the sequence
+     developability pair -- neither of its columns appears in
+     shared/score_legends.py::GATE_COLUMNS, pinned by
+     tests/test_rfd4_results_and_exports.py::
+     test_the_developability_columns_are_not_a_pass_fail_bar -- and this figure
+     sits on the same side of it.
+   * It says the number is measured on a PREDICTED structure and inherits that
+     prediction's error. surface_patch.py's module docstring is explicit that
+     no copy may describe it as a measurement of the physical molecule.
+#}
+{% if design_quality %}
+<div class="design-surface-panel" style="padding: 1rem 1.25rem;">
+  <h3 style="margin: 0 0 .25rem; font-size: .95rem;">
+    Exposed hydrophobic surface &middot; chain {{ design_quality.chain }}
+  </h3>
+  <p style="margin: 0 0 .75rem; color: var(--text-secondary); font-size: .85rem;">
+    Measured on this design's predicted structure, for this design only. No
+    other design in this run has been measured, so nothing here ranks them.
+  </p>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin: .75rem 0;">
+    <div>
+      <div style="font-size: 1.5rem; font-weight: 600;">
+        {{ design_quality.largest_patch_a2 | round(0) | int }}<span
+          style="font-size: .85rem; font-weight: 400; color: var(--text-secondary);">
+          &#8491;&sup2;</span>
+      </div>
+      <div style="color: var(--text-secondary); font-size: .8rem;">
+        Largest exposed hydrophobic patch
+        <span style="white-space: nowrap;">({{ design_quality.patch_atom_count }}
+          atom{{ '' if design_quality.patch_atom_count == 1 else 's' }})</span>
+      </div>
+    </div>
+    <div>
+      <div style="font-size: 1.5rem; font-weight: 600;">
+        {{ design_quality.total_apolar_a2 | round(0) | int }}<span
+          style="font-size: .85rem; font-weight: 400; color: var(--text-secondary);">
+          &#8491;&sup2;</span>
+      </div>
+      <div style="color: var(--text-secondary); font-size: .8rem;">
+        Total exposed hydrophobic area, {{ design_quality.residues }} residues
+      </div>
+    </div>
+  </div>
+
+  {# The patch figure is a cluster of solvent-exposed carbon and sulfur atoms.
+     "Stickiness is a surface property" is Leo's ruling of 2026-11-16 and this
+     sentence is where the page says what the number is, without saying what it
+     means for any particular molecule. #}
+  <p style="color: var(--text-secondary); font-size: .85rem;">
+    The patch is the largest connected cluster of solvent-exposed carbon and
+    sulfur atoms on that chain, measured on the structure the run delivered. A
+    large exposed hydrophobic patch is one of the things associated with
+    aggregation and non-specific binding, so it is worth looking at &mdash; but
+    this is a screen on a predicted structure, not a measurement of the real
+    molecule, and it carries whatever error the prediction does. There is no
+    threshold here that passes or fails a design.
+  </p>
+
+  {% if design_quality.liabilities %}
+    <h4 style="font-size: .9rem; margin: 1rem 0 .3rem;">
+      Sequence liability motifs on chain {{ design_quality.chain }}
+    </h4>
+    <p style="color: var(--text-secondary); font-size: .8rem; margin-top: 0;">
+      Chemistry alone finds these. Where the structure shows the motif is on
+      the surface it is marked exposed and ranked one step higher, because a
+      buried motif is far less reachable; a motif we could not measure says
+      nothing either way rather than being called buried.
+    </p>
+    <ul style="font-size: .85rem;">
+      {% for lia in design_quality.liabilities %}
+        <li>
+          <strong>{{ lia.motif }}</strong> at {{ lia.position }}
+          &mdash; {{ lia.type | replace('_', ' ') }}
+          ({{ lia.severity }}{% if lia.severity != lia.base_severity %},
+            raised from {{ lia.base_severity }}{% endif %})
+          {%- if lia.exposed %} &middot; <em>measured solvent-exposed</em>
+          {%- elif lia.exposed is none %} &middot; exposure not measured
+          {%- endif %}
+          {%- if lia.detail %} &middot; {{ lia.detail }}{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p style="color: var(--text-secondary); font-size: .85rem;">
+      No sequence liability motifs were found on chain
+      {{ design_quality.chain }}. That is the motif list coming back empty, not
+      a clean bill of health &mdash; this screen looks for a fixed set of
+      chemical motifs and nothing else.
+    </p>
+  {% endif %}
+</div>
+{% else %}
+{# The honest empty state. NOT an error and NOT a zero: a zero would read as
+   "measured, and flat", which is a different claim from "not measured". The
+   reasons are listed in shared/design_quality.py; the page does not guess
+   which one applied, because telling a customer "your target chain could not
+   be named" is only useful if we know that is what happened. #}
+<div class="design-surface-panel" style="padding: 1rem 1.25rem;">
+  <p style="margin: 0; color: var(--text-secondary); font-size: .85rem;">
+    No surface measurement is available for this design. That needs a stored
+    structure whose designed chain can be identified, and one of those is
+    missing here &mdash; so there is nothing to show rather than a number to
+    doubt.
+  </p>
+</div>
+{% endif %}

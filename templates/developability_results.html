@@ -22,7 +22,21 @@
     <h1>Developability report</h1>
     <p class="subtitle">
       {{ result.chain_type }} variable region, {{ result.length }} residues.
-      Composite score aggregates five scientific dimensions at equal weight.
+      {# COUNTED, not written out. This said "five" while the page rendered
+         four cards, then survived two deletions (human-likeness, then the
+         sequence-window hydrophobicity screen) to sit at "five" over three.
+         Reading it off the result is what keeps the sentence honest: the count
+         now comes from the same dict the page draws its cards from, so the two
+         cannot disagree however many dimensions there are.
+
+         "Built from _DIMENSIONS" would overstate the mechanism. ``dimensions``
+         is a literal dict in score.py::score_developability, tied to
+         ``_DIMENSIONS`` by an ``assert set(dimensions) == set(_DIMENSIONS)``
+         immediately after it -- and _DIMENSIONS is what DEFAULT_WEIGHTS is
+         derived from. So the equal-weight claim and the count do share one
+         source, enforced by that assertion rather than by construction. #}
+      Composite score aggregates {{ result.dimensions | length }} scientific
+      dimensions at equal weight.
     </p>
 
     <div class="dev-composite {{ tier_class }}">
@@ -34,32 +48,11 @@
     </div>
   </div>
 
-  {% set humanness = result.dimensions.humanness %}
   {% set liabilities = result.dimensions.liabilities %}
   {% set charge = result.dimensions.charge %}
-  {% set hydro = result.dimensions.hydrophobicity %}
   {% set agg = result.dimensions.aggregation %}
 
   <div class="dev-dim-grid">
-
-    <div class="dev-dim-card">
-      <div class="dev-dim-header">
-        <span class="dev-dim-name">Humanness</span>
-        <span class="dev-dim-score">{{ (humanness.score * 100) | round(0, 'floor') | int }}%</span>
-      </div>
-      <p class="dev-dim-interp">
-        Fraction of input 7-mers that also occur in the human germline
-        reference pool, rescaled. Higher is more human-like.
-      </p>
-      <dl class="dev-dim-stats">
-        <dt>Top matching germline</dt>
-        <dd>{{ humanness.top_germline or 'none' }}</dd>
-        <dt>Germline overlap</dt>
-        <dd>{{ (humanness.top_germline_overlap * 100) | round(1) }}%</dd>
-        <dt>Matched k-mers</dt>
-        <dd>{{ humanness.matched_kmers }} / {{ humanness.total_kmers }}</dd>
-      </dl>
-    </div>
 
     <div class="dev-dim-card">
       <div class="dev-dim-header">
@@ -82,7 +75,7 @@
           {% for lia in liabilities.liabilities[:12] %}
             <span class="dev-lia-pill dev-lia-{{ lia.type }} dev-lia-sev-{{ lia.severity }}">
               {{ lia.motif }}@{{ lia.position }}
-              {% if lia.in_cdr %}<em>CDR</em>{% endif %}
+              {% if lia.exposed %}<em>exposed</em>{% endif %}
             </span>
           {% endfor %}
           {% if liabilities.liabilities | length > 12 %}
@@ -110,21 +103,6 @@
         <dd>{{ (charge.pI_score * 100) | round(0, 'floor') | int }}%</dd>
         <dt>Charge subscore</dt>
         <dd>{{ (charge.charge_score * 100) | round(0, 'floor') | int }}%</dd>
-      </dl>
-    </div>
-
-    <div class="dev-dim-card">
-      <div class="dev-dim-header">
-        <span class="dev-dim-name">Hydrophobic patches</span>
-        <span class="dev-dim-score">{{ (hydro.score * 100) | round(0, 'floor') | int }}%</span>
-      </div>
-      <p class="dev-dim-interp">
-        Kyte-Doolittle sliding-window hydropathy. Patches are contiguous
-        windows with mean hydropathy above +1.5.
-      </p>
-      <dl class="dev-dim-stats">
-        <dt>Patch count</dt>
-        <dd>{{ hydro.patch_count }}</dd>
       </dl>
     </div>
 
@@ -163,7 +141,7 @@
     <div class="panel-body">
       <p class="dev-seq-legend">
         Highlighted residues carry one or more liability annotations. Hover
-        for the motif, type, severity, and CDR assignment.
+        for the motif, type and severity.
       </p>
       <div class="dev-seq-view">
         {% for flag in result.per_residue_flags %}
@@ -172,7 +150,7 @@
             {% set tooltip = flag.liabilities | map(attribute='type') | join(', ') %}
             <span
               class="dev-seq-res dev-lia-{{ first.type }} dev-lia-sev-{{ first.severity }}"
-              title="Pos {{ flag.position }} ({{ flag.residue }}): {{ tooltip }} [{{ first.severity }}]{% if first.in_cdr %} · in CDR{% endif %}"
+              title="Pos {{ flag.position }} ({{ flag.residue }}): {{ tooltip }} [{{ first.severity }}]{% if first.exposed %} · measured solvent-exposed{% endif %}"
             >{{ flag.residue }}</span>
           {% else %}
             <span class="dev-seq-res">{{ flag.residue }}</span>

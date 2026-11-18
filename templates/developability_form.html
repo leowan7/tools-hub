@@ -2,7 +2,7 @@
 
 {% block title %}Binder Developability Scout — Flag antibody developability liabilities | Ranomics Tools{% endblock %}
 
-{% block description %}Free tool to flag chemical stability and biophysical liabilities in antibody or binder sequences before you move to the wet lab. Aggregation, hydrophobicity, charge, and PTM hot-spots scored in seconds.{% endblock %}
+{% block description %}Free tool to flag chemical stability and biophysical liabilities in antibody or binder sequences before you move to the wet lab. Aggregation, charge, and PTM hot-spots scored in seconds.{% endblock %}
 {% block jsonld_extra %}{% from "components/_webapp_ld.html" import webapp_ld with context %}{{ webapp_ld("Binder Developability Scout", self.description()) }}{% endblock %}
 
 {% block content %}
@@ -11,9 +11,11 @@
     <h1>Binder Developability Scout</h1>
     <p class="subtitle">
       Flag chemical stability and biophysical liabilities in antibody or
-      nanobody variable regions before you order them. Five dimensions:
-      humanness, sequence liabilities, net charge and pI, hydrophobic
-      patches, aggregation propensity.
+      nanobody variable regions before you order them. Three dimensions:
+      sequence liabilities, net charge and pI, aggregation propensity.
+      Stickiness is not scored here: a hydrophobic stretch only matters if
+      it is on the surface, and that needs a structure this form does not
+      take.
     </p>
   </div>
 
@@ -59,9 +61,10 @@
             <option value="other" {% if chain_type == 'OTHER' %}selected{% endif %}>Other</option>
           </select>
           <p class="field-hint">
-            Chain type affects the germline pool used for humanness and the
-            CDR position heuristic used to weight oxidation and deamidation
-            liabilities.
+            Recorded on the result as a label. It no longer changes any
+            score: liability severity now comes from measured solvent
+            exposure, which needs a structure, and this form takes only a
+            sequence.
           </p>
         </div>
 
@@ -72,16 +75,15 @@
         <details class="dev-help">
           <summary>What you get back</summary>
           <p>
-            A composite score as a percentage plus five per-dimension
+            A composite score as a percentage plus three per-dimension
             breakdowns. Each
-            flagged motif is returned with its 1-based position, severity, and
-            whether it falls in an approximated CDR. The sequence is rendered
-            with liability positions highlighted.
+            flagged motif is returned with its 1-based position and severity.
+            The sequence is rendered with liability positions highlighted.
           </p>
           <p>
-            This is a prototype scorer. CDR boundaries are estimated from
-            length. Humanness compares against 11 human germline V genes
-            (5 heavy, 3 kappa, 3 lambda).
+            This is a prototype scorer. Severities here are from each motif's
+            chemistry alone: raising them for the motifs that are actually on
+            the surface needs a structure, which this form does not take.
           </p>
         </details>
       </form>

@@ -141,7 +141,26 @@ about: dict = {
         "the de-novo binder beside it, downloadable from a run of your "
         "own. There are no score columns: nothing in this run measures "
         "how well a binder holds, so take the structures into a "
-        "predictor before choosing between them."
+        "predictor before choosing between them. "
+        # rfd4 is the one tool reached by the TARGET-CHAIN rule rather than
+        # the row-sequence rule: shared/exports.py::_TARGET_CHAIN_TOOLS is an
+        # allow-list of one, so every other chain of the delivered structure
+        # is the designed one.
+        #
+        # "ANY DESIGN, WHEN YOU ASK FOR IT" is the shape that ships
+        # (blueprints/jobs.py::job_candidate_surface): the figure is computed
+        # per design on request, so no string here may imply the designs have
+        # been compared -- none of them is measured until someone asks, and
+        # there is no column and no ranking. This run has no score to rank on
+        # in the first place.
+        "Open any design's row and you can measure its largest "
+        "solvent-exposed hydrophobic patch, in square "
+        "&aring;ngstr&ouml;ms, on the binder chain alone, plus its "
+        "sequence liability motifs with the ones on the surface marked. "
+        "Each design is measured only when you ask for it, so nothing "
+        "here compares one design with another, and it is measured on a "
+        "predicted structure &mdash; it is a thing to look at, not a "
+        "threshold anything passes."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
