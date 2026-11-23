@@ -49,13 +49,15 @@ _COLLECT_BUDGET_S = 120
 
 
 def collect_finished_jobs(*, modal_client=None, max_poll: int = 64) -> int:  # noqa: ANN001
-    """Poll each unfinished single job once and settle the ones Modal has
-    finished. Returns how many polls wrote to a row.
+    """Poll up to ``max_poll`` unfinished single jobs, oldest first, and
+    settle the ones Modal has finished. Returns how many polls wrote to a row.
 
     A tool that returns its result inline is otherwise collected only by
     ``blueprints/jobs.py::job_status``, which runs when the job page is open.
     This applies the same branches (``blueprints/jobs.py::settle_from_poll``)
-    with ``inline_only=True``. Campaign children are left to
+    with ``inline_only=True``. A ``running`` poll is skipped, so a queued row
+    stays ``pending`` for cron/sweep_stuck_jobs.py's 30-minute pending arm.
+    Campaign children are left to
     ``shared/compute_campaigns.py::reconcile_campaign_children``.
     """
     import time  # noqa: PLC0415
@@ -94,7 +96,9 @@ def collect_finished_jobs(*, modal_client=None, max_poll: int = 64) -> int:  # n
             if not job.modal_function_call_id:
                 continue
             poll = modal_client.poll(job.modal_function_call_id)
-            if isinstance(poll, dict) and settle_from_poll(job, poll, inline_only=True):
+            if not isinstance(poll, dict) or poll.get("status") == "running":
+                continue
+            if settle_from_poll(job, poll, inline_only=True):
                 collected += 1
         except Exception:
             logger.warning(

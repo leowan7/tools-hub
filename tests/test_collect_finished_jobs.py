@@ -2,8 +2,10 @@
 
 Two esmfold2-design runs in November 2026 finished on Modal and were never
 collected, because only the open job page polled for the result; the
-six-hour sweeper then wrote them off as timeouts. One test per money branch:
-collected and charged, collected twice, and genuinely stuck.
+six-hour sweeper then wrote them off as timeouts (the incident itself is in
+docs/qa/ESMFOLD2-STALL-2026-11-05.md, not provable from here). The first
+three tests are the money branches: collected and charged, collected twice,
+and genuinely stuck.
 """
 
 from __future__ import annotations
@@ -118,8 +120,9 @@ def test_a_finished_run_is_collected_and_charged(env):
 
 
 def test_collecting_twice_settles_and_emails_once(env):
-    """A second tick, and an open job page holding a snapshot of the row
-    from before the first settle, both lose the status CAS."""
+    """A second tick no longer selects the row, and an open job page holding
+    a snapshot from before the settle hits complete_job's already-terminal
+    return."""
     stale = ToolJob.from_row(env.row)
 
     assert collect_finished_jobs(modal_client=env.modal) == 1
@@ -163,6 +166,16 @@ def test_the_sweeper_still_refunds_a_run_that_hung(env):
     assert stored["failure_class"] == "no_progress_timeout"
     env.settle.assert_called_once()
     assert env.emails == []
+
+
+def test_a_queued_run_stays_pending_for_the_thirty_minute_sweep(env):
+    env.store.rows[env.id]["status"] = "pending"
+    env.polls[FC] = {"status": "running", "result": None,
+                     "gpu_seconds_used": None, "error": None}
+
+    assert collect_finished_jobs(modal_client=env.modal) == 0
+
+    assert env.store.rows[env.id]["status"] == "pending"
 
 
 def test_an_inline_failure_is_settled_as_failed(env):

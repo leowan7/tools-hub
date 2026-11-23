@@ -1157,9 +1157,9 @@ def settle_from_poll(job, poll: dict, *, inline_only: bool = False) -> bool:
             # the failure_class and so whether the wallet hold is settled
             # or released (shared/jobs.py::classify_terminal_state ->
             # _BILLED_FAILURE_CLASSES / _REFUNDED_FAILURE_CLASSES), and
-            # every tool here returns its terminal payload inline as
-            # smoke_result rather than through /webhooks/modal, so this is
-            # the only place it can reach the classifier. "pipeline" stays
+            # a tool that returns its terminal payload inline as
+            # smoke_result rather than through /webhooks/modal can reach
+            # the classifier only through this function. "pipeline" stays
             # the fallback for a failed poll carrying no payload at all
             # (webhook-delivery failure, nonzero exit with no
             # smoke_result) -- gpu/modal_client.py::_interpret_pipeline_return.
