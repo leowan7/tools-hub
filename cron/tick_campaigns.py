@@ -42,6 +42,67 @@ _ROUND_ROBIN_DISPATCH_CAP = 4
 _MAX_ROUNDS = 16
 
 
+# Wall-clock budget for one collect pass. A poll is bounded at
+# gpu/modal_client.py::_MODAL_CALL_TIMEOUT_SEC, so the pass ends at most one
+# poll after this.
+_COLLECT_BUDGET_S = 120
+
+
+def collect_finished_jobs(*, modal_client=None, max_poll: int = 64) -> int:  # noqa: ANN001
+    """Poll each unfinished single job once and settle the ones Modal has
+    finished. Returns how many polls wrote to a row.
+
+    A tool that returns its result inline is otherwise collected only by
+    ``blueprints/jobs.py::job_status``, which runs when the job page is open.
+    This applies the same branches (``blueprints/jobs.py::settle_from_poll``)
+    with ``inline_only=True``. Campaign children are left to
+    ``shared/compute_campaigns.py::reconcile_campaign_children``.
+    """
+    import time  # noqa: PLC0415
+
+    from blueprints.jobs import settle_from_poll  # noqa: PLC0415
+    from shared.credits import get_service_client  # noqa: PLC0415
+    from shared.jobs import ToolJob  # noqa: PLC0415
+
+    client = get_service_client()
+    if client is None:
+        return 0
+    # ponytail: oldest first with a cap, so more than max_poll unfinished
+    # single jobs would starve the newest; raise the cap if that is ever seen.
+    rows = (
+        client.table("tool_jobs")
+        .select("*")
+        .in_("status", ["pending", "running"])
+        .is_("campaign_id", "null")
+        .order("created_at")
+        .limit(max_poll)
+        .execute()
+        .data
+        or []
+    )
+    if modal_client is None:
+        from gpu.modal_client import ModalClient  # noqa: PLC0415
+
+        modal_client = ModalClient()
+    deadline = time.monotonic() + _COLLECT_BUDGET_S
+    collected = 0
+    for row in rows:
+        if time.monotonic() > deadline:
+            break
+        try:
+            job = ToolJob.from_row(row)
+            if not job.modal_function_call_id:
+                continue
+            poll = modal_client.poll(job.modal_function_call_id)
+            if isinstance(poll, dict) and settle_from_poll(job, poll, inline_only=True):
+                collected += 1
+        except Exception:
+            logger.warning(
+                "collect_finished_jobs: job %s raised", row.get("id"), exc_info=True,
+            )
+    return collected
+
+
 def tick_campaigns() -> dict:
     """Re-drive every in-flight campaign once, fair across a user's campaigns.
 
@@ -63,6 +124,14 @@ def tick_campaigns() -> dict:
     if client is None:
         summary["errors"].append("no service client")
         return summary
+
+    # Before the meter, so a run that has finished is settled and not debited
+    # for the time it sat uncollected.
+    try:
+        summary["collected"] = collect_finished_jobs()
+    except Exception:
+        logger.warning("tick_campaigns: collect failed", exc_info=True)
+        summary["errors"].append("collect failed")
 
     try:
         from shared.jobs import meter_live_runs  # noqa: PLC0415

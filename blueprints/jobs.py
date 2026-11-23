@@ -1126,6 +1126,91 @@ def _progress_one_count(progress) -> dict:
     return out
 
 
+def settle_from_poll(job, poll: dict, *, inline_only: bool = False) -> bool:
+    """Apply one Modal poll to a pending or running job.
+
+    Returns True when a branch wrote to the row, so the caller re-reads it.
+    Callers: ``job_status`` below (the open job page) and
+    ``cron/tick_campaigns.py::collect_finished_jobs`` (every tick, for a run
+    nobody is watching).
+
+    ``inline_only`` skips a ``failed`` poll that carries no ``error_bucket``,
+    the same rule and for the same reason as
+    ``shared/compute_campaigns.py::reconcile_campaign_children``: a pipeline
+    that reports through the terminal webhook reads ``failed`` here with no
+    inline payload (gpu/modal_client.py::_interpret_pipeline_return, the
+    ``smoke_result`` missing branch).
+    """
+    if poll["status"] == "succeeded":
+        complete_job(
+            job.id,
+            terminal_status="succeeded",
+            result=poll["result"] or {},
+            gpu_seconds_used=poll.get("gpu_seconds_used"),
+        )
+        return True
+    elif poll["status"] == "failed" and (poll.get("error_bucket") or not inline_only):
+        complete_job(
+            job.id,
+            terminal_status="failed",
+            # The pipeline's own bucket when it reported one. It decides
+            # the failure_class and so whether the wallet hold is settled
+            # or released (shared/jobs.py::classify_terminal_state ->
+            # _BILLED_FAILURE_CLASSES / _REFUNDED_FAILURE_CLASSES), and
+            # every tool here returns its terminal payload inline as
+            # smoke_result rather than through /webhooks/modal, so this is
+            # the only place it can reach the classifier. "pipeline" stays
+            # the fallback for a failed poll carrying no payload at all
+            # (webhook-delivery failure, nonzero exit with no
+            # smoke_result) -- gpu/modal_client.py::_interpret_pipeline_return.
+            error={
+                "bucket": poll.get("error_bucket") or "pipeline",
+                "detail": poll.get("error") or "",
+            },
+            gpu_seconds_used=poll.get("gpu_seconds_used"),
+        )
+        return True
+    elif poll["status"] == "timeout":
+        # Modal recorded a container timeout for this FunctionCall, so it
+        # will never return: terminal, and nothing is gained by waiting for
+        # the 6h stuck-job sweeper to say the same thing.
+        #
+        # Routed through timeout_stuck_job rather than
+        # complete_job(terminal_status="timeout") so it keeps the sweeper's
+        # recovery gate: a run that finished every design and uploaded its
+        # outputs before the container clock ran out is finalised as
+        # SUCCEEDED off Storage + the heartbeat snapshot
+        # (shared/job_recovery.py::recover_stuck_job_result), not refunded
+        # with its results discarded. Only when nothing is recoverable does
+        # it mark_timeout + keep + settle, which releases the hold in
+        # full when the run delivered nothing
+        # (status="timeout" with no kept designs ->
+        # failure_class="no_progress_timeout" ->
+        # shared/jobs.py::_REFUNDED_FAILURE_CLASSES) and charges the GPU
+        # when it did (-> "timeout_with_delivery", which is in
+        # shared/jobs.py::_BILLED_FAILURE_CLASSES).
+        #
+        # probe_modal=False: we just polled Modal above and got a terminal
+        # container timeout, so recovery's own Modal probe would re-raise
+        # the same error and reach the same "unknown" verdict -- while
+        # spending a SECOND bounded 90 s call in this request. Two stacked
+        # hops is 180 s, past gunicorn's 120 s worker watchdog
+        # (gunicorn.conf.py::timeout). Pinned by
+        # tests/test_modal_function_timeout.py.
+        timeout_stuck_job(job.id, probe_modal=False)
+        return True
+    elif poll["status"] == "running" and job.status == "pending":
+        mark_running(job.id)
+        return True
+    # poll["status"] == "error" is deliberately NOT terminalised: it is the
+    # bucket for an unreachable or wedged Modal API call (including our own
+    # ModalCallTimeout), which says nothing about whether the GPU run
+    # stopped. Terminalising here would refund and close a job still
+    # burning GPU. The next poll, the terminal webhook, or the stuck-job
+    # sweeper resolves it.
+    return False
+
+
 @jobs_bp.route("/jobs/<job_id>/status.json", methods=["GET"])
 @login_required
 def job_status(job_id: str):
@@ -1141,73 +1226,8 @@ def job_status(job_id: str):
     # callback has not fired (e.g. inline smoke-tier returns).
     if job.status in ("pending", "running") and job.modal_function_call_id:
         poll = current_app.modal_client.poll(job.modal_function_call_id)
-        if poll["status"] == "succeeded":
-            complete_job(
-                job.id,
-                terminal_status="succeeded",
-                result=poll["result"] or {},
-                gpu_seconds_used=poll.get("gpu_seconds_used"),
-            )
+        if settle_from_poll(job, poll):
             job = get_job(job_id, user_id=ctx.user_id)
-        elif poll["status"] == "failed":
-            complete_job(
-                job.id,
-                terminal_status="failed",
-                # The pipeline's own bucket when it reported one. It decides
-                # the failure_class and so whether the wallet hold is settled
-                # or released (shared/jobs.py::classify_terminal_state ->
-                # _BILLED_FAILURE_CLASSES / _REFUNDED_FAILURE_CLASSES), and
-                # every tool here returns its terminal payload inline as
-                # smoke_result rather than through /webhooks/modal, so this is
-                # the only place it can reach the classifier. "pipeline" stays
-                # the fallback for a failed poll carrying no payload at all
-                # (webhook-delivery failure, nonzero exit with no
-                # smoke_result) -- gpu/modal_client.py::_interpret_pipeline_return.
-                error={
-                    "bucket": poll.get("error_bucket") or "pipeline",
-                    "detail": poll.get("error") or "",
-                },
-                gpu_seconds_used=poll.get("gpu_seconds_used"),
-            )
-            job = get_job(job_id, user_id=ctx.user_id)
-        elif poll["status"] == "timeout":
-            # Modal recorded a container timeout for this FunctionCall, so it
-            # will never return: terminal, and nothing is gained by waiting for
-            # the 6h stuck-job sweeper to say the same thing.
-            #
-            # Routed through timeout_stuck_job rather than
-            # complete_job(terminal_status="timeout") so it keeps the sweeper's
-            # recovery gate: a run that finished every design and uploaded its
-            # outputs before the container clock ran out is finalised as
-            # SUCCEEDED off Storage + the heartbeat snapshot
-            # (shared/job_recovery.py::recover_stuck_job_result), not refunded
-            # with its results discarded. Only when nothing is recoverable does
-            # it mark_timeout + keep + settle, which releases the hold in
-            # full when the run delivered nothing
-            # (status="timeout" with no kept designs ->
-            # failure_class="no_progress_timeout" ->
-            # shared/jobs.py::_REFUNDED_FAILURE_CLASSES) and charges the GPU
-            # when it did (-> "timeout_with_delivery", which is in
-            # shared/jobs.py::_BILLED_FAILURE_CLASSES).
-            #
-            # probe_modal=False: we just polled Modal above and got a terminal
-            # container timeout, so recovery's own Modal probe would re-raise
-            # the same error and reach the same "unknown" verdict -- while
-            # spending a SECOND bounded 90 s call in this request. Two stacked
-            # hops is 180 s, past gunicorn's 120 s worker watchdog
-            # (gunicorn.conf.py::timeout). Pinned by
-            # tests/test_modal_function_timeout.py.
-            timeout_stuck_job(job.id, probe_modal=False)
-            job = get_job(job_id, user_id=ctx.user_id)
-        elif poll["status"] == "running" and job.status == "pending":
-            mark_running(job.id)
-            job = get_job(job_id, user_id=ctx.user_id)
-        # poll["status"] == "error" is deliberately NOT terminalised: it is the
-        # bucket for an unreachable or wedged Modal API call (including our own
-        # ModalCallTimeout), which says nothing about whether the GPU run
-        # stopped. Terminalising here would refund and close a job still
-        # burning GPU. The next poll, the terminal webhook, or the stuck-job
-        # sweeper resolves it.
 
     inputs = job.inputs or {}
     partials = inputs.get("_partial_candidates") or []
