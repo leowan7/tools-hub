@@ -251,6 +251,10 @@
 
         var insufficient = deficit > 0 && !ceiling && !hard;
         setHidden(gate, !insufficient);
+        if (insufficient && gate && !gate.dataset.tracked && window.track) {
+          gate.dataset.tracked = '1';
+          window.track('credit_exhausted', { tool: toolSlug, where: 'form' });
+        }
         if (insufficient && gateBalanceEl) {
           gateBalanceEl.textContent = fmtDown(balance);
         }

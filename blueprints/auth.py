@@ -365,14 +365,8 @@ def signup():
         },
     )
 
-    return render_template(
-        "login.html",
-        mode="signin",
-        error=None,
-        email=email,
-        next=next_url,
-        success_msg="Account created. Sign in to get started.",
-    )
+    _start_session(email, result.user_id, {"method": "signup"})
+    return redirect(next_url)
 
 # ------------------------------------------------------------------
 # Continue with Google: OAuth 2.0 authorization code flow with PKCE.

@@ -287,6 +287,18 @@ def create_app() -> Flask:
     # shows it as a tab without passing signup_token; see test_signup_timing_token.py.
     from shared.auth import issue_signup_token  # noqa: PLC0415
     flask_app.jinja_env.globals["issue_signup_token"] = issue_signup_token
+    from shared.auth import MIN_PURPOSE_CHARS  # noqa: PLC0415
+    from shared.email_domain import (  # noqa: PLC0415
+        PERSONAL_DOMAINS,
+        EmailClass,
+        classify_email,
+    )
+    flask_app.jinja_env.globals["min_purpose_chars"] = MIN_PURPOSE_CHARS
+    # Only domains register_user would ask for a purpose note.
+    flask_app.jinja_env.globals["personal_domains"] = sorted(
+        d for d in PERSONAL_DOMAINS
+        if classify_email(f"a@{d}") is EmailClass.PERSONAL
+    )
 
     def _csrf_request_is_exempt() -> bool:
         """True for requests that must NOT be subject to the web-UI CSRF check."""
