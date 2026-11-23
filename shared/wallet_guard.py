@@ -495,6 +495,16 @@ def _render_topup_gate(
     except Exception:  # session writes are best effort
         pass
 
+    if reason in (REASON_WALLET_EMPTY, REASON_INSUFFICIENT):
+        from shared.events import log_event  # noqa: PLC0415
+        log_event(
+            event_type="credit_exhausted",
+            user_id=session.get("user_id"),
+            session_id=session.get("anon_session_id"),
+            path=request.path,
+            props={"tool": tool_slug, "reason": reason, "where": "submit"},
+        )
+
     # NOTE (blueprint refactor): "tool_form" becomes "tools.tool_form" when
     # the tools routes move into the tools blueprint (Commit 7).
     next_url = url_for("tools.tool_form", tool=tool_slug)

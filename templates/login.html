@@ -125,8 +125,8 @@
             <label for="signup-purpose">What are you working on?</label>
             <textarea id="signup-purpose" name="purpose" rows="3"
                       maxlength="500"
-                      placeholder="A sentence or two about your target, lab, or project helps us tune what we build.">{{ signup_purpose or '' }}</textarea>
-            <span class="field-hint">Optional for institutional or work email. Required for personal email such as Gmail, QQ or 163 (30+ characters). <span id="signup-purpose-count"></span></span>
+                      placeholder="e.g. a binder for my target">{{ signup_purpose or '' }}</textarea>
+            <span class="field-hint">Optional for institutional or work email. Required for personal email such as Gmail, QQ or 163 ({{ min_purpose_chars }}+ characters). <span id="signup-purpose-count"></span></span>
           </div>
 
           <div class="field">
@@ -240,9 +240,22 @@
       var box = document.getElementById('signup-purpose');
       var out = document.getElementById('signup-purpose-count');
       if (!box || !out) return;
-      function update() { out.textContent = Array.from(box.value.trim()).length + '/30 characters.'; }
-      box.addEventListener('input', update);
+      function update() { out.textContent = Array.from(box.value.trim()).length + '/{{ min_purpose_chars }} characters.'; }
+      // Same rule in the browser, so a personal-email signup is told before
+      // the POST. The server check in register_user stays the authority.
+      var personal = {{ personal_domains | tojson }};
+      var email = document.getElementById('signup-email');
+      function check() {
+        var domain = (email ? email.value : '').trim().toLowerCase().split('@').pop();
+        var short = Array.from(box.value.trim()).length < {{ min_purpose_chars }};
+        box.setCustomValidity(short && personal.indexOf(domain) !== -1
+          ? 'Personal email: please tell us what you are working on ({{ min_purpose_chars }}+ characters).'
+          : '');
+      }
+      box.addEventListener('input', function () { update(); check(); });
+      if (email) email.addEventListener('input', check);
       update();
+      check();
     })();
 
     (function () {
