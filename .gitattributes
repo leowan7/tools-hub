@@ -8,3 +8,6 @@ contracts/*.py text eol=lf
 shared/VENDORED_SHA256.lock text eol=lf
 shared/pipeline_normalize.py text eol=lf
 shared/uniprot_lookup.py text eol=lf
+
+# Web fonts are binary; never let autocrlf touch them.
+*.woff2 binary
