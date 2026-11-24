@@ -77,6 +77,13 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     "signup_form_started",
     "signup_failed",
     "credit_exhausted",
+    # blueprints/invoice_requests.py: a signed-in user asked to buy credit
+    # against an invoice and pay by bank transfer. Props carry amount_usd,
+    # plus `where` and `tool` -- the same KEY NAMES credit_exhausted uses,
+    # though `where` takes different values ("topup"/"gate" vs
+    # "submit"/"form"), so join the two on user_id, not on where.
+    # Not a payment: no wallet is credited anywhere on that path.
+    "invoice_requested",
     "scale_up_click",
     # static/js/track.js, delegated from the result page's anchors.
     "result_download",

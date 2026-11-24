@@ -169,6 +169,7 @@ from blueprints.lab_projects import lab_projects_bp
 from blueprints.admin import admin_bp
 from blueprints.auth import auth_bp
 from blueprints.wallet import wallet_bp
+from blueprints.invoice_requests import invoice_requests_bp
 from blueprints.tools import tools_bp
 from blueprints.prep import prep_bp
 from webhooks.modal import register_modal_webhooks
@@ -870,6 +871,12 @@ def create_app() -> Flask:
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(auth_bp)
     flask_app.register_blueprint(wallet_bp)
+    # Lead capture for invoice / bank-transfer purchases. Deliberately its
+    # own blueprint and not part of wallet_bp: it writes no ledger row and
+    # touches no balance, and keeping it out of the money module makes that
+    # checkable from the import list. CSRF is enforced on it by the
+    # app-wide rule above, since it is not in the exemption list.
+    flask_app.register_blueprint(invoice_requests_bp)
     flask_app.register_blueprint(tools_bp)
     flask_app.register_blueprint(prep_bp)
 

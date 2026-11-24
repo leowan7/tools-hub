@@ -2747,6 +2747,54 @@ def send_wallet_frozen_email(
     )
 
 
+def send_invoice_request(
+    *,
+    user_id: str,
+    account_email: str,
+    contact_name: str,
+    institution: str,
+    contact_email: str,
+    amount_usd: str,
+    note: str = "",
+) -> bool:
+    """Mail an inbound invoice / bank-transfer purchase request to support.
+
+    Sent TO the support inbox, not to the customer: this is a sales lead,
+    so the recipient is us. ``reply_to`` is not set, because
+    :func:`_post_resend` does not take one -- the body carries the
+    requester's address instead, which is also the address a purchasing
+    office wants the invoice sent to and need not be the account's own.
+
+    Returns True only on a confirmed send. The caller must NOT make its
+    user-facing confirmation conditional on that: an unset
+    ``RESEND_API_KEY`` or a non-2xx from Resend returns False here, and the
+    request has already been recorded as a ``user_events`` row by then
+    (blueprints/invoice_requests.py::invoice_request_submit).
+
+    Writes nothing and reads no wallet. Nothing in this function or its
+    template represents an agreed price, an order, or a balance.
+    """
+    html = _render_template(
+        "send_invoice_request.html",
+        base_url=_base_url(),
+        user_id=user_id,
+        account_email=account_email,
+        contact_name=contact_name,
+        institution=institution,
+        contact_email=contact_email,
+        amount_usd=amount_usd,
+        note=note,
+    )
+    return _post_resend(
+        to_email=_support_email(),
+        subject=(
+            f"Invoice request: {institution} — ${amount_usd}"
+        ),
+        html_body=html,
+        log_tag=f"invoice_request user={user_id}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal Slack alerters
 # ---------------------------------------------------------------------------

@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{# Invoice / bank-transfer purchase request.
+   Route: blueprints/invoice_requests.py (GET + POST
+   /account/wallet/invoice-request).
+
+   LEAD CAPTURE ONLY. This page creates no charge, credits no wallet and
+   quotes no price. The amount is what the buyer asks to buy.
+
+   Context:
+     values            dict of the five form fields, always complete so a
+                       rejected submit keeps the buyer's own text
+     errors            dict keyed by field name, plus "_form" for a
+                       whole-form message
+     invoice_sent      True -> render the confirmation instead of the form
+     return_tool       slug the buyer came from, or None
+     min_amount_usd    smallest order this form accepts
+     action_url        POST target
+     support_email     injected by app.py's context processor
+#}
+
+{% block title %}{% if invoice_sent %}Invoice request received: Ranomics Tools{% else %}Request an invoice: Ranomics Tools{% endif %}{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+
+  {% if invoice_sent %}
+
+    <div class="hero">
+      <h1>Invoice request received</h1>
+      <p class="subtitle">
+        We will email you a quote and an invoice so your purchasing office
+        can pay by bank transfer.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">What happens next</span>
+      </div>
+      <div class="panel-body">
+        <div class="success-box">
+          Your request is with our team. Someone replies in person, normally
+          within one business day.
+        </div>
+        <p class="wallet-section-body">
+          You will receive a quote for <strong>${{ values.amount_usd }}</strong>
+          and an invoice with our bank details, addressed to
+          <strong>{{ values.institution }}</strong>. Once the transfer
+          arrives we add the credit to your wallet and email you to confirm.
+        </p>
+        <p class="wallet-section-body">
+          Your wallet balance does not change until then, so it will still
+          read the same if you check it today. That is expected.
+        </p>
+        <p class="field-helper" style="margin-top: 0.75rem;">
+          Need to change anything, or add a PO number or a VAT or tax id?
+          Reply to the quote, or email
+          <a href="mailto:{{ support_email }}">{{ support_email }}</a>.
+        </p>
+        <div class="wallet-topup-cta-row" style="margin-top: 1.5rem;">
+          {% if return_tool %}
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}" class="btn-primary">
+              Back to {{ return_tool }}
+            </a>
+            <a href="/account/wallet" class="btn-secondary">View wallet</a>
+          {% else %}
+            <a href="/account/wallet" class="btn-primary">View wallet</a>
+            <a href="/tools" class="btn-secondary">Browse tools</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+  {% else %}
+
+    <div class="hero">
+      <h1>Request an invoice</h1>
+      <p class="subtitle">
+        If your institution buys on a purchase order and pays by bank
+        transfer, tell us what you need and we will send a quote and an
+        invoice. Most university and company purchasing offices work this
+        way.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Your details</span>
+        <a href="/account/wallet/topup" class="nav-link">Pay by card instead &rarr;</a>
+      </div>
+      <div class="panel-body">
+
+        {% if errors._form %}
+          <div class="error-box">{{ errors._form }}</div>
+        {% endif %}
+
+        <form method="POST" action="{{ action_url }}" class="wallet-topup-form">
+          {{ csrf_input() }}
+          {% if return_tool %}
+            <input type="hidden" name="tool" value="{{ return_tool }}">
+          {% endif %}
+          {# Which entry point sent them here, so the event can tell the
+             pricing anchor apart from the top-up page's block. Routing
+             context only; the handler accepts the literal "pricing" and
+             ignores anything else. #}
+          {% if request.args.get('from') == 'pricing' %}
+            <input type="hidden" name="from" value="pricing">
+          {% endif %}
+
+          <div class="field-group">
+            <label for="institution" class="field-label">
+              Institution or company
+            </label>
+            <input type="text" id="institution" name="institution"
+                   class="field-input" maxlength="160" required
+                   value="{{ values.institution }}">
+            <div class="field-helper">
+              {% if errors.institution %}
+                <span style="color: var(--error);">{{ errors.institution }}</span>
+              {% else %}
+                The legal entity the invoice is made out to.
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="field-group" style="margin-top: 1rem;">
+            <label for="contact_name" class="field-label">
+              Who should the invoice be addressed to?
+            </label>
+            <input type="text" id="contact_name" name="contact_name"
+                   class="field-input" maxlength="120" required
+                   value="{{ values.contact_name }}">
+            <div class="field-helper">
+              {% if errors.contact_name %}
+                <span style="color: var(--error);">{{ errors.contact_name }}</span>
+              {% else %}
+                You, or whoever in purchasing handles it.
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="field-group" style="margin-top: 1rem;">
+            <label for="contact_email" class="field-label">
+              Where should we send the invoice?
+            </label>
+            <input type="email" id="contact_email" name="contact_email"
+                   class="field-input" maxlength="320" required
+                   value="{{ values.contact_email }}">
+            <div class="field-helper">
+              {% if errors.contact_email %}
+                <span style="color: var(--error);">{{ errors.contact_email }}</span>
+              {% else %}
+                Prefilled with your account address. Change it if accounts
+                payable should receive it instead.
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="field-group" style="margin-top: 1rem;">
+            <label for="amount_usd" class="field-label">
+              How much credit do you want to buy? (USD)
+            </label>
+            <div class="wallet-topup-custom">
+              <span class="wallet-topup-custom-prefix">$</span>
+              <input type="number" id="amount_usd" name="amount_usd"
+                     class="field-input" min="{{ min_amount_usd }}" step="1"
+                     required value="{{ values.amount_usd }}">
+            </div>
+            <div class="field-helper">
+              {% if errors.amount_usd %}
+                <span style="color: var(--error);">{{ errors.amount_usd }}</span>
+              {% else %}
+                Whole dollars, minimum ${{ min_amount_usd }}. This is what we
+                quote, not a commitment &mdash; tell us an approximate budget
+                and we will work it out with you.
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="field-group" style="margin-top: 1rem;">
+            <label for="note" class="field-label">
+              Anything we should know? (optional)
+            </label>
+            <textarea id="note" name="note" class="field-input" rows="4"
+                      maxlength="2000"
+                      style="resize: vertical;">{{ values.note }}</textarea>
+            <div class="field-helper">
+              A PO number, a VAT or tax id, billing address, a deadline, or
+              what you are planning to run.
+            </div>
+          </div>
+
+          <div class="wallet-topup-cta-row">
+            <button type="submit" class="btn-primary submit-cta">
+              Request an invoice
+            </button>
+            {% if return_tool %}
+              <a href="{{ url_for('tools.tool_form', tool=return_tool) }}" class="btn-secondary">
+                Back to the form
+              </a>
+            {% else %}
+              <a href="/account/wallet" class="btn-secondary">Cancel</a>
+            {% endif %}
+          </div>
+        </form>
+
+        {# The address the throttle message and the form copy refer to as
+           "below". It has to be on THIS branch, not only on the
+           confirmation: a buyer who hits the throttle or a validation
+           refusal sees this branch and needs a route that is not the form.
+        #}
+        <p class="field-helper" style="margin-top: 1.25rem;">
+          Prefer to arrange it over email, or need a quote in another
+          currency? Write to
+          <a href="mailto:{{ support_email }}">{{ support_email }}</a>.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">How it works</span>
+        <a href="/pricing" class="nav-link">Full pricing &rarr;</a>
+      </div>
+      <div class="panel-body">
+        <p style="margin: 0 0 0.75rem 0; color: var(--text-secondary); line-height: 1.65;">
+          We send a quote and an invoice with our bank details. When the
+          transfer arrives we add the credit to your wallet, and it works
+          exactly like a card top up from there: the balance is your spend
+          cap, jobs debit only the compute they deliver, and the money does
+          not expire.
+        </p>
+        <p style="margin: 0; color: var(--text-secondary); line-height: 1.65;">
+          A bank transfer takes a few days to clear, so this is the slower of
+          the two routes. If you want to start a run today, a card top up
+          credits your wallet in seconds.
+        </p>
+      </div>
+    </div>
+
+  {% endif %}
+
+{% endblock %}

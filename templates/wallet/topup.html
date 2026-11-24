@@ -254,6 +254,36 @@
     </div>
   </div>
 
+  {# Invoice / bank transfer. Placed directly under the card form because
+     this template IS the paying step for all three routes into it -- the
+     standalone page, the tool-submit gate and the refold gate all render it
+     (blueprints/wallet.py::wallet_topup, shared/wallet_guard.py::
+     _render_topup_gate, shared/wallet_guard.py::refold_gate) -- so one block
+     here reaches every buyer who gets this far. Links only; the form itself
+     lives on its own route and writes no ledger row. #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Buying through your institution?</span>
+    </div>
+    <div class="panel-body">
+      <p class="wallet-section-body">
+        If your purchasing office buys on a purchase order and pays by bank
+        transfer, we can send a quote and an invoice instead. Credit lands in
+        the same wallet and works the same way.
+      </p>
+      <div class="wallet-topup-cta-row" style="margin-top: 1rem;">
+        <a href="/account/wallet/invoice-request{% if return_tool %}?tool={{ return_tool|urlencode }}{% endif %}"
+           class="btn-secondary">
+          Request an invoice
+        </a>
+      </div>
+      <p class="field-helper" style="margin-top: 0.75rem;">
+        A transfer takes a few days to clear. A card top up credits your
+        wallet in seconds.
+      </p>
+    </div>
+  </div>
+
   {# Auto reload settings. Placed below the manual flow so the path of
      least resistance is a one-off top up; auto reload is opt in. #}
   <div class="panel" id="auto-reload">
