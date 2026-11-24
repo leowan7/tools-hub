@@ -6,8 +6,10 @@ there -- tested from Beijing, Shenzhen, Inner Mongolia, Heilongjiang and
 Yunnan on 2026-11-24. A ``<link rel="stylesheet">`` to a blocked host is
 render-blocking, so the page waited on a dead connection before first paint.
 
-This guard is static: it scans the template and stylesheet sources, so a
-re-added Google Fonts tag fails here without needing a browser.
+This guard is static: it scans every template, every stylesheet under
+static/ and every first-party script there (static/vendor/ is excluded --
+it is third-party code we do not author), so a re-added Google Fonts tag
+fails here without needing a browser.
 """
 
 from __future__ import annotations
@@ -21,8 +23,13 @@ BLOCKED_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
 
 
 def _sources() -> list[Path]:
-    return sorted(ROOT.joinpath("templates").rglob("*.html")) + sorted(
-        ROOT.joinpath("static").glob("*.css")
+    """Every template, stylesheet and first-party script -- a font link can
+    be injected from any of them, not just from base.html."""
+    static = ROOT / "static"
+    return (
+        sorted(ROOT.joinpath("templates").rglob("*.html"))
+        + sorted(static.rglob("*.css"))
+        + sorted(p for p in static.rglob("*.js") if "vendor" not in p.parts)
     )
 
 
