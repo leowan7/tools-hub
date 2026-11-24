@@ -7,6 +7,46 @@
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
+   Self-hosted fonts
+   Served from this origin because Google's two font hosts are both
+   unreachable from mainland China, and a render-blocking stylesheet on a
+   dead host delayed first paint there. tests/test_fonts_self_hosted.py
+   fails if either host name comes back into a template or a stylesheet.
+
+   One variable woff2 per family, latin subset only (no CJK, no italics):
+   byte-for-byte the files Google serves for its own latin range. Of the
+   other subsets Google offered, the only one that covered any character
+   in these templates was Geist Mono's symbols2 (U+2500-259F box drawing),
+   and every one of those sits inside a Jinja or CSS comment, so nothing
+   rendered loses a glyph. Each file carries the wght axis -- DM Sans
+   100-1000, Geist Mono 100-900, Source Serif 4 200-900, read off fvar
+   with fontTools -- so the 400/500/600/700 the stylesheets ask for all
+   come from the one file. Licences (SIL OFL 1.1) sit beside the fonts in
+   static/fonts/.
+   -------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Source Serif 4';
+  src: url('fonts/source-serif-4-latin-var.woff2') format('woff2');
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'DM Sans';
+  src: url('fonts/dm-sans-latin-var.woff2') format('woff2');
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('fonts/geist-mono-latin-var.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --------------------------------------------------------------------------
    Design tokens
    -------------------------------------------------------------------------- */
 :root {
