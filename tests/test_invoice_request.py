@@ -199,6 +199,48 @@ def test_the_pricing_anchor_passes_the_marker_and_the_form_forwards_it(app):
     assert '<input type="hidden" name="from" value="pricing">' in form
 
 
+def test_the_marker_survives_a_refused_submit_and_the_retry(app):
+    """The form posts to a bare path, so reading request.args in the
+    template lost the marker on every 400 re-render and the corrected
+    resubmit was then recorded as "topup"."""
+    client = _signed_in(app)
+    with patch(
+        "blueprints.invoice_requests.load_user_context", return_value=_Ctx()
+    ):
+        refused = client.post(
+            ROUTE, data=dict(GOOD, amount_usd="abc", **{"from": "pricing"}),
+        )
+    assert refused.status_code == 400
+    assert '<input type="hidden" name="from" value="pricing">' in \
+        refused.get_data(as_text=True)
+    # The retry the buyer now makes, carrying the field the page just gave it.
+    _resp, log_event, _mail = _post(
+        app, GOOD, came_from="pricing", client=client,
+    )
+    assert log_event.call_args.kwargs["props"]["where"] == "pricing"
+
+
+def test_the_marker_also_survives_the_throttle_refusal(app):
+    from blueprints.invoice_requests import _THROTTLE_LIMIT
+    client = _signed_in(app)
+    for _ in range(_THROTTLE_LIMIT):
+        _post(app, GOOD, came_from="pricing", client=client)
+    with patch(
+        "blueprints.invoice_requests.load_user_context", return_value=_Ctx()
+    ), patch("shared.events.log_event"), patch(
+        "shared.email.send_invoice_request", return_value=True
+    ):
+        resp = client.post(ROUTE, data=dict(GOOD, **{"from": "pricing"}))
+    assert resp.status_code == 429
+    assert 'name="from" value="pricing"' in resp.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("bogus", ["topup", "gate", "<script>", "x" * 50])
+def test_only_the_pricing_marker_is_accepted(app, bogus):
+    _resp, log_event, _mail = _post(app, GOOD, came_from=bogus)
+    assert log_event.call_args.kwargs["props"]["where"] == "topup"
+
+
 @pytest.mark.parametrize("bogus", ["not-a-tool", "../admin", "alphafold2"])
 def test_an_unknown_tool_slug_is_dropped_not_reflected(app, bogus, monkeypatch):
     """Both templates feed the slug to url_for, so an unknown one would build
@@ -392,6 +434,26 @@ def test_a_delivered_request_raises_no_alert(app):
     ), patch("shared.email.alert_ops_slack") as alert:
         _signed_in(app).post(ROUTE, data=GOOD, follow_redirects=True)
     assert not alert.called
+
+
+def test_the_warning_carries_every_field_without_depending_on_slack(app, caplog):
+    """The Resend fault and the Slack fault correlate, and _post_slack logs
+    only its log_tag on a failed POST, so the WARNING must be self-
+    sufficient."""
+    import logging
+    client = _signed_in(app)
+    with caplog.at_level(logging.WARNING), patch(
+        "blueprints.invoice_requests.load_user_context", return_value=_Ctx()
+    ), patch("shared.events.log_event"), patch(
+        "shared.email.send_invoice_request", return_value=False
+    ), patch("shared.email.alert_ops_slack", return_value=False):
+        client.post(ROUTE, data=GOOD, follow_redirects=True)
+    line = next(
+        r.getMessage() for r in caplog.records if "NOT DELIVERED" in r.getMessage()
+    )
+    for field in (_Ctx.user_id, GOOD["institution"], GOOD["contact_name"],
+                  GOOD["contact_email"], GOOD["amount_usd"], "44812"):
+        assert field in line
 
 
 def test_the_long_note_is_bounded_in_the_alert(app):

@@ -221,10 +221,21 @@ def _notify_failure(*, user_id: str, values: dict) -> None:
     configured. Never raises -- this is the last step of a request the
     buyer has already been told succeeded.
     """
+    # Every field is in THIS line, not only in the alert below. _post_slack
+    # logs its payload when the webhook is unset, but on a Slack POST failure
+    # it logs only its log_tag -- and the fault that fails the Resend POST is
+    # the same fault that fails the Slack POST, so the two failures correlate.
+    # Leaning on the alert for the contact address and the note would lose
+    # exactly those on the one branch where both channels are down.
     logger.warning(
         "invoice_request NOT DELIVERED, follow up manually: "
-        "user=%s institution=%r amount_usd=%s",
-        user_id, values.get("institution"), values.get("amount_usd"),
+        "user=%s institution=%r contact=%r <%s> amount_usd=%s note=%r",
+        user_id,
+        values.get("institution"),
+        values.get("contact_name"),
+        values.get("contact_email"),
+        values.get("amount_usd"),
+        (values.get("note") or "")[:200],
     )
     try:
         from shared.email import alert_ops_slack  # noqa: PLC0415
@@ -247,7 +258,38 @@ def _notify_failure(*, user_id: str, values: dict) -> None:
         )
 
 
-def _render(*, values: dict, errors: dict, sent: bool = False, tool: str = ""):
+def _came_from() -> str:
+    """Which entry point sent the buyer here, or "".
+
+    Read from ``request.values``, so it is picked up from the query string
+    on the GET and from the hidden field on the POST. Only the literal
+    "pricing" is accepted; anything else is "". The handler passes it back
+    into the template on every render, including a refusal, which is what
+    makes it survive the correct-and-resubmit round trip -- reading
+    ``request.args`` in the template did not, because the form posts to a
+    bare path.
+    """
+    # ponytail: a SIGNED-OUT visitor who clicks the /pricing anchor is NOT
+    # counted as "pricing". shared/auth.py::_login_next builds the post-login
+    # `next` from request.path, which drops the query string, so the marker
+    # does not survive the login bounce and that buyer records "topup". So
+    # where="pricing" undercounts the pricing page by however many arrive
+    # signed out -- it is a floor, not a total. Fixing it properly means
+    # making _login_next preserve the query string, which changes the
+    # post-login destination for every gated route in the app; that is a
+    # wider change than an analytics label is worth here.
+    value = _clean(request.values.get("from"), 16)
+    return "pricing" if value == "pricing" else ""
+
+
+def _render(
+    *,
+    values: dict,
+    errors: dict,
+    sent: bool = False,
+    tool: str = "",
+    came_from: str = "",
+):
     """Render the form or the confirmation.
 
     ``support_email`` is NOT passed: app.py's context processor injects it
@@ -261,6 +303,7 @@ def _render(*, values: dict, errors: dict, sent: bool = False, tool: str = ""):
         errors=errors,
         invoice_sent=sent,
         return_tool=tool or None,
+        came_from=came_from or None,
         min_amount_usd=MIN_AMOUNT_USD,
         action_url=ROUTE,
     )
@@ -284,6 +327,7 @@ def invoice_request_form():
         return redirect(url_for("auth.login"))
 
     tool = _safe_tool(request.args.get("tool"))
+    came_from = _came_from()
     confirmed = session.get(_SENT_SESSION_KEY)
     if request.args.get("sent") and isinstance(confirmed, dict):
         return _render(
@@ -297,6 +341,7 @@ def invoice_request_form():
             errors={},
             sent=True,
             tool=tool,
+            came_from=came_from,
         )
 
     values = {
@@ -306,7 +351,7 @@ def invoice_request_form():
         "amount_usd": "",
         "note": "",
     }
-    return _render(values=values, errors={}, tool=tool)
+    return _render(values=values, errors={}, tool=tool, came_from=came_from)
 
 
 @invoice_requests_bp.route(ROUTE, methods=["POST"])
@@ -327,9 +372,12 @@ def invoice_request_submit():
         return redirect(url_for("auth.login"))
 
     tool = _safe_tool(request.form.get("tool"))
+    came_from = _came_from()
     values, errors = _validate(request.form)
     if errors:
-        return _render(values=values, errors=errors, tool=tool), 400
+        return _render(
+            values=values, errors=errors, tool=tool, came_from=came_from,
+        ), 400
 
     from scout.ratelimit import hit  # noqa: PLC0415
 
@@ -349,7 +397,9 @@ def invoice_request_submit():
                 "If you need to change it, email us at the address below."
             )
         }
-        return _render(values=values, errors=errors, tool=tool), 429
+        return _render(
+            values=values, errors=errors, tool=tool, came_from=came_from,
+        ), 429
 
     # Which entry point this came from. "gate" needs a valid tool slug, and
     # only the tool-submit and refold gates pass one. "pricing" is the
@@ -358,7 +408,7 @@ def invoice_request_submit():
     # would count as "topup" and no figure could tell them apart.
     if tool:
         where = "gate"
-    elif _clean(request.form.get("from"), 16) == "pricing":
+    elif came_from == "pricing":
         where = "pricing"
     else:
         where = "topup"
@@ -405,4 +455,6 @@ def invoice_request_submit():
     target = ROUTE + "?sent=1"
     if tool:
         target += "&tool=" + quote(tool)
+    if came_from:
+        target += "&from=" + quote(came_from)
     return redirect(target)

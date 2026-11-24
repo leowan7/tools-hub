@@ -103,10 +103,12 @@
           {% endif %}
           {# Which entry point sent them here, so the event can tell the
              pricing anchor apart from the top-up page's block. Routing
-             context only; the handler accepts the literal "pricing" and
-             ignores anything else. #}
-          {% if request.args.get('from') == 'pricing' %}
-            <input type="hidden" name="from" value="pricing">
+             context only. Taken from the handler's `came_from`, which has
+             already narrowed it to the literal "pricing", and NOT from
+             request.args: the form posts to a bare path, so reading the
+             query string here lost the marker on every refused submit. #}
+          {% if came_from %}
+            <input type="hidden" name="from" value="{{ came_from }}">
           {% endif %}
 
           <div class="field-group">
