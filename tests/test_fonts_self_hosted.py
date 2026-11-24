@@ -29,7 +29,7 @@ def _sources() -> list[Path]:
     return (
         sorted(ROOT.joinpath("templates").rglob("*.html"))
         + sorted(static.rglob("*.css"))
-        + sorted(p for p in static.rglob("*.js") if "vendor" not in p.parts)
+        + sorted(p for p in static.rglob("*.js") if "vendor" not in p.relative_to(static).parts)
     )
 
 
