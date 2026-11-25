@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{# WeChat Pay top-up. Two modes:
+     pi is none   -> price confirmation (yuan charge + USD credit), no payment yet.
+     pi is set    -> QR rendered by our server from next_action data, plus a
+                     status poll against /account/wallet/wechat/status.
+   No Stripe.js and no Stripe-hosted image or page is loaded. #}
+
+{% block title %}Pay with WeChat Pay: Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>Pay with WeChat Pay</h1>
+    <p class="subtitle">
+      You pay <strong>¥{{ quote.amount_cny }}</strong> and your wallet gets
+      <strong>${{ quote.amount_usd }}</strong>.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body">
+      <p class="field-helper">
+        Rate: 1 USD = {{ quote.usd_cny_rate }} CNY (European Central Bank
+        reference rate{% if quote.rate_date %}, {{ quote.rate_date }}{% endif %}).
+        No tax is added.
+      </p>
+
+      {% if pi is none %}
+        <form method="POST" action="/account/wallet/wechat" class="wallet-topup-cta-row" style="margin-top: 1.25rem;">
+          {{ csrf_input() }}
+          <button type="submit" class="btn-primary submit-cta">Show WeChat Pay QR code</button>
+          <a href="/account/wallet/topup" class="btn-secondary">Cancel</a>
+        </form>
+      {% else %}
+        <div id="wechat-pending" {% if state != 'pending' %}hidden{% endif %} style="margin-top: 1.25rem;">
+          {% if qr_src %}
+            <img src="{{ qr_src }}" alt="WeChat Pay QR code" width="240" height="240"
+                 style="display: block; background: #fff; padding: 8px;">
+          {% endif %}
+          <p class="wallet-section-body" style="margin-top: 0.75rem;">
+            Open WeChat, tap Scan, and scan this code. Keep this page open;
+            it updates when the payment goes through. The code works for two hours.
+          </p>
+        </div>
+        <div id="wechat-succeeded" {% if state != 'succeeded' %}hidden{% endif %} style="margin-top: 1.25rem;">
+          <p class="wallet-section-body">
+            Payment received. ${{ quote.amount_usd }} is being added to your
+            wallet and shows on the wallet page shortly.
+          </p>
+          <a href="/account/wallet" class="btn-primary">View wallet</a>
+        </div>
+        <div id="wechat-failed" {% if state != 'failed' %}hidden{% endif %} style="margin-top: 1.25rem;">
+          <p class="wallet-section-body">
+            The payment did not go through, or the code expired. Nothing was charged.
+          </p>
+          <a href="/account/wallet/topup" class="btn-primary">Try again</a>
+        </div>
+
+        {% if state == 'pending' %}
+        <script>
+          (function () {
+            var timer = setInterval(function () {
+              fetch('/account/wallet/wechat/status', {credentials: 'same-origin'})
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (body) {
+                  if (!body || (body.status !== 'succeeded' && body.status !== 'failed')) return;
+                  clearInterval(timer);
+                  document.getElementById('wechat-pending').hidden = true;
+                  document.getElementById('wechat-' + body.status).hidden = false;
+                })
+                .catch(function () {});
+            }, 3000);
+          })();
+        </script>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

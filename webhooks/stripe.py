@@ -16,6 +16,9 @@ Subscribed events
                                     ``shared.wallet.top_up_wallet`` with
                                     ``kind=auto_reload`` and dispatches
                                     the auto reload charged email.
+                                    Also credits a WeChat Pay top-up
+                                    (metadata ``kind=topup``,
+                                    ``channel=wechat_pay``).
 * ``payment_intent.payment_failed`` off session auto reload declined.
                                     Flips ``auto_reload_enabled`` to
                                     false on the wallet and dispatches
@@ -397,7 +400,8 @@ def _apply_checkout_session_completed(event: dict) -> dict:
 def _apply_payment_intent_succeeded(event: dict) -> dict:
     """Off session auto reload PaymentIntent landed.
 
-    Only credits when the PI metadata has ``kind=auto_reload``. Manual
+    Credits when the PI metadata has ``kind=auto_reload``, or routes a
+    WeChat Pay top-up (``channel=wechat_pay``) to its own handler. Card
     top ups also produce a ``payment_intent.succeeded``, but those are
     already credited via ``checkout.session.completed``; ignoring them
     here keeps credit responsibility single sourced and avoids any risk
@@ -405,6 +409,8 @@ def _apply_payment_intent_succeeded(event: dict) -> dict:
     """
     obj = event.get("data", {}).get("object", {}) or {}
     kind = _kind_from_metadata(obj)
+    if kind == "topup" and (obj.get("metadata") or {}).get("channel") == "wechat_pay":
+        return _apply_wechat_topup_succeeded(event, obj)
     if kind != "auto_reload":
         logger.info(
             "payment_intent.succeeded kind=%r is not 'auto_reload'; ignoring.",
@@ -460,6 +466,62 @@ def _apply_payment_intent_succeeded(event: dict) -> dict:
         "user_id": user_id,
         "amount_usd": str(amount_usd),
         "kind": "auto_reload",
+    }
+
+
+def _apply_wechat_topup_succeeded(event: dict, obj: dict) -> dict:
+    """A WeChat Pay top-up (billing/wechat.py) was paid, in CNY.
+
+    Credits the USD amount stored in metadata when the quote was accepted,
+    never a conversion of the CNY amount. Card top-up PIs carry no
+    ``channel`` and stay with ``checkout.session.completed``.
+    """
+    if obj.get("currency") != "cny":
+        logger.warning(
+            "WeChat top-up event %s has currency %r, not cny; skipping.",
+            event.get("id"), obj.get("currency"),
+        )
+        return {"status": "skipped", "reason": "unexpected_currency"}
+    user_id = _user_id_from_metadata(obj)
+    if not user_id:
+        return {"status": "skipped", "reason": "missing_user_id"}
+    try:
+        amount_usd = Decimal(str((obj.get("metadata") or {}).get("amount_usd")))
+    except Exception:
+        amount_usd = Decimal("0")
+    if not amount_usd.is_finite() or amount_usd <= 0:
+        logger.warning(
+            "WeChat top-up event %s has no positive amount_usd metadata.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "non_positive_amount"}
+
+    wallet = top_up_wallet(
+        user_id=user_id,
+        amount_usd=amount_usd,
+        stripe_payment_intent_id=obj.get("id") or "",
+        stripe_event_id=str(event.get("id")),
+        kind="topup",
+    )
+    if wallet is None:
+        return {"status": "error", "reason": "credit_wallet_failed"}
+
+    _send_email_safe(
+        "send_topup_confirmation_email",
+        user_id=user_id,
+        amount_usd=amount_usd,
+    )
+    from shared.events import EVENTS, emit  # noqa: PLC0415
+    emit(
+        EVENTS.TOPUP_COMPLETE,
+        user_id=user_id,
+        properties={"amount_usd": float(amount_usd), "kind": "topup", "channel": "wechat_pay"},
+    )
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "amount_usd": str(amount_usd),
+        "kind": "topup",
     }
 
 

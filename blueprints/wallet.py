@@ -1005,6 +1005,103 @@ def wallet_checkout():
 
     return redirect(result.get("url"))
 
+
+def _topup_error_redirect(message: str):
+    from urllib.parse import quote  # noqa: PLC0415
+
+    return redirect("/account/wallet/topup?topup_error=" + quote(message))
+
+
+@wallet_bp.route("/account/wallet/wechat/quote", methods=["POST"])
+@login_required
+def wallet_wechat_quote():
+    """Show the yuan price for a USD top-up before any payment is created.
+
+    The quote is kept in the signed session so the confirm step charges
+    exactly what this page showed.
+    """
+    from billing.wechat import make_quote  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    wallet = get_or_create_wallet(ctx.user_id) or {}
+    if wallet.get("wallet_frozen"):
+        return redirect(url_for("wallet.wallet_overview") + "?wallet_frozen=1")
+
+    quote, err = make_quote((request.form.get("amount_usd") or "").strip())
+    if err or not quote:
+        return _topup_error_redirect(err or "Could not price the top up.")
+    session["wechat_quote"] = quote
+    return render_template("wallet/wechat.html", quote=quote, pi=None)
+
+
+@wallet_bp.route("/account/wallet/wechat", methods=["POST"])
+@login_required
+def wallet_wechat_create():
+    """Create the WeChat Pay PaymentIntent for the quote in the session."""
+    from billing.wechat import create_wechat_payment_intent  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    wallet = get_or_create_wallet(ctx.user_id) or {}
+    if wallet.get("wallet_frozen"):
+        return redirect(url_for("wallet.wallet_overview") + "?wallet_frozen=1")
+
+    quote = session.pop("wechat_quote", None)
+    if not isinstance(quote, dict):
+        return _topup_error_redirect("Pick an amount to top up.")
+    pi, err = create_wechat_payment_intent(ctx.user_id, quote)
+    if err or not pi or not pi.get("id"):
+        return _topup_error_redirect(err or "Could not start the WeChat Pay payment.")
+    session["wechat_pi"] = pi["id"]
+    return redirect(url_for("wallet.wallet_wechat_page"))
+
+
+@wallet_bp.route("/account/wallet/wechat", methods=["GET"])
+@login_required
+def wallet_wechat_page():
+    """Show the WeChat Pay QR for the caller's own pending PaymentIntent."""
+    from billing.wechat import (  # noqa: PLC0415
+        payment_state,
+        qr_payload,
+        qr_svg_data_uri,
+        retrieve_own_payment_intent,
+    )
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    pi = retrieve_own_payment_intent(session.get("wechat_pi") or "", ctx.user_id)
+    if pi is None:
+        return _topup_error_redirect("No WeChat Pay payment in progress.")
+    state = payment_state(pi)
+    payload = qr_payload(pi) if state == "pending" else None
+    return render_template(
+        "wallet/wechat.html",
+        quote=pi.get("metadata") or {},
+        pi=pi,
+        state=state,
+        qr_src=qr_svg_data_uri(payload) if payload else None,
+    )
+
+
+@wallet_bp.route("/account/wallet/wechat/status", methods=["GET"])
+@login_required
+def wallet_wechat_status():
+    """Read-only status of the caller's own WeChat PaymentIntent. Never credits."""
+    from billing.wechat import payment_state, retrieve_own_payment_intent  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return jsonify({"status": "unknown"}), 401
+    pi = retrieve_own_payment_intent(session.get("wechat_pi") or "", ctx.user_id)
+    if pi is None:
+        return jsonify({"status": "unknown"}), 404
+    return jsonify({"status": payment_state(pi)})
+
+
 @wallet_bp.route("/account/wallet/transactions", methods=["GET"])
 @login_required
 def wallet_transactions():

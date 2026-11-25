@@ -287,6 +287,38 @@ def _coerce_amount(amount_usd) -> Optional[Decimal]:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def validate_topup_amount(
+    amount_usd,
+    *,
+    min_topup_usd: Optional[Decimal] = None,
+    max_topup_usd: Optional[Decimal] = None,
+) -> Tuple[Optional[Decimal], Optional[str]]:
+    """Return ``(amount, None)`` within the top-up floor and ceiling, else ``(None, error)``.
+
+    Shared by the card (Checkout) and WeChat Pay top-up paths.
+    """
+    amount = _coerce_amount(amount_usd)
+    if amount is None or amount <= 0:
+        return None, "Top up amount must be a positive number."
+
+    floor = min_topup_usd if min_topup_usd is not None else _default_min_topup_usd()
+    ceiling = (
+        max_topup_usd if max_topup_usd is not None else _default_max_topup_usd()
+    )
+    if amount < floor:
+        return None, (
+            f"Top up amount {amount} USD is below the minimum of "
+            f"{floor} USD."
+        )
+    if amount > ceiling:
+        return None, (
+            f"Top up amount {amount} USD exceeds the maximum of "
+            f"{ceiling} USD per Checkout. Contact support for larger "
+            "transfers."
+        )
+    return amount, None
+
+
 def create_topup_session(
     user_id: str,
     user_email: str,
@@ -331,25 +363,11 @@ def create_topup_session(
     if not user_email or not isinstance(user_email, str):
         return None, "Missing user_email."
 
-    amount = _coerce_amount(amount_usd)
-    if amount is None or amount <= 0:
-        return None, "Top up amount must be a positive number."
-
-    floor = min_topup_usd if min_topup_usd is not None else _default_min_topup_usd()
-    ceiling = (
-        max_topup_usd if max_topup_usd is not None else _default_max_topup_usd()
+    amount, err = validate_topup_amount(
+        amount_usd, min_topup_usd=min_topup_usd, max_topup_usd=max_topup_usd
     )
-    if amount < floor:
-        return None, (
-            f"Top up amount {amount} USD is below the minimum of "
-            f"{floor} USD."
-        )
-    if amount > ceiling:
-        return None, (
-            f"Top up amount {amount} USD exceeds the maximum of "
-            f"{ceiling} USD per Checkout. Contact support for larger "
-            "transfers."
-        )
+    if err:
+        return None, err
 
     resolved_product = (product_id or _product_id() or "").strip()
     if not resolved_product:
