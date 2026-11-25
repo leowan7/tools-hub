@@ -7,10 +7,7 @@ The Ranomics tools-hub serves protein engineers from three audiences:
   academic    Academic researcher with an institutional email
               (e.g. user@stanford.edu, user@cam.ac.uk).
   personal    Independent / hobbyist / student with a free-mail
-              provider (e.g. user@gmail.com). These users are
-              welcome — but the signup route requires a short
-              "what are you working on" note to filter out
-              spam-as-junk.
+              provider (e.g. user@gmail.com).
 
 Disposable / throwaway addresses (mailinator.com, 10minutemail.com, etc.)
 are hard-blocked: they're nearly always bot signups burning Resend +
@@ -51,9 +48,7 @@ class EmailClass(str, Enum):
 # ---------------------------------------------------------------------------
 # Personal-provider denylist
 # ---------------------------------------------------------------------------
-# Curated list of the most common free-mail providers. These addresses
-# are still allowed to sign up — they just have to attach a short
-# "what are you working on" note. The list is small on purpose: each
+# Curated list of the most common free-mail providers. The list is small: each
 # entry is a popular brand consumer-grade provider, not a niche or
 # corporate domain. Niche/personal-but-business-looking domains
 # (e.g. "leowan.dev") classify as "business" by default.
@@ -250,17 +245,11 @@ def classify_email(email: str | None) -> EmailClass:
 # ---------------------------------------------------------------------------
 
 
-def signup_quality_for(classification: EmailClass, purpose: str | None) -> str:
-    """Map a classification + purpose-text to the persisted quality tag.
-
-    Stored on ``public.user_profiles.signup_quality``. The values are
-    intentionally distinct from EmailClass: ``personal_explained`` is
-    the joint state of (personal-domain + non-empty purpose), which
-    the daily-digest "Who's hot" section uses to weight engagement
-    signals.
-    """
+def signup_quality_for(classification: EmailClass) -> str:
+    """Map a classification to the tag stored on
+    ``public.user_profiles.signup_quality``."""
     if classification == EmailClass.ACADEMIC:
         return "academic"
-    if classification == EmailClass.PERSONAL and purpose:
-        return "personal_explained"
+    if classification == EmailClass.PERSONAL:
+        return "personal"
     return "business"

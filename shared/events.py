@@ -4,8 +4,7 @@ Two append-only Supabase tables backed this module:
 
   public.signup_rejections   Inbound /signup attempts blocked before
                              reaching Supabase Auth — honeypot hits,
-                             bad timing, disposable domains, missing
-                             purpose notes.
+                             bad timing, disposable domains.
 
   public.user_events         Behavioural events (page views, tool form
                              opens/submits, pricing views, logins,
@@ -60,7 +59,6 @@ SIGNUP_REJECTION_REASONS: frozenset[str] = frozenset({
     "honeypot",
     "timing",
     "disposable",
-    "purpose_missing",
     "invalid",
     "rate_limited",
 })

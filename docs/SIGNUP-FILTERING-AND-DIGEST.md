@@ -155,16 +155,14 @@ If the digest's **Rejections** section shows real prospects being
 blocked, change one of the curated lists:
 
 - **Personal-domain list**:  `shared/email_domain.py` →
-  `PERSONAL_DOMAINS`. Add a domain here to make those signups require
-  the "what are you working on" note instead of going through
-  silently. Remove a domain to make those signups behave like
-  business.
+  `PERSONAL_DOMAINS`. Add a domain here to tag those signups
+  "personal" in the digest. Remove a domain to tag them business.
 - **Disposable-domain list**:  `shared/disposable_domains.txt`. Add a
   domain to block it. Lines starting with `#` are comments.
 - **Academic suffixes**:  `shared/email_domain.py` →
   `ACADEMIC_SUFFIXES`. Add a TLD to recognise more institutions.
 - **Honeypot / timing thresholds**:  `shared/auth.py` →
-  `MIN_FILL_SECONDS`, `MAX_FILL_SECONDS`, `MIN_PURPOSE_CHARS`.
+  `MIN_FILL_SECONDS`, `MAX_FILL_SECONDS`.
 
 After any change, redeploy. No new migrations needed.
 
