@@ -36,7 +36,6 @@ def _signup(reasons):
     ctx = SignupContext(
         email="someone@acme-bio.com",
         password="Abcdefghij1",
-        purpose="",
         honeypot="",
         token=issue_signup_token(),
     )

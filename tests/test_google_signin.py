@@ -204,6 +204,11 @@ def test_offsite_next_falls_back(client):
 def test_button_shows_on_both_tabs_when_configured(client):
     page = client.get("/login").data
     assert page.count(b"Continue with Google") == 2
+    # Email form before the Google button on both tabs.
+    for panel, action in ((b'id="panel-signin"', b'action="/login"'),
+                          (b'id="panel-signup"', b'action="/signup"')):
+        start = page.index(panel)
+        assert start < page.index(action, start) < page.index(b"Continue with Google", start)
 
 
 def test_hidden_and_404_without_env(monkeypatch, client):
