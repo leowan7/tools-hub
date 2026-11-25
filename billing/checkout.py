@@ -313,7 +313,7 @@ def validate_topup_amount(
     if amount > ceiling:
         return None, (
             f"Top up amount {amount} USD exceeds the maximum of "
-            f"{ceiling} USD per Checkout. Contact support for larger "
+            f"{ceiling} USD per top up. Contact support for larger "
             "transfers."
         )
     return amount, None

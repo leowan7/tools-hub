@@ -33,7 +33,7 @@ _RATE_TTL_SECONDS = 3600
 # A reading outside this band is treated as a broken feed: no quote is made.
 _RATE_MIN = Decimal("5")
 _RATE_MAX = Decimal("10")
-# A quote shown to the visitor is honoured for this long, then re-quoted.
+# A quote shown to the visitor is honoured for this long; after that the visitor picks an amount again.
 QUOTE_TTL_SECONDS = 15 * 60
 
 # ponytail: per-process cache; each gunicorn worker fetches once an hour.

@@ -186,7 +186,7 @@ def test_full_flow_renders_quote_then_inline_qr(logged_in, fake_stripe):
     assert "33.38" in body and "$5.00" in body
     assert fake_stripe.PaymentIntent.created == []  # nothing charged at quote time
 
-    resp = logged_in.post("/account/wallet/wechat")
+    resp = logged_in.post("/account/wallet/wechat", data={"amount_usd": "5.00", "amount_cny": "33.38"})
     assert resp.status_code == 302 and resp.headers["Location"].endswith("/account/wallet/wechat")
     assert len(fake_stripe.PaymentIntent.created) == 1
 
@@ -201,6 +201,14 @@ def test_full_flow_renders_quote_then_inline_qr(logged_in, fake_stripe):
 def test_create_without_quote_does_not_charge(logged_in, fake_stripe):
     resp = logged_in.post("/account/wallet/wechat")
     assert resp.status_code == 302 and "topup_error" in resp.headers["Location"]
+    assert fake_stripe.PaymentIntent.created == []
+
+
+def test_confirm_of_a_replaced_quote_does_not_charge(logged_in, fake_stripe):
+    logged_in.post("/account/wallet/wechat/quote", data={"amount_usd": "5"})
+    logged_in.post("/account/wallet/wechat/quote", data={"amount_usd": "100"})  # second tab
+    resp = logged_in.post("/account/wallet/wechat", data={"amount_usd": "5.00", "amount_cny": "33.38"})
+    assert "topup_error" in resp.headers["Location"]
     assert fake_stripe.PaymentIntent.created == []
 
 

@@ -1052,6 +1052,12 @@ def wallet_wechat_create():
     quote = session.pop("wechat_quote", None)
     if not isinstance(quote, dict):
         return _topup_error_redirect("Pick an amount to top up.")
+    # The page that was confirmed must be the quote in the session (another
+    # tab may have replaced it).
+    if (request.form.get("amount_usd"), request.form.get("amount_cny")) != (
+        quote.get("amount_usd"), quote.get("amount_cny")
+    ):
+        return _topup_error_redirect("The price changed in another tab. Pick an amount again.")
     pi, err = create_wechat_payment_intent(ctx.user_id, quote)
     if err or not pi or not pi.get("id"):
         return _topup_error_redirect(err or "Could not start the WeChat Pay payment.")

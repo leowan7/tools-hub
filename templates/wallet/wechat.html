@@ -29,6 +29,8 @@
       {% if pi is none %}
         <form method="POST" action="/account/wallet/wechat" class="wallet-topup-cta-row" style="margin-top: 1.25rem;">
           {{ csrf_input() }}
+          <input type="hidden" name="amount_usd" value="{{ quote.amount_usd }}">
+          <input type="hidden" name="amount_cny" value="{{ quote.amount_cny }}">
           <button type="submit" class="btn-primary submit-cta">Show WeChat Pay QR code</button>
           <a href="/account/wallet/topup" class="btn-secondary">Cancel</a>
         </form>
