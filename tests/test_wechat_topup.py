@@ -154,6 +154,7 @@ def test_payment_state(status, state):
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("WECHAT_PAY_ENABLED", "1")
     from app import create_app
     flask_app = create_app()
     flask_app.config["TESTING"] = True
@@ -336,3 +337,60 @@ def test_topup_page_offers_card_and_wechat_choice(client):
     assert "Continue to checkout" in page and "Continue to WeChat Pay" in page
     assert "Charged in Chinese yuan" in page and "Charged in US dollars" in page
     assert "stripe.com" not in page
+
+
+# --- WECHAT_PAY_ENABLED switch -------------------------------------------------
+
+_FULL_WALLET = {"wallet_frozen": False, "balance_usd": 0, "auto_reload_enabled": False,
+                "auto_reload_threshold_usd": 10, "auto_reload_amount_usd": 50,
+                "auto_reload_monthly_cap_usd": 1000}
+
+
+@pytest.mark.parametrize("value,on", [
+    (None, False), ("", False), ("0", False), ("off", False), ("yes", False),
+    ("1", True), ("true", True), (" TRUE ", True),
+])
+def test_wechat_switch_values(monkeypatch, value, on):
+    from shared.feature_flags import wechat_pay_enabled
+    if value is None:
+        monkeypatch.delenv("WECHAT_PAY_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("WECHAT_PAY_ENABLED", value)
+    assert wechat_pay_enabled() is on
+
+
+@pytest.fixture
+def logged_in_off(client, monkeypatch):
+    monkeypatch.delenv("WECHAT_PAY_ENABLED")
+    with patch("blueprints.wallet.load_user_context", return_value=_ctx()), patch(
+        "blueprints.wallet.get_or_create_wallet", return_value=_FULL_WALLET
+    ):
+        _login(client)
+        yield client
+
+
+def test_switch_off_topup_page_shows_card_only(logged_in_off):
+    page = logged_in_off.get("/account/wallet/topup").get_data(as_text=True)
+    assert "Continue to checkout" in page
+    assert "pay_with" not in page and "Pay with" not in page
+    assert "WeChat" not in page and "/account/wallet/wechat" not in page
+
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/account/wallet/wechat/quote"), ("post", "/account/wallet/wechat"),
+    ("get", "/account/wallet/wechat"), ("get", "/account/wallet/wechat/status"),
+])
+def test_switch_off_wechat_routes_404(logged_in_off, fake_stripe, method, path):
+    with logged_in_off.session_transaction() as sess:
+        sess["wechat_pi"] = "pi_wx_1"
+    fake_stripe.PaymentIntent.store["pi_wx_1"] = _pi()
+    resp = getattr(logged_in_off, method)(path, data={"amount_usd": "5"})
+    assert resp.status_code == 404
+    assert fake_stripe.PaymentIntent.created == []
+
+
+def test_switch_off_webhook_still_credits(hook, monkeypatch):
+    monkeypatch.delenv("WECHAT_PAY_ENABLED", raising=False)
+    post, credits = hook
+    assert post(_succeeded(_pi(status="succeeded"), "evt_wx_off"))["status"] == "ok"
+    assert len(credits) == 1 and credits[0]["amount_usd"] == Decimal("5.00")

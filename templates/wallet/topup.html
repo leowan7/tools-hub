@@ -220,6 +220,7 @@
           </div>
         </div>
 
+        {% if wechat_pay_enabled() %}
         <fieldset class="wallet-paymethod" style="margin-top: 1.25rem;">
           <legend class="field-label">Pay with</legend>
           <div class="wallet-paymethod-options">
@@ -245,6 +246,7 @@
             </label>
           </div>
         </fieldset>
+        {% endif %}
 
         <div class="field-group wallet-paymethod-card-only" style="margin-top: 1rem;">
           <label for="save_payment_method"
@@ -272,10 +274,12 @@
           <button type="submit" class="btn-primary submit-cta wallet-paymethod-card-only">
             {% if next_url %}Top up{% else %}Continue to checkout{% endif %}
           </button>
+          {% if wechat_pay_enabled() %}
           <button type="submit" class="btn-primary submit-cta wallet-paymethod-wechat-only"
                   id="wechat-submit" formaction="/account/wallet/wechat/quote">
             Continue to WeChat Pay
           </button>
+          {% endif %}
           {% if next_url %}
             <a href="{{ next_url }}" class="btn-secondary">Back to the form</a>
           {% else %}
@@ -386,6 +390,7 @@
           radios.forEach(function (r) { r.checked = false; });
         });
       }
+      {% if wechat_pay_enabled() %}
       var wechat = document.getElementById('pay_with_wechat');
       var wechatBtn = document.getElementById('wechat-submit');
       var cardBtn = form.querySelector('button.wallet-paymethod-card-only');
@@ -400,6 +405,7 @@
         rerouting = true;
         setTimeout(function () { form.requestSubmit(wechatBtn); rerouting = false; }, 0);
       });
+      {% endif %}
     })();
   </script>
 

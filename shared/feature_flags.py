@@ -38,6 +38,12 @@ def flag_name(tool: str) -> str:
     return "FLAG_TOOL_" + tool.upper().replace("-", "_")
 
 
+def wechat_pay_enabled() -> bool:
+    """Return True only when ``WECHAT_PAY_ENABLED`` is ``1`` or ``true``."""
+    value = os.environ.get("WECHAT_PAY_ENABLED", "").strip().lower()
+    return value in {"1", "true"}
+
+
 def tool_enabled(tool: str) -> bool:
     """Return True if the tool's flag env var is set to an "on" value."""
     value = os.environ.get(flag_name(tool), "").strip().lower()
