@@ -1021,7 +1021,7 @@ def _wechat_pay_enabled_global() -> bool:
 
 
 def _wechat_pay_on(view):  # noqa: ANN001, ANN202
-    """404 the WeChat Pay routes unless WECHAT_PAY_ENABLED is on."""
+    """404 the WeChat Pay routes for a signed-in caller unless WECHAT_PAY_ENABLED is on."""
     from functools import wraps  # noqa: PLC0415
 
     @wraps(view)
@@ -1036,8 +1036,8 @@ def _wechat_pay_on(view):  # noqa: ANN001, ANN202
 
 
 @wallet_bp.route("/account/wallet/wechat/quote", methods=["POST"])
-@_wechat_pay_on
 @login_required
+@_wechat_pay_on
 def wallet_wechat_quote():
     """Show the yuan price for a USD top-up before any payment is created.
 
@@ -1061,8 +1061,8 @@ def wallet_wechat_quote():
 
 
 @wallet_bp.route("/account/wallet/wechat", methods=["POST"])
-@_wechat_pay_on
 @login_required
+@_wechat_pay_on
 def wallet_wechat_create():
     """Create the WeChat Pay PaymentIntent for the quote in the session."""
     from billing.wechat import create_wechat_payment_intent  # noqa: PLC0415
@@ -1091,8 +1091,8 @@ def wallet_wechat_create():
 
 
 @wallet_bp.route("/account/wallet/wechat", methods=["GET"])
-@_wechat_pay_on
 @login_required
+@_wechat_pay_on
 def wallet_wechat_page():
     """Show the WeChat Pay QR for the caller's own pending PaymentIntent."""
     from billing.wechat import (  # noqa: PLC0415
@@ -1120,8 +1120,8 @@ def wallet_wechat_page():
 
 
 @wallet_bp.route("/account/wallet/wechat/status", methods=["GET"])
-@_wechat_pay_on
 @login_required
+@_wechat_pay_on
 def wallet_wechat_status():
     """Read-only status of the caller's own WeChat PaymentIntent. Never credits."""
     from billing.wechat import payment_state, retrieve_own_payment_intent  # noqa: PLC0415
