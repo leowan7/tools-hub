@@ -200,12 +200,21 @@ def find_candidates(*, now: datetime) -> list[Candidate]:
     events += _rows_since(client, "user_events", cols, since, has_user,
                           lambda q: q.eq("event_type", "page_view"),
                           lambda q: q.like("path", TOPUP_PATH + "%"))
+    # ponytail: ids go into GET .in_() filters; past a few hundred signed-in
+    # users a day the URL gets too long. Pre-filter to $0 wallets via an RPC then.
     ids = sorted({e["user_id"] for e in events if e.get("user_id")})
     if not ids:
         return []
-    wallets = (client.table("user_wallets").select("user_id,balance_usd")
+    wallets = (client.table("user_wallets").select("user_id,balance_usd,wallet_frozen")
                .in_("user_id", ids).execute().data or [])
     balances = {w["user_id"]: float(w.get("balance_usd") or 0) for w in wallets}
+    # A frozen wallet cannot top up; a run in flight holds the balance it needs.
+    in_flight = (client.table("tool_jobs").select("user_id")
+                 .in_("user_id", ids).in_("status", ["pending", "running"])
+                 .execute().data or [])
+    skip = ({w["user_id"] for w in wallets if w.get("wallet_frozen")}
+            | {j["user_id"] for j in in_flight})
+    events = [e for e in events if e.get("user_id") not in skip]
     topups = _rows_since(client, "wallet_transactions", "user_id,created_at", since,
                          lambda q: q.in_("kind", list(TOPUP_KINDS)),
                          lambda q: q.in_("user_id", ids))
@@ -224,27 +233,33 @@ def with_utm(url: str) -> str:
             f"&utm_campaign={UTM_CAMPAIGN}")
 
 
-def _claim(user_id: str, now: datetime) -> bool:
+def _claim(user_id: str, now: datetime) -> Optional[dict]:
     """Re-read the user, re-check the history rule, then write the stamp.
 
-    Returns True only when the stamp was written; the caller sends only then.
+    Returns the metadata as it was before the stamp, for ``_unclaim``, or None
+    when the history rule now blocks the user. Raises when the read or write fails.
     """
     from shared.credits import get_service_client  # noqa: PLC0415
 
     client = get_service_client()
     if client is None:
-        return False
+        raise RuntimeError("abandoned_cart: no service client")
+    before = _user_row(client, user_id)["user_metadata"]
+    if _blocked_by_history(before, now):
+        return None
+    meta = {**before, STAMP_KEY: now.isoformat(), COUNT_KEY: _count(before) + 1}
+    client.auth.admin.update_user_by_id(user_id, {"user_metadata": meta})
+    return before
+
+
+def _unclaim(user_id: str, before: dict) -> None:
+    """Put back the metadata ``_claim`` replaced, after a send that did not go out."""
+    from shared.credits import get_service_client  # noqa: PLC0415
+
     try:
-        meta = _user_row(client, user_id)["user_metadata"]
-        if _blocked_by_history(meta, now):
-            return False
-        meta[STAMP_KEY] = now.isoformat()
-        meta[COUNT_KEY] = _count(meta) + 1
-        client.auth.admin.update_user_by_id(user_id, {"user_metadata": meta})
-        return True
+        get_service_client().auth.admin.update_user_by_id(user_id, {"user_metadata": before})
     except Exception:
-        logger.warning("abandoned_cart: stamping user %s failed", user_id, exc_info=True)
-        return False
+        logger.warning("abandoned_cart: un-stamping user %s failed", user_id, exc_info=True)
 
 
 def send_abandoned_cart(*, now: Optional[datetime] = None) -> dict:
@@ -260,6 +275,11 @@ def send_abandoned_cart(*, now: Optional[datetime] = None) -> dict:
         return summary
     from shared.email import RecipientRejected, send_abandoned_cart_email  # noqa: PLC0415
 
+    if not (os.environ.get("RESEND_API_KEY", "").strip()
+            and os.environ.get("SESSION_SECRET_KEY", "").strip()):
+        logger.error("abandoned_cart: RESEND_API_KEY or SESSION_SECRET_KEY unset; nothing sent")
+        summary["errors"] += 1
+        return summary
     now = now or datetime.now(timezone.utc)
     base_url = os.environ.get("PUBLIC_BASE_URL", "https://tools.ranomics.com").rstrip("/")
     try:
@@ -270,17 +290,24 @@ def send_abandoned_cart(*, now: Optional[datetime] = None) -> dict:
         return summary
     summary["qualified"] = len(candidates)
     for cand in candidates:
-        if not _claim(cand.user_id, now):
+        try:
+            before = _claim(cand.user_id, now)
+        except Exception:
+            logger.warning("abandoned_cart: stamping user %s failed", cand.user_id, exc_info=True)
+            summary["errors"] += 1
+            continue
+        if before is None:
             continue
         try:
             ok = send_abandoned_cart_email(candidate=cand, base_url=base_url)
         except RecipientRejected:
-            continue  # a bad address; the stamp written by _claim stops a retry
+            continue  # a bad address keeps its stamp, so it waits out COOLDOWN
         except Exception:
             logger.warning("abandoned_cart: send raised for %s", cand.user_id, exc_info=True)
             ok = False
         if ok:
             summary["sent"] += 1
         else:
+            _unclaim(cand.user_id, before)
             summary["errors"] += 1
     return summary

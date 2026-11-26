@@ -121,16 +121,43 @@ def test_flag_off_sends_nothing(monkeypatch):
                                                 "sent": 0, "errors": 0}
 
 
-def test_flag_on_claims_before_sending_and_skips_unclaimed(monkeypatch):
+@pytest.fixture
+def flag_on(monkeypatch):
     monkeypatch.setenv("ABANDONED_CART_EMAIL_ENABLED", "true")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test")
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
     cands = [ac.Candidate("u1", "a@lab.org"), ac.Candidate("u2", "b@lab.org")]
     monkeypatch.setattr(ac, "find_candidates", lambda now: cands)
-    order = []
-    monkeypatch.setattr(ac, "_claim", lambda uid, now: order.append(("claim", uid)) or uid == "u1")
+    log = []
+    monkeypatch.setattr(ac, "_unclaim", lambda uid, before: log.append(("unclaim", uid)))
+    return log
+
+
+def test_flag_on_claims_before_sending_and_skips_blocked(monkeypatch, flag_on):
+    monkeypatch.setattr(ac, "_claim",
+                        lambda uid, now: flag_on.append(("claim", uid)) or ({} if uid == "u1" else None))
     monkeypatch.setattr(email, "send_abandoned_cart_email",
-                        lambda candidate, base_url: order.append(("send", candidate.user_id)) or True)
+                        lambda candidate, base_url: flag_on.append(("send", candidate.user_id)) or True)
     assert ac.send_abandoned_cart(now=NOW)["sent"] == 1
-    assert order == [("claim", "u1"), ("send", "u1"), ("claim", "u2")]
+    assert flag_on == [("claim", "u1"), ("send", "u1"), ("claim", "u2")]
+
+
+def test_failed_send_puts_the_stamp_back_and_claim_errors_count(monkeypatch, flag_on):
+    def claim(uid, now):
+        if uid == "u2":
+            raise RuntimeError("gotrue down")
+        return {}
+    monkeypatch.setattr(ac, "_claim", claim)
+    monkeypatch.setattr(email, "send_abandoned_cart_email", lambda candidate, base_url: False)
+    assert ac.send_abandoned_cart(now=NOW)["errors"] == 2
+    assert flag_on == [("unclaim", "u1")]
+
+
+@pytest.mark.parametrize("unset", ["RESEND_API_KEY", "SESSION_SECRET_KEY"])
+def test_missing_mail_config_stamps_nobody(monkeypatch, flag_on, unset):
+    monkeypatch.delenv(unset)
+    monkeypatch.setattr(ac, "_claim", lambda uid, now: pytest.fail("stamped without mail config"))
+    assert ac.send_abandoned_cart(now=NOW)["errors"] == 1
 
 
 def _render(monkeypatch, cand, *, wechat):
@@ -163,3 +190,67 @@ def test_email_mentions_wechat_only_when_the_flag_is_on(monkeypatch):
         assert "WeChat Pay" in body and "微信支付" in body
         assert "https://t.example/tools?utm_source=email" in body
         assert "Your run is waiting" in body and "您的任务还在等您" in body
+
+
+class _Q:
+    def __init__(self, rows):
+        self.rows, self.neg = [dict(r) for r in rows], False
+
+    def _keep(self, ok):
+        self.rows = [r for r in self.rows if ok(r) != self.neg]
+        self.neg = False
+        return self
+
+    @property
+    def not_(self):
+        self.neg = True
+        return self
+
+    def select(self, *_):
+        return self
+
+    def gte(self, c, v):
+        return self._keep(lambda r: str(r.get(c) or "") >= v)
+
+    def eq(self, c, v):
+        return self._keep(lambda r: r.get(c) == v)
+
+    def in_(self, c, vs):
+        return self._keep(lambda r: r.get(c) in vs)
+
+    def is_(self, c, _null):
+        return self._keep(lambda r: r.get(c) is None)
+
+    def like(self, c, pat):
+        return self._keep(lambda r: str(r.get(c) or "").startswith(pat.rstrip("%")))
+
+    def order(self, *_):
+        return self
+
+    def range(self, a, b):
+        self.rows = self.rows[a:b + 1]
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(data=self.rows)
+
+
+def test_find_candidates_skips_frozen_wallets_and_runs_in_flight(monkeypatch):
+    import shared.credits
+    from types import SimpleNamespace
+
+    tables = {
+        "user_events": [_ev("u1"), _ev("u2"), _ev("u3"), _ev(None),
+                        _ev("u4", kind="page_view", tool=None, path="/account/wallet/topup")],
+        "user_wallets": [{"user_id": "u2", "balance_usd": 0, "wallet_frozen": True}],
+        "tool_jobs": [{"user_id": "u3", "status": "running", "created_at": _ago(days=2)}],
+        "wallet_transactions": [],
+    }
+    auth = SimpleNamespace(admin=SimpleNamespace(
+        get_user_by_id=lambda uid: SimpleNamespace(user=SimpleNamespace(
+            email=f"{uid}@lab.org", user_metadata={}))))
+    client = SimpleNamespace(table=lambda name: _Q(tables[name]), auth=auth)
+    monkeypatch.setattr(shared.credits, "get_service_client", lambda: client)
+    monkeypatch.setattr(ac, "_live_tool_label", lambda slug: "Boltz-2" if slug == "boltz2" else "")
+    assert sorted(c.user_id for c in ac.find_candidates(now=NOW)) == ["u1", "u4"]

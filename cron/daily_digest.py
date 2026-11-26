@@ -121,7 +121,8 @@ class DigestPayload:
     # Distinct people: user_id when signed in, else session_id.
     pricing_viewers: int = 0
     commercial_signups: int = 0
-    # Users whose abandoned-cart stamp (cron/abandoned_cart.py) is in the window.
+    # Users whose abandoned-cart stamp (cron/abandoned_cart.py) is in the window;
+    # a refused address keeps its stamp, so this can exceed emails delivered.
     abandoned_cart_sent: int = 0
     # False when auth.users could not be listed: internal_ids stays empty,
     # so runs, events and money include internal accounts.
