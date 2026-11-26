@@ -13,14 +13,26 @@
   <div class="hero">
     <h1>Pay with WeChat Pay</h1>
     <p class="subtitle">
-      You pay <strong>¥{{ quote.amount_cny }}</strong> and your wallet gets
-      <strong>${{ quote.amount_usd }}</strong>.
+      Charged in Chinese yuan. Your wallet is credited in US dollars.
     </p>
   </div>
 
   <div class="panel">
+    <div class="panel-header wallet-wechat-head">
+      <span class="wallet-wechat-method">
+        <span class="wallet-paymethod-icon wallet-paymethod-icon-wechat" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><rect x="8" y="8" width="3" height="3" fill="currentColor" stroke="none"/><rect x="13" y="8" width="3" height="3" fill="currentColor" stroke="none"/><rect x="8" y="13" width="3" height="3" fill="currentColor" stroke="none"/><path d="M13.5 13.5h2v2"/></svg>
+        </span>
+        <span class="panel-title">WeChat Pay <span lang="zh-Hans">微信支付</span></span>
+      </span>
+      <span class="panel-badge wallet-wechat-badge">Step {% if pi is none %}1{% else %}2{% endif %} of 2</span>
+    </div>
     <div class="panel-body">
-      <p class="field-helper">
+      <dl class="wallet-topup-gate-figures">
+        <div class="wallet-topup-gate-figure"><dt>You pay</dt><dd>¥{{ quote.amount_cny }}</dd></div>
+        <div class="wallet-topup-gate-figure"><dt>Wallet gets</dt><dd>${{ quote.amount_usd }}</dd></div>
+      </dl>
+      <p class="field-helper" style="margin-top: 0.75rem;">
         Rate: 1 USD = {{ quote.usd_cny_rate }} CNY (European Central Bank
         reference rate{% if quote.rate_date %}, {{ quote.rate_date }}{% endif %}).
         No tax is added.
@@ -35,12 +47,11 @@
           <a href="/account/wallet/topup" class="btn-secondary">Cancel</a>
         </form>
       {% else %}
-        <div id="wechat-pending" {% if state != 'pending' %}hidden{% endif %} style="margin-top: 1.25rem;">
+        <div id="wechat-pending" class="wallet-wechat-qr" {% if state != 'pending' %}hidden{% endif %}>
           {% if qr_src %}
-            <img src="{{ qr_src }}" alt="WeChat Pay QR code" width="240" height="240"
-                 style="display: block; background: #fff; padding: 8px;">
+            <img src="{{ qr_src }}" alt="WeChat Pay QR code" width="240" height="240">
           {% endif %}
-          <p class="wallet-section-body" style="margin-top: 0.75rem;">
+          <p class="wallet-section-body">
             Open WeChat, tap Scan, and scan this code. Keep this page open;
             it updates when the payment goes through. The code works for two hours.
           </p>

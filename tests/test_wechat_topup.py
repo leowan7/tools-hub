@@ -319,3 +319,20 @@ def test_webhook_skips_wechat_marker_in_wrong_currency(hook):
     obj["currency"] = "usd"
     assert post(_succeeded(obj, "evt_wx_usd"))["status"] == "skipped"
     assert credits == []
+
+
+def test_topup_page_offers_card_and_wechat_choice(client):
+    wallet = {"wallet_frozen": False, "balance_usd": 0, "auto_reload_enabled": False,
+              "auto_reload_threshold_usd": 10, "auto_reload_amount_usd": 50,
+              "auto_reload_monthly_cap_usd": 1000}
+    with patch("blueprints.wallet.load_user_context", return_value=_ctx()), patch(
+        "blueprints.wallet.get_or_create_wallet", return_value=wallet
+    ):
+        _login(client)
+        page = client.get("/account/wallet/topup").get_data(as_text=True)
+    assert 'name="pay_with" value="card" id="pay_with_card" checked' in page
+    assert 'name="pay_with" value="wechat" id="pay_with_wechat"' in page
+    assert 'formaction="/account/wallet/wechat/quote"' in page
+    assert "Continue to checkout" in page and "Continue to WeChat Pay" in page
+    assert "Charged in Chinese yuan" in page
+    assert "stripe.com" not in page
