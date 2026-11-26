@@ -220,7 +220,33 @@
           </div>
         </div>
 
-        <div class="field-group" style="margin-top: 1rem;">
+        <fieldset class="wallet-paymethod" style="margin-top: 1.25rem;">
+          <legend class="field-label">Pay with</legend>
+          <div class="wallet-paymethod-options">
+            <label class="wallet-paymethod-item">
+              <input type="radio" name="pay_with" value="card" id="pay_with_card" checked>
+              <span class="wallet-paymethod-icon wallet-paymethod-icon-card" aria-hidden="true">
+                <svg viewBox="1 3 22 18" width="30" height="25"><rect x="2" y="5" width="20" height="14" rx="2.5" fill="#fff"/><rect x="2" y="8.2" width="20" height="2.6" fill="#1A1F71"/><rect x="4.5" y="13" width="3.6" height="2.8" rx="0.6" fill="#E0B54A"/><rect x="12.5" y="14.6" width="7" height="1.4" rx="0.7" fill="#9AA3B5"/></svg>
+              </span>
+              <span class="wallet-paymethod-text">
+                <span class="wallet-paymethod-name">Card</span>
+                <span class="wallet-paymethod-sub">Charged in US dollars.</span>
+              </span>
+            </label>
+            <label class="wallet-paymethod-item">
+              <input type="radio" name="pay_with" value="wechat" id="pay_with_wechat">
+              <span class="wallet-paymethod-icon wallet-paymethod-icon-wechat" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><rect x="8" y="8" width="3" height="3" fill="currentColor" stroke="none"/><rect x="13" y="8" width="3" height="3" fill="currentColor" stroke="none"/><rect x="8" y="13" width="3" height="3" fill="currentColor" stroke="none"/><path d="M13.5 13.5h2v2"/></svg>
+              </span>
+              <span class="wallet-paymethod-text">
+                <span class="wallet-paymethod-name">WeChat Pay <span lang="zh-Hans" class="wallet-paymethod-zh">微信支付</span></span>
+                <span class="wallet-paymethod-sub">Charged in Chinese yuan. Scan a QR code with WeChat.</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="field-group wallet-paymethod-card-only" style="margin-top: 1rem;">
           <label for="save_payment_method"
                  style="display: flex; gap: 0.5rem; align-items: flex-start; cursor: pointer;">
             <input type="checkbox"
@@ -240,12 +266,15 @@
           </label>
         </div>
 
+        {# Both submit buttons are always in the form; CSS shows the one that
+           matches the picked method. Without :has() support both show. #}
         <div class="wallet-topup-cta-row">
-          <button type="submit" class="btn-primary submit-cta">
+          <button type="submit" class="btn-primary submit-cta wallet-paymethod-card-only">
             {% if next_url %}Top up{% else %}Continue to checkout{% endif %}
           </button>
-          <button type="submit" class="btn-secondary" formaction="/account/wallet/wechat/quote">
-            Pay with WeChat Pay (yuan)
+          <button type="submit" class="btn-primary submit-cta wallet-paymethod-wechat-only"
+                  id="wechat-submit" formaction="/account/wallet/wechat/quote">
+            Continue to WeChat Pay
           </button>
           {% if next_url %}
             <a href="{{ next_url }}" class="btn-secondary">Back to the form</a>
@@ -357,6 +386,20 @@
           radios.forEach(function (r) { r.checked = false; });
         });
       }
+      var wechat = document.getElementById('pay_with_wechat');
+      var wechatBtn = document.getElementById('wechat-submit');
+      var cardBtn = form.querySelector('button.wallet-paymethod-card-only');
+      var rerouting = false;
+      // Enter key with WeChat picked: the browser submits via the first
+      // (hidden) card button. Reroute only when that button is hidden, so a
+      // visible card button (no :has() support) is still honoured.
+      form.addEventListener('submit', function (e) {
+        if (rerouting || !wechat || !wechat.checked || !wechatBtn || !cardBtn || !form.requestSubmit) return;
+        if (e.submitter === wechatBtn || cardBtn.getClientRects().length) return;
+        e.preventDefault();
+        rerouting = true;
+        setTimeout(function () { form.requestSubmit(wechatBtn); rerouting = false; }, 0);
+      });
     })();
   </script>
 
