@@ -388,11 +388,17 @@
       }
       var wechat = document.getElementById('pay_with_wechat');
       var wechatBtn = document.getElementById('wechat-submit');
+      var cardBtn = form.querySelector('button.wallet-paymethod-card-only');
+      var rerouting = false;
+      // Enter key with WeChat picked: the browser submits via the first
+      // (hidden) card button. Reroute only when that button is hidden, so a
+      // visible card button (no :has() support) is still honoured.
       form.addEventListener('submit', function (e) {
-        if (wechat && wechat.checked && wechatBtn && e.submitter !== wechatBtn && form.requestSubmit) {
-          e.preventDefault();
-          setTimeout(function () { form.requestSubmit(wechatBtn); }, 0);
-        }
+        if (rerouting || !wechat || !wechat.checked || !wechatBtn || !cardBtn || !form.requestSubmit) return;
+        if (e.submitter === wechatBtn || cardBtn.getClientRects().length) return;
+        e.preventDefault();
+        rerouting = true;
+        setTimeout(function () { form.requestSubmit(wechatBtn); rerouting = false; }, 0);
       });
     })();
   </script>
