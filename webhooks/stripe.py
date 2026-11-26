@@ -33,8 +33,11 @@ Responsibilities
 1. Verify ``Stripe-Signature`` against ``STRIPE_WEBHOOK_SECRET``.
    Malformed signatures return 400.
 2. Idempotency gate on ``public.stripe_events.event_id`` (primary key,
-   already present from migration 0001). Replays return 200 so Stripe
-   stops retrying without touching the wallet a second time.
+   already present from migration 0001). A replay of a finished event
+   returns 200 without running the handler. A handler that returns
+   ``status=error`` or raises gets a 500 and ``processed_at`` stays unset,
+   so Stripe's retry runs the handler again; ``top_up_wallet`` skips an
+   event id already in ``wallet_transactions``.
 3. Per event handler dispatch. Each handler is a small adapter that
    pulls user_id and amount_usd out of the Stripe object metadata,
    then calls the matching ``shared.wallet`` primitive.
@@ -51,6 +54,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -117,35 +121,45 @@ def _verify_signature(payload: bytes, signature: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _insert_event_once(event: dict) -> bool:
-    """Insert the event id into ``stripe_events``. Return False on duplicate.
+def _claim_event(event: dict) -> str:
+    """Claim the event id in ``stripe_events``.
 
-    The ``event_id`` primary key on ``stripe_events`` is the idempotency
-    key. A duplicate event id raises a unique constraint violation and
-    we treat that as a replay (return False so the route layer can short
-    circuit).
+    Returns ``"claimed"`` when the handler should run: a fresh insert, or a
+    row left with ``processed_at`` unset by an earlier delivery that failed
+    or died mid-way. Returns ``"done"`` when a delivery already finished,
+    and ``"unavailable"`` when the table cannot be read or written.
     """
+    event_id = event.get("id")
     client = get_service_client()
     if client is None:
-        logger.error(
-            "stripe_events insert: service role client unavailable."
-        )
-        return False
+        logger.error("stripe_events: service role client unavailable.")
+        return "unavailable"
     row = {
-        "event_id": event.get("id"),
+        "event_id": event_id,
         "event_type": event.get("type"),
         "payload": event,
     }
     try:
         client.table("stripe_events").insert(row).execute()
-        return True
+        return "claimed"
     except Exception as exc:
-        # Could be a unique constraint violation (replay) or a transient
-        # DB error. Either way, do not process again.
-        logger.info(
-            "stripe_events insert rejected (likely replay): %s", exc
+        logger.info("stripe_events insert rejected for %s: %s", event_id, exc)
+    try:
+        existing = (
+            client.table("stripe_events")
+            .select("processed_at")
+            .eq("event_id", event_id)
+            .execute()
         )
-        return False
+        rows = getattr(existing, "data", None) or []
+    except Exception:
+        logger.error(
+            "stripe_events lookup failed for %s", event_id, exc_info=True
+        )
+        return "unavailable"
+    if not rows:
+        return "unavailable"
+    return "done" if rows[0].get("processed_at") else "claimed"
 
 
 def _mark_processed(event_id: str) -> None:
@@ -155,7 +169,7 @@ def _mark_processed(event_id: str) -> None:
         return
     try:
         client.table("stripe_events").update(
-            {"processed_at": "now()"}
+            {"processed_at": datetime.now(timezone.utc).isoformat()}
         ).eq("event_id", event_id).execute()
     except Exception:
         logger.warning(
@@ -674,13 +688,15 @@ def register_stripe_webhook(flask_app: Flask) -> None:
             _observe(event_type, "ignored")
             return jsonify({"status": "ignored", "event_id": event_id})
 
-        # Idempotency gate. A duplicate event id returns 200 with status
-        # 'already_processed' so Stripe stops retrying.
-        if not _insert_event_once(event):
+        claim = _claim_event(event)
+        if claim == "done":
             _observe(event_type, "duplicate")
             return jsonify(
                 {"status": "already_processed", "event_id": event_id}
             )
+        if claim == "unavailable":
+            _observe(event_type, "error")
+            return Response("event store unavailable", status=503)
 
         handler = _HANDLERS[event_type]
         try:
@@ -693,6 +709,30 @@ def register_stripe_webhook(flask_app: Flask) -> None:
             )
             result = {"status": "error"}
             outcome = "error"
+
+        if outcome == "error":
+            # Leave processed_at unset and answer 5xx so Stripe redelivers;
+            # the retry re-runs the handler (see _claim_event).
+            obj = (event.get("data") or {}).get("object") or {}
+            user_id = result.get("user_id") or _user_id_from_metadata(obj) or ""
+            logger.error(
+                "Stripe event %s type=%s failed (%s) user=%s; returning 500 "
+                "for a Stripe retry.",
+                event_id, event_type, result.get("reason"), user_id,
+            )
+            _send_email_safe(
+                "alert_ops_slack",
+                event="stripe_webhook_failed",
+                user_id=user_id,
+                stripe_event_id=event_id,
+                event_type=event_type,
+                reason=result.get("reason") or "exception",
+            )
+            _observe(event_type, outcome)
+            return jsonify(
+                {"status": "error", "event_id": event_id,
+                 "reason": result.get("reason")}
+            ), 500
 
         _mark_processed(event_id)
         _observe(event_type, outcome)
