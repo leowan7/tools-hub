@@ -244,6 +244,9 @@
           <button type="submit" class="btn-primary submit-cta">
             {% if next_url %}Top up{% else %}Continue to checkout{% endif %}
           </button>
+          <button type="submit" class="btn-secondary" formaction="/account/wallet/wechat/quote">
+            Pay with WeChat Pay (yuan)
+          </button>
           {% if next_url %}
             <a href="{{ next_url }}" class="btn-secondary">Back to the form</a>
           {% else %}

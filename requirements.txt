@@ -19,3 +19,4 @@ scipy>=1.11
 
 # CR-02 webhook retry sweep (Platform API).
 APScheduler>=3.10,<4.0
+segno>=1.6,<2.0  # pure-Python QR for the WeChat Pay top-up page
