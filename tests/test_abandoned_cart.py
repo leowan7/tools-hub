@@ -254,3 +254,23 @@ def test_find_candidates_skips_frozen_wallets_and_runs_in_flight(monkeypatch):
     monkeypatch.setattr(shared.credits, "get_service_client", lambda: client)
     monkeypatch.setattr(ac, "_live_tool_label", lambda slug: "Boltz-2" if slug == "boltz2" else "")
     assert sorted(c.user_id for c in ac.find_candidates(now=NOW)) == ["u1", "u4"]
+
+
+def test_unclaim_clears_a_first_stamp_and_keeps_a_new_unsubscribe(monkeypatch):
+    import shared.credits
+    from types import SimpleNamespace
+
+    now_meta = {ac.STAMP_KEY: NOW.isoformat(), ac.COUNT_KEY: 1,
+                "email_preferences": {"marketing_email": False}}
+    written = []
+    admin = SimpleNamespace(
+        get_user_by_id=lambda uid: SimpleNamespace(user=SimpleNamespace(
+            email="a@lab.org", user_metadata=dict(now_meta))),
+        update_user_by_id=lambda uid, body: written.append(body["user_metadata"]))
+    monkeypatch.setattr(shared.credits, "get_service_client",
+                        lambda: SimpleNamespace(auth=SimpleNamespace(admin=admin)))
+    ac._unclaim("u1", before={})
+    [meta] = written
+    assert meta[ac.STAMP_KEY] is None and meta[ac.COUNT_KEY] is None
+    assert meta["email_preferences"] == {"marketing_email": False}
+    assert not ac._blocked_by_history(meta, NOW)

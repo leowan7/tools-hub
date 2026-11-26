@@ -253,11 +253,20 @@ def _claim(user_id: str, now: datetime) -> Optional[dict]:
 
 
 def _unclaim(user_id: str, before: dict) -> None:
-    """Put back the metadata ``_claim`` replaced, after a send that did not go out."""
+    """Restore the two stamp keys ``_claim`` wrote, after a send that did not go out.
+
+    Re-reads the user so other keys (an unsubscribe made meanwhile) are kept,
+    and writes None for a key that was absent so the stamp is cleared whether
+    the auth server merges or replaces ``user_metadata``.
+    """
     from shared.credits import get_service_client  # noqa: PLC0415
 
     try:
-        get_service_client().auth.admin.update_user_by_id(user_id, {"user_metadata": before})
+        client = get_service_client()
+        meta = _user_row(client, user_id)["user_metadata"]
+        meta[STAMP_KEY] = before.get(STAMP_KEY)
+        meta[COUNT_KEY] = before.get(COUNT_KEY)
+        client.auth.admin.update_user_by_id(user_id, {"user_metadata": meta})
     except Exception:
         logger.warning("abandoned_cart: un-stamping user %s failed", user_id, exc_info=True)
 
