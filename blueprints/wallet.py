@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from flask import (
     Blueprint,
+    abort,
     jsonify,
     redirect,
     render_template,
@@ -1012,7 +1013,30 @@ def _topup_error_redirect(message: str):
     return redirect("/account/wallet/topup?topup_error=" + quote(message))
 
 
+@wallet_bp.app_template_global("wechat_pay_enabled")
+def _wechat_pay_enabled_global() -> bool:
+    from shared.feature_flags import wechat_pay_enabled  # noqa: PLC0415
+
+    return wechat_pay_enabled()
+
+
+def _wechat_pay_on(view):  # noqa: ANN001, ANN202
+    """404 the WeChat Pay routes unless WECHAT_PAY_ENABLED is on."""
+    from functools import wraps  # noqa: PLC0415
+
+    @wraps(view)
+    def wrapped(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        from shared.feature_flags import wechat_pay_enabled  # noqa: PLC0415
+
+        if not wechat_pay_enabled():
+            abort(404)
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 @wallet_bp.route("/account/wallet/wechat/quote", methods=["POST"])
+@_wechat_pay_on
 @login_required
 def wallet_wechat_quote():
     """Show the yuan price for a USD top-up before any payment is created.
@@ -1037,6 +1061,7 @@ def wallet_wechat_quote():
 
 
 @wallet_bp.route("/account/wallet/wechat", methods=["POST"])
+@_wechat_pay_on
 @login_required
 def wallet_wechat_create():
     """Create the WeChat Pay PaymentIntent for the quote in the session."""
@@ -1066,6 +1091,7 @@ def wallet_wechat_create():
 
 
 @wallet_bp.route("/account/wallet/wechat", methods=["GET"])
+@_wechat_pay_on
 @login_required
 def wallet_wechat_page():
     """Show the WeChat Pay QR for the caller's own pending PaymentIntent."""
@@ -1094,6 +1120,7 @@ def wallet_wechat_page():
 
 
 @wallet_bp.route("/account/wallet/wechat/status", methods=["GET"])
+@_wechat_pay_on
 @login_required
 def wallet_wechat_status():
     """Read-only status of the caller's own WeChat PaymentIntent. Never credits."""
