@@ -1,16 +1,16 @@
 """First-run path: signup signs the browser in, the no-runs hero does not lead
-with a top-up, the pay gate logs ``credit_exhausted``, and the purpose field's
-placeholder is too short to pass as an answer."""
+with a top-up, the pay gate logs ``credit_exhausted``, and a personal-email
+signup is not asked what it is working on."""
 
 from __future__ import annotations
 
-import re
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from flask import render_template
 
-from shared.auth import MIN_PURPOSE_CHARS, SignupResult
+from shared.auth import SignupContext, SignupResult, issue_signup_token, register_user
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -41,7 +41,7 @@ def test_signup_signs_in_and_redirects_to_next(app):
 
 def test_failed_signup_does_not_sign_in(app):
     client = app.test_client()
-    bad = SignupResult(success=False, error_message="no", failure_code="purpose_missing")
+    bad = SignupResult(success=False, error_message="no", failure_code="weak_password")
     with patch("shared.auth.register_user", return_value=bad):
         resp = client.post("/signup", data={
             "email": "a@gmail.com", "password": "longenough1",
@@ -102,9 +102,13 @@ def test_pay_gate_render_logs_credit_exhausted(app, reason, logged):
         assert kwargs["props"]["tool"] == "boltz2"
 
 
-def test_purpose_placeholder_is_too_short_to_pass_and_browser_gets_the_rule(app):
-    html = app.test_client().get("/signup").get_data(as_text=True)
-    box = re.search(r'<textarea id="signup-purpose".*?>', html, re.S).group(0)
-    placeholder = re.search(r'placeholder="([^"]*)"', box).group(1)
-    assert 0 < len(placeholder) < MIN_PURPOSE_CHARS
-    assert '"gmail.com"' in html and f"< {MIN_PURPOSE_CHARS};" in html
+def test_personal_email_signs_up_without_a_purpose_note(app):
+    assert 'name="purpose"' not in app.test_client().get("/signup").get_data(as_text=True)
+    client = MagicMock()
+    client.auth.admin.create_user.return_value = SimpleNamespace(user={"id": "u-1"})
+    ctx = SignupContext(email="ada@gmail.com", password="Abcdefghij1",
+                        honeypot="", token=issue_signup_token())
+    with patch("shared.credits.get_service_client", return_value=client):
+        result = register_user(ctx)
+    assert result.success and result.signup_quality == "personal"
+    assert client.table.return_value.upsert.call_args.args[0]["purpose"] is None

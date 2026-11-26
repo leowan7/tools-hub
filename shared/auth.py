@@ -45,13 +45,8 @@ STAFF_EMAILS: frozenset[str] = frozenset({"leo@ranomics.com"})
 #                     was the cheapest one to lose.
 #   MAX_FILL_SECONDS  Reject stale tokens. After this, the form is
 #                     re-fetched so the timestamp cannot be replayed.
-#   MIN_PURPOSE_CHARS Minimum length when a personal-domain signup
-#                     is required to attach a "what are you working on"
-#                     note. Real notes clear this comfortably; junk
-#                     drive-by submits don't.
 MIN_FILL_SECONDS: int = 0
 MAX_FILL_SECONDS: int = 3600
-MIN_PURPOSE_CHARS: int = 30
 
 SIGNUP_TOKEN_SALT: str = "signup-form-render"
 RESET_TOKEN_SALT: str = "tools-hub-reset-v1"
@@ -159,7 +154,6 @@ class SignupContext:
 
     email: str
     password: str
-    purpose: str
     honeypot: str
     token: str
     ip: Optional[str] = None
@@ -189,7 +183,6 @@ class SignupResult:
     failure_code: Optional[str] = None
     classification: Optional[str] = None
     signup_quality: Optional[str] = None
-    purpose_stored: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +391,10 @@ def register_user(
       2. timing         token missing / expired / submitted <2s after render
       3. invalid        malformed email
       4. disposable     domain on disposable blocklist
-      5. purpose_missing  personal-domain submit without 30+ char purpose
 
     On pass, calls Supabase ``client.auth.sign_up`` and (best-effort)
-    inserts a ``public.user_profiles`` row carrying the classification
-    + purpose. The caller is responsible for logging rejected attempts
+    inserts a ``public.user_profiles`` row carrying the classification.
+    The caller is responsible for logging rejected attempts
     to ``signup_rejections`` (kept out of this module so this stays
     importable from worker code that has no DB role).
 
@@ -462,7 +454,6 @@ def register_user(
     # ----- Layer 3: classify -------------------------------------------------
     email = (ctx.email or "").strip()
     password = ctx.password or ""
-    purpose = (ctx.purpose or "").strip()
 
     if not email or not password:
         return SignupResult(
@@ -494,24 +485,12 @@ def register_user(
             classification=classification.value,
         )
 
-    if classification == EmailClass.PERSONAL and len(purpose) < MIN_PURPOSE_CHARS:
-        return SignupResult(
-            success=False,
-            error_message=(
-                "A short note helps us serve you better — please tell "
-                "us what you're working on (30+ characters)."
-            ),
-            rejection_reason="purpose_missing",
-            failure_code="purpose_missing",
-            classification=classification.value,
-        )
-
     # ----- Layer 4: Supabase create_user (service-role) ----------------------
     # Use the service-role admin API instead of anon-client sign_up. This
     # lets us turn off "Allow new users to sign up" in the Supabase
     # dashboard so bots can't hit POST /auth/v1/signup directly with the
     # public anon key — every account creation must come through this
-    # Flask route, which means our honeypot / timing / domain / purpose
+    # Flask route, which means our honeypot / timing / domain
     # filters can't be bypassed. The email_redirect_to argument is
     # accepted but no longer used (admin.create_user does not send a
     # confirmation email).
@@ -575,8 +554,7 @@ def register_user(
             classification=classification.value,
         )
 
-    purpose_to_store = purpose if purpose else None
-    quality = signup_quality_for(classification, purpose_to_store)
+    quality = signup_quality_for(classification)
 
     # Best-effort: profile insert is informational, not load-bearing for
     # the user's ability to sign in. Failures are logged but never
@@ -586,7 +564,7 @@ def register_user(
             user_id=user_id,
             domain_class=classification.value,
             signup_quality=quality,
-            purpose=purpose_to_store,
+            purpose=None,
             ip=ctx.ip,
             user_agent=ctx.user_agent,
         )
@@ -600,7 +578,6 @@ def register_user(
         user_id=user_id,
         classification=classification.value,
         signup_quality=quality,
-        purpose_stored=purpose_to_store,
     )
 
 
@@ -659,8 +636,8 @@ def register_google_user(
 ) -> SignupResult:
     """Create a password-less account for an email Google has verified.
 
-    Keeps register_user's invalid / disposable refusal. Skips honeypot,
-    timing and the personal-email purpose note (Leo, 2026-10-06).
+    Keeps register_user's invalid / disposable refusal. Skips honeypot
+    and timing (Leo, 2026-10-06).
     """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.email_domain import (  # noqa: PLC0415
@@ -727,13 +704,7 @@ def register_google_user(
             classification=classification.value,
         )
 
-    # signup_quality_for(PERSONAL, None) returns "business" (its last line,
-    # shared/email_domain.py), which would mislabel a gmail sign-up.
-    quality = (
-        "personal"
-        if classification == EmailClass.PERSONAL
-        else signup_quality_for(classification, None)
-    )
+    quality = signup_quality_for(classification)
     try:
         _insert_user_profile(
             user_id=user_id,

@@ -31,12 +31,12 @@ def test_create_account_tab_on_login_passes_the_timing_check(client):
                lambda **k: rejections.append(k["reason"])), \
          patch("shared.events.log_event", lambda **k: None):
         client.post("/signup", data={
-            "email": "someone@gmail.com",
+            "email": "someone@mailinator.com",
             "password": "abcdefgh1",
             "password2": "abcdefgh1",
             "terms_accepted": "on",
             "signup_token": token.decode(),
         })
-    # No purpose on a personal address: the next gate must be the one that
-    # fires, proving the token got past the timing check.
-    assert rejections == ["purpose_missing"]
+    # A disposable address: the next gate must be the one that fires,
+    # proving the token got past the timing check.
+    assert rejections == ["disposable"]

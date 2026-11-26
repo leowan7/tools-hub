@@ -233,7 +233,6 @@ def signup():
             mode="signup",
             error=None,
             signup_email=None,
-            signup_purpose=None,
             signup_terms=False,
             signup_token=issue_signup_token(),
             next=next_url,
@@ -242,7 +241,6 @@ def signup():
     email = request.form.get("email", "").strip()
     password = request.form.get("password", "")
     password2 = request.form.get("password2", "")
-    purpose = request.form.get("purpose", "").strip()
     honeypot = request.form.get("website", "").strip()
     token = request.form.get("signup_token", "")
     terms_accepted = request.form.get("terms_accepted") == "on"
@@ -251,7 +249,7 @@ def signup():
     user_agent = request.headers.get("User-Agent")
 
     # Password-pair check runs before register_user so the user sees
-    # this error without re-typing their email + purpose. The
+    # this error without re-typing their email. The
     # honeypot / timing checks still happen below — confirmation
     # mismatch is a UX problem, not a junk-filter problem.
     if password and password2 and password != password2:
@@ -261,7 +259,6 @@ def signup():
             mode="signup",
             error="Passwords do not match.",
             signup_email=email,
-            signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
             next=next_url,
@@ -273,7 +270,6 @@ def signup():
             mode="signup",
             error="Password must be at least 8 characters.",
             signup_email=email,
-            signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
             next=next_url,
@@ -285,7 +281,6 @@ def signup():
             mode="signup",
             error="You must accept the Terms of Service and Privacy Policy to create an account.",
             signup_email=email,
-            signup_purpose=purpose,
             signup_terms=False,
             signup_token=issue_signup_token(),
             next=next_url,
@@ -301,7 +296,6 @@ def signup():
     ctx = SignupContext(
         email=email,
         password=password,
-        purpose=purpose,
         honeypot=honeypot,
         token=token,
         ip=client_ip,
@@ -330,7 +324,6 @@ def signup():
             mode="signup",
             error=result.error_message,
             signup_email=email,
-            signup_purpose=purpose,
             signup_terms=terms_accepted,
             signup_token=issue_signup_token(),
             next=next_url,
