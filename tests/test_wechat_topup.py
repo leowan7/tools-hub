@@ -334,5 +334,5 @@ def test_topup_page_offers_card_and_wechat_choice(client):
     assert 'name="pay_with" value="wechat" id="pay_with_wechat"' in page
     assert 'formaction="/account/wallet/wechat/quote"' in page
     assert "Continue to checkout" in page and "Continue to WeChat Pay" in page
-    assert "Charged in Chinese yuan" in page
+    assert "Charged in Chinese yuan" in page and "Charged in US dollars" in page
     assert "stripe.com" not in page

@@ -420,9 +420,7 @@
   border-radius: var(--radius-md);
 }
 .wallet-paymethod-icon-card {
-  background: var(--bg-deep);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
+  background: linear-gradient(135deg, #3B5BDB 0%, #1A1F71 100%);
 }
 .wallet-paymethod-icon-wechat {
   background: #07C160;
