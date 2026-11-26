@@ -1,0 +1,165 @@
+"""Abandoned-cart email: selection rules, flag gate, bilingual template."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from cron import abandoned_cart as ac
+from shared import email
+
+NOW = datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc)
+
+
+def _ago(**kw) -> str:
+    return (NOW - timedelta(**kw)).isoformat()
+
+
+def _ev(uid="u1", kind="tool_form_open", ago=timedelta(hours=2), tool="boltz2", path=None):
+    return {"user_id": uid, "event_type": kind, "created_at": (NOW - ago).isoformat(),
+            "props": {"tool": tool} if tool else {}, "path": path or f"/tools/{tool}"}
+
+
+USER = {"email": "bench@lab.org", "user_metadata": {}}
+
+
+def _select(events, *, balances=None, topups=(), jobs=(), users=None):
+    users = {"u1": USER} if users is None else users
+    return ac.select_candidates(
+        events=events, balances=balances or {}, topups=list(topups), jobs=list(jobs),
+        get_user=users.get, now=NOW,
+        tool_label=lambda s: {"boltz2": "Boltz-2", "bindcraft": "BindCraft"}.get(s, ""),
+    )
+
+
+def test_zero_balance_user_who_opened_a_form_two_hours_ago_qualifies():
+    [c] = _select([_ev()])
+    assert (c.user_id, c.email, c.tool, c.tool_label) == ("u1", "bench@lab.org", "boltz2", "Boltz-2")
+
+
+@pytest.mark.parametrize("event", [
+    _ev(kind="credit_exhausted"),
+    _ev(kind="page_view", tool=None, path="/account/wallet/topup?tool=bindcraft"),
+])
+def test_pay_gate_and_topup_page_also_trigger(event):
+    [c] = _select([event])
+    assert c.user_id == "u1"
+
+
+def test_topup_page_names_the_tool_from_its_query():
+    [c] = _select([_ev(kind="page_view", tool=None, path="/account/wallet/topup?tool=bindcraft")])
+    assert c.tool == "bindcraft"
+
+
+def test_other_page_views_do_not_trigger():
+    assert _select([_ev(kind="page_view", tool=None, path="/pricing")]) == []
+
+
+@pytest.mark.parametrize("ago", [timedelta(minutes=30), timedelta(hours=25)])
+def test_last_event_must_be_one_to_24_hours_old(ago):
+    assert _select([_ev(ago=ago)]) == []
+
+
+def test_a_newer_event_inside_the_hour_waits():
+    assert _select([_ev(ago=timedelta(hours=3)), _ev(ago=timedelta(minutes=10))]) == []
+
+
+def test_positive_balance_is_skipped_and_missing_wallet_counts_as_zero():
+    assert _select([_ev()], balances={"u1": 0.01}) == []
+    assert len(_select([_ev()], balances={})) == 1
+
+
+def test_topup_or_job_after_the_event_skips():
+    assert _select([_ev()], topups=[{"user_id": "u1", "created_at": _ago(minutes=90)}]) == []
+    assert _select([_ev()], jobs=[{"user_id": "u1", "created_at": _ago(minutes=90)}]) == []
+
+
+def test_topup_before_the_event_does_not_skip():
+    assert len(_select([_ev()], topups=[{"user_id": "u1", "created_at": _ago(hours=5)}])) == 1
+
+
+def test_unsubscribed_user_is_skipped():
+    users = {"u1": {"email": "bench@lab.org",
+                    "user_metadata": {"email_preferences": {"marketing_email": False}}}}
+    assert _select([_ev()], users=users) == []
+
+
+@pytest.mark.parametrize("addr", ["leo@ranomics.com", "leowan7+x@gmail.com"])
+def test_internal_accounts_are_skipped(addr):
+    assert _select([_ev()], users={"u1": {"email": addr, "user_metadata": {}}}) == []
+
+
+@pytest.mark.parametrize("meta, qualifies", [
+    ({ac.STAMP_KEY: _ago(days=3), ac.COUNT_KEY: 1}, False),   # inside 7-day cooldown
+    ({ac.STAMP_KEY: _ago(days=8), ac.COUNT_KEY: 1}, True),    # cooldown over
+    ({ac.STAMP_KEY: _ago(days=30), ac.COUNT_KEY: 2}, False),  # two ever
+])
+def test_cooldown_and_lifetime_cap(meta, qualifies):
+    users = {"u1": {"email": "bench@lab.org", "user_metadata": meta}}
+    assert bool(_select([_ev()], users=users)) is qualifies
+
+
+def test_tool_not_live_falls_back_to_no_tool():
+    [c] = _select([_ev(tool="secret-tool")])
+    assert (c.tool, c.tool_label) == ("", "")
+
+
+def test_user_lookup_only_for_users_past_the_row_rules():
+    asked = []
+    ac.select_candidates(
+        events=[_ev("u1"), _ev("u2")], balances={"u2": 5.0}, topups=[], jobs=[],
+        get_user=lambda uid: asked.append(uid) or USER, now=NOW,
+    )
+    assert asked == ["u1"]
+
+
+def test_flag_off_sends_nothing(monkeypatch):
+    monkeypatch.delenv("ABANDONED_CART_EMAIL_ENABLED", raising=False)
+    monkeypatch.setattr(ac, "find_candidates", lambda now: pytest.fail("swept with flag off"))
+    assert ac.send_abandoned_cart(now=NOW) == {"enabled": False, "qualified": 0,
+                                                "sent": 0, "errors": 0}
+
+
+def test_flag_on_claims_before_sending_and_skips_unclaimed(monkeypatch):
+    monkeypatch.setenv("ABANDONED_CART_EMAIL_ENABLED", "true")
+    cands = [ac.Candidate("u1", "a@lab.org"), ac.Candidate("u2", "b@lab.org")]
+    monkeypatch.setattr(ac, "find_candidates", lambda now: cands)
+    order = []
+    monkeypatch.setattr(ac, "_claim", lambda uid, now: order.append(("claim", uid)) or uid == "u1")
+    monkeypatch.setattr(email, "send_abandoned_cart_email",
+                        lambda candidate, base_url: order.append(("send", candidate.user_id)) or True)
+    assert ac.send_abandoned_cart(now=NOW)["sent"] == 1
+    assert order == [("claim", "u1"), ("send", "u1"), ("claim", "u2")]
+
+
+def _render(monkeypatch, cand, *, wechat):
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("WECHAT_PAY_ENABLED", "1" if wechat else "0")
+    sent = {}
+    monkeypatch.setattr(email, "_post_resend", lambda **kw: sent.update(kw) or True)
+    assert email.send_abandoned_cart_email(candidate=cand, base_url="https://t.example")
+    return sent
+
+
+def test_email_names_the_tool_in_both_languages_with_links(monkeypatch):
+    sent = _render(monkeypatch, ac.Candidate("u1", "a@lab.org", "boltz2", "Boltz-2"), wechat=False)
+    for body in (sent["html_body"], sent["text_body"]):
+        assert "Your Boltz-2 run is waiting" in body
+        assert "您的 Boltz-2 任务还在等您" in body
+        assert "https://t.example/tools/boltz2?utm_source=email&" in body.replace("&amp;", "&")
+        assert "/account/wallet/topup?tool=boltz2&utm_source=email&utm_medium=abandoned_cart" \
+            in body.replace("&amp;", "&")
+        assert "it is not charged" in body and "不收取费用" in body
+        assert "WeChat" not in body and "微信" not in body
+        assert "$" not in body
+    assert "Boltz-2" in sent["subject"] and sent["unsubscribe_link"]
+    assert "/email/unsubscribe/" in sent["html_body"]
+
+
+def test_email_mentions_wechat_only_when_the_flag_is_on(monkeypatch):
+    sent = _render(monkeypatch, ac.Candidate("u1", "a@lab.org"), wechat=True)
+    for body in (sent["html_body"], sent["text_body"]):
+        assert "WeChat Pay" in body and "微信支付" in body
+        assert "https://t.example/tools?utm_source=email" in body
+        assert "Your run is waiting" in body and "您的任务还在等您" in body

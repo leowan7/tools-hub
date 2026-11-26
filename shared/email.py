@@ -1412,6 +1412,54 @@ def send_reengagement_email(
     )
 
 
+def send_abandoned_cart_email(*, candidate, base_url: str) -> bool:  # noqa: ANN001
+    """Abandoned-cart email (cron/abandoned_cart.py), English then Chinese.
+
+    Returns True on confirmed send. Raises ``RecipientRejected`` when Resend
+    refuses the address; other failures are logged and return False.
+    """
+    from cron.abandoned_cart import with_utm  # noqa: PLC0415
+    from shared.feature_flags import wechat_pay_enabled  # noqa: PLC0415
+
+    unsub = unsubscribe_url(candidate.user_id)
+    if not unsub:
+        return False
+    tool, label = candidate.tool, candidate.tool_label
+    if tool and label:
+        subject = f"Your {label} run is waiting | 您的 {label} 任务还在等您"
+        tool_url = with_utm(f"{base_url}/tools/{tool}")
+        topup_url = with_utm(f"{base_url}/account/wallet/topup?tool={tool}")
+    else:
+        subject = "Your Ranomics Tools run is waiting | 您的 Ranomics Tools 任务还在等您"
+        label = ""
+        tool_url = with_utm(f"{base_url}/tools")
+        topup_url = with_utm(f"{base_url}/account/wallet/topup")
+    context = {
+        "unsubscribe_url": unsub,
+        "base_url": base_url,
+        "tool_label": label,
+        "tool_url": tool_url,
+        "topup_url": topup_url,
+        "wechat_pay": wechat_pay_enabled(),
+    }
+    try:
+        html_body = _render_template("abandoned_cart.html", **context)
+        text_body = _render_template("abandoned_cart.txt", **context)
+    except Exception:
+        logger.warning("abandoned_cart template render failed for user %s",
+                       candidate.user_id, exc_info=True)
+        return False
+    return _post_resend(
+        to_email=candidate.email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        log_tag=f"abandoned_cart user={candidate.user_id}",
+        unsubscribe_link=unsub,
+        raise_on_rejected_recipient=True,
+    )
+
+
 def _send_simple(
     *,
     api_key: str,

@@ -278,3 +278,12 @@ def test_template_renders_unreadable_ledger(monkeypatch):
         html = daily_digest.render_digest_html(p)
     assert "wallet ledger could not be read" in html
     assert "Could not list accounts" not in html
+
+
+def test_abandoned_cart_sends_counted_in_window_without_internal(monkeypatch):
+    def stamped(u, ts):
+        return {**u, "user_metadata": {"abandoned_cart_email_sent_at": ts}}
+
+    auth = [stamped(AUTH_USERS[0], RECENT), stamped(AUTH_USERS[2], RECENT),
+            stamped(AUTH_USERS[3], OLD), AUTH_USERS[4]]
+    assert _payload(monkeypatch, auth=auth).abandoned_cart_sent == 1

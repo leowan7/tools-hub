@@ -1,0 +1,24 @@
+{# Plain-text version of abandoned_cart.html. Same variables. #}
+{% if tool_label %}Your {{ tool_label }} run is waiting{% else %}Your run is waiting{% endif %}
+
+You were setting up {% if tool_label %}a {{ tool_label }} run{% else %}a run{% endif %} on Ranomics Tools. Your form is one click away:
+{{ tool_url }}
+
+Runs are paid from your wallet. Top up by card{% if wechat_pay %} or WeChat Pay{% endif %} when you are ready:
+{{ topup_url }}
+If a run fails on our side (a crash or a tool error), it is not charged.
+
+----
+
+{% if tool_label %}您的 {{ tool_label }} 任务还在等您{% else %}您的任务还在等您{% endif %}
+
+您在 Ranomics Tools 上设置的{% if tool_label %} {{ tool_label }} {% endif %}任务还没有提交。点击下方链接即可回到表单：
+{{ tool_url }}
+
+运行费用从您的钱包中扣除。准备好后，可通过银行卡{% if wechat_pay %}或微信支付{% endif %}为钱包充值：
+{{ topup_url }}
+如果任务因我们这边的原因失败（程序崩溃或工具出错），不收取费用。
+
+The Ranomics team / Ranomics 团队
+
+Ranomics Tools. {{ base_url }}
