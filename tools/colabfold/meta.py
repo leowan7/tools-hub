@@ -152,8 +152,8 @@ PILOT: dict | None = None
 EXAMPLE: dict | None = {
     "target": (
         "The target is a designed 101-residue sequence that ProteinMPNN "
-        "wrote for a backbone, so it has no UniProt or PDB entry of its "
-        "own."
+        "wrote for a backbone, so there is no UniProt or PDB entry to "
+        "cite for it."
     ),
     "inputs_used": [
         (

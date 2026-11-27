@@ -185,7 +185,8 @@ PILOT: dict | None = None
 EXAMPLE: dict | None = {
     "target": (
         "The target is human ubiquitin, the 76-residue sequence this form "
-        "ships as its example FASTA (UniProt P0CG48, solved as PDB 1UBQ)."
+        "ships as its example FASTA (UniProt P0CG48 residues 1 to 76, "
+        "solved as PDB 1UBQ)."
     ),
     "inputs_used": [
         (

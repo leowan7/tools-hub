@@ -253,7 +253,11 @@ PILOT: dict | None = {
 # PD-L1 target on strand A"). The string says only PD-L1: that these residues
 # are specifically the CANONICAL HUMAN sequence is outside knowledge no file
 # here states, so the word "Human" came out of the string on the SEO lead's
-# conditional sign-off, 2026-11-10. What the repository
+# conditional sign-off, 2026-11-10. 2026-11-27: the 115 residues below were
+# matched against UniProt Q9NZQ7 and are exactly its residues 17 to 131, so
+# the accession is now first-hand and the string carries it. The word
+# "Human" still stays out, because removing it was a sign-off and reversing
+# one is not this commit's to make. What the repository
 # holds is the residues themselves, carried in each design's committed CIF text
 # wrapped at 80
 # characters -- NAFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRARLLKDQLSLGN
@@ -281,9 +285,10 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human PD-L1, residues 17 to 131 (UniProt Q9NZQ7), "
-        "chain A of the vendor's own example condition spec, with one "
-        "hotspot at residue 56."
+        "The target is PD-L1, chain A of the vendor's own example "
+        "condition spec: 115 residues matching UniProt Q9NZQ7 residues 17 "
+        "to 131, with one hotspot at residue 56 in the spec's own "
+        "numbering."
     ),
     "inputs_used": [
         (

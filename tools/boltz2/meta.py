@@ -202,8 +202,8 @@ PILOT: dict | None = {
 EXAMPLE: dict | None = {
     "target": (
         "The target is human MDM2, chain A of <strong>PDB 1YCR</strong> "
-        "(UniProt Q00987), which is 85 residues and holds the pocket that "
-        "p53 binds."
+        "(UniProt Q00987), which is 85 residues and holds the "
+        "pocket that p53 binds."
     ),
     "inputs_used": [
         (
