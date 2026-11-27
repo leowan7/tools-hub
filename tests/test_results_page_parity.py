@@ -128,7 +128,7 @@ def test_esmfold_single_fold_renders_the_ngl_viewer_on_0_100(flask_app):
     html = _render(flask_app, "esmfold", result)
     m = re.search(r'id="esmfold-ngl-viewer"\s+data-pdb-b64="([^"]+)"', html)
     assert m, "no NGL viewer on the ESMFold single-fold page"
-    assert "cdn.jsdelivr.net/npm/ngl@" in html
+    assert "vendor/ngl-2.0.0-dev.40/ngl.js" in html
     assert m.group(1) == pdb_b64_on_100(result["pdb_b64"])
     assert m.group(1) != result["pdb_b64"], "fixture is already on 0-100; rescale untested"
 

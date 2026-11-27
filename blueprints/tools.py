@@ -1319,7 +1319,7 @@ def _example_structures(slug: str) -> list[str]:
 
 
 def _example_entries() -> list[dict]:
-    """Every enabled tool whose page renders a worked example, in catalog order."""
+    """Every enabled tool whose page renders a worked example, in registry order."""
     entries = []
     for adapter in tool_base.all_adapters():
         if not tool_enabled(adapter.slug) or not adapter.results_partial:
