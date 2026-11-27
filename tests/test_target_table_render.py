@@ -331,6 +331,27 @@ def test_viewer_row_spans_the_header_count_on_a_worked_example_too():
     assert set(table.viewer_colspans) == {len(table.header_cells)}
 
 
+def test_viewer_row_spans_the_header_count_on_an_example_that_keeps_3d():
+    """The example above has no structures at all, so it misses the one
+    shape where the two structure columns disagree.
+
+    boltzgen's example payload carries ``pdb_content_b64`` on a row, so
+    ``has_structures`` stays true under the ``example`` sentinel: the 3D
+    column renders and the Structure column does not, because a worked
+    example offers no download (Leo, 2026-11-27). The span sum used to
+    treat the pair as all-or-nothing and over-spanned by one here.
+    """
+    rows = [{"rank": 0, "name": "design_001", "pdb_content_b64": _structure_b64("pdb")},
+            {"rank": 1, "name": "design_002"}]
+    table = _parse(_render(candidates=rows, columns=[], job_id="example",
+                           tool_slug="boltzgen"))
+
+    assert "3D" in table.header_text, table.header_text
+    assert "Structure" not in table.header_text, table.header_text
+    assert table.viewer_colspans, "no viewer rows rendered"
+    assert set(table.viewer_colspans) == {len(table.header_cells)}
+
+
 # ---------------------------------------------------------------------------
 # Length and ipTM: the two conditional columns rfd4 added
 # ---------------------------------------------------------------------------
@@ -1889,12 +1910,14 @@ def _structure_b64(ext: str) -> str:
 def _one_row(pdb_key, *, inline_ext=None):
     """One candidate row, rendered.
 
-    ``inline_ext`` selects the b64 arm of the download cell instead of
-    the URL arm: the TABLE job_id becomes ``example``, which is what
-    clears ``use_url``, and the row carries bytes of that format. That
-    is the only way in -- a row holding a key on any other page takes
-    the URL arm -- so a caller that omits it silently exercises the URL
-    arm twice. The href assertion below is what catches that.
+    ``inline_ext`` gives the row bytes of that format. It no longer
+    changes which arm renders: the example sentinel used to clear
+    ``use_url`` and was the only way to reach the b64 arm WITH a key,
+    and a worked example now renders no download cell at all (Leo,
+    2026-11-27), so that way in is gone. On a real job a row holding a
+    key always takes the URL arm, and the b64 arm is reached only by a
+    row with bytes and no key, which
+    ``test_the_inline_arm_labels_the_key_it_falls_back_to`` covers.
     """
     # The job id carries a DOT on purpose. pdb_url embeds the key, so an
     # extension read off the url agrees with one read off the key for any
@@ -1910,8 +1933,7 @@ def _one_row(pdb_key, *, inline_ext=None):
     if inline_ext is not None:
         row["pdb_content_b64"] = _structure_b64(inline_ext)
     return _render(candidates=[row], columns=["ipTM"],
-                   job_id="example" if inline_ext is not None else "job-1",
-                   tool_slug="boltzgen")
+                   job_id="job-1", tool_slug="boltzgen")
 
 
 _MISSING = object()
@@ -1926,10 +1948,9 @@ _LABEL_CASES = [
 ]
 
 
-@pytest.mark.parametrize("arm", ["url", "inline"])
 @pytest.mark.parametrize("key,serves,expected", _LABEL_CASES)
 def test_the_download_label_is_the_extension_the_row_actually_serves(
-    arm, key, serves, expected
+    key, serves, expected
 ):
     """The button said .pdb while the href served .cif.
 
@@ -1938,13 +1959,13 @@ def test_the_download_label_is_the_extension_the_row_actually_serves(
     was pinned by no test at all -- corrupting the rendered label
     survived 819 targeted tests -- so this is that pin.
 
-    BOTH ARMS, because only the URL one was fixed there. The inline-b64
-    arm went on hardcoding ``.pdb`` beside a ``download=`` carrying the
-    real key, so a .cif row on it showed a label and a filename that
-    disagreed. Latent rather than live: of the shipped example fixtures
-    only boltzgen has a row with inline bytes at all, and that row
-    carries no key, so it takes the design_N.pdb fallback and its label
-    is right. This is the pin, not an incident report.
+    THE URL ARM, which is the only one a key can reach. The b64 arm
+    used to be reachable with a key through the worked-example
+    sentinel, and this case table ran against it too; the example pages
+    render no download cell as of 2026-11-27, so a row that has a key
+    takes the URL arm on every page that still has one. The b64 arm's
+    own label is pinned by
+    ``test_the_inline_arm_labels_the_key_it_falls_back_to``.
 
     THE LABEL FOLLOWS THE KEY, NOT THE MIME. The inline arm serves
     ``data:chemical/x-pdb`` on every row whatever the bytes, while
@@ -1953,26 +1974,39 @@ def test_the_download_label_is_the_extension_the_row_actually_serves(
     with the MIME is the inverse fix and it mislabels a real file, so
     ``download=`` is asserted to be the key untouched.
 
-    The href assertion keeps the parametrization honest: one change
-    routing both ids down the same arm would otherwise leave eight
-    green assertions covering a single branch twice.
+    The href assertion keeps the case honest: a row carrying bytes as
+    well as a key must still serve the URL, or the label is being read
+    off one source and the file fetched from another.
     """
-    html = _one_row(key, inline_ext=serves if arm == "inline" else None)
-    found = _downloads(html)
+    found = _downloads(_one_row(key, inline_ext=serves))
     assert len(found) == 1, found
     href, filename, label = found[0]
 
-    if arm == "inline":
-        assert href.startswith("data:"), href
-    else:
-        assert href.startswith("/api/jobs/"), href
+    assert href.startswith("/api/jobs/"), href
     assert filename == key, (filename, key)
     assert label == expected, (label, expected)
 
 
-@pytest.mark.parametrize("arm", ["url", "inline"])
+@pytest.mark.parametrize("serves,expected", [("pdb", ".pdb"), ("cif", ".pdb")])
+def test_the_inline_arm_labels_the_key_it_falls_back_to(serves, expected):
+    """The b64 arm, reached the only way left: bytes and no key.
+
+    Its label comes from the design_N.pdb fallback, so it reads .pdb
+    whatever the bytes are. That is the macro's historic default and
+    not a guess about the format; the mismatch the .cif case shows is
+    the reason the URL arm derives its label from the key instead.
+    """
+    found = _downloads(_one_row(_MISSING, inline_ext=serves))
+    assert len(found) == 1, found
+    href, filename, label = found[0]
+    assert href.startswith("data:"), href
+    assert filename == "design_1.pdb", filename
+    assert label == expected, (label, expected)
+
+
+@pytest.mark.parametrize("bytes_too", [False, True])
 @pytest.mark.parametrize("key", [12345, 1.5, True, ["a.cif"], {"a": 1}])
-def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
+def test_a_non_string_pdb_key_does_not_500_the_page(bytes_too, key):
     """job.result is container output, so the key's TYPE is not ours.
 
     bindcraft, boltzgen, pxdesign, rfantibody and rfdiffusion ship no
@@ -1994,23 +2028,18 @@ def test_a_non_string_pdb_key_does_not_500_the_page(arm, key):
     the non-str cases is garbage on purpose; what is pinned is that
     the page renders.
 
-    BOTH ARMS, because the extension expression now sits AHEAD of the
-    branch rather than inside the URL one, so the inline-b64 arm
-    evaluates it too and inherits whatever it raises.
+    WITH AND WITHOUT INLINE BYTES, because the extension expression
+    sits AHEAD of the branch rather than inside the URL one, so a row
+    that carries both a bad key and bytes evaluates it just the same.
+    It still renders the URL arm: a key, however malformed, is truthy,
+    and the b64 arm is now reached only by a keyless row.
     """
     found = _downloads(
-        _one_row(key, inline_ext="pdb" if arm == "inline" else None)
+        _one_row(key, inline_ext="pdb" if bytes_too else None)
     )
     assert len(found) == 1, found
     href, _filename, _label = found[0]
-    # The href is what makes `arm` mean anything. Without it the
-    # parametrization is inert: collapsing the two arms leaves all ten
-    # cases green while five of them re-run the URL arm, and the BOTH
-    # ARMS paragraph above would be describing coverage that is gone.
-    if arm == "inline":
-        assert href.startswith("data:"), href
-    else:
-        assert href.startswith("/api/jobs/"), href
+    assert href.startswith("/api/jobs/"), href
 
 
 def test_a_row_with_no_structure_offers_no_download():

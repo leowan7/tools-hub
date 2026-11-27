@@ -211,61 +211,46 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Hen egg-white lysozyme &mdash; PDB <code>1HEW</code>, chain A, "
-        "129 residues."
-    ),
-    "why_this_target": (
-        "Its real sequence is known, so every sequence the model writes "
-        "can be scored against the one nature uses. A de-novo backbone "
-        "has nothing to compare against, which makes a solved structure "
-        "the only way to see whether the model is behaving."
+        "The target is hen egg-white lysozyme, chain A of <strong>PDB "
+        "1HEW</strong> (UniProt P00698), which is 129 residues."
     ),
     "inputs_used": [
         (
             "Backbone PDB",
             "1HEW.pdb",
-            "The crystal structure, downloadable below. Only the backbone "
-            "atoms are read &mdash; the sequence in the file is discarded "
-            "before design.",
+            "We used the crystal structure, which is downloadable below. "
+            "Only the backbone atoms are read, and the sequence in the "
+            "file is discarded before design.",
         ),
         (
             "Chains to design",
             "A",
-            "The single protein chain. 1HEW's other chain is a sugar "
-            "ligand, not protein.",
+            "We designed chain A, the single protein chain. The other "
+            "chain in 1HEW is a sugar ligand rather than protein.",
         ),
         (
             "Number of sequences",
             "2",
-            "Deliberately tiny. This run existed to prove the pipeline "
-            "worked end to end, not to produce a design set.",
+            "We asked for two sequences, which is deliberately tiny. This "
+            "run existed to prove the pipeline worked end to end rather "
+            "than to produce a design set.",
         ),
     ],
     "runtime": "24 seconds end to end, cold container included",
     "what_came_back": (
-        "Two sequences, 129 residues each, recovering 53% and 50% of the "
-        "native lysozyme sequence at scores of 0.758 and 0.756. The "
-        "archived payload "
+        "Two sequences came back, 129 residues each, recovering 53% and "
+        "50% of the native lysozyme sequence at scores of 0.758 and "
+        "0.756. The archived payload "
         "pre-dates the fields that record the designed chain and the "
         "sampling temperature back into the result, so those two read as "
-        "em-dashes in the table below; everything else is as it was "
+        "em-dashes in the table below, and everything else is as it was "
         "returned."
     ),
     "how_to_read_it": (
-        "Recovery is the fraction of positions where the model picked the "
-        "residue nature actually uses. The score legend on this page puts "
-        "the usable line at 0.4 and excellent at 0.6, so about 0.5 on a "
-        "real backbone is healthy &mdash; you would be suspicious of 0.95, "
-        "which usually means the native sequence leaked into the run. "
-        "Score runs the other way: it is the model's negative "
-        "log-likelihood per residue, so lower is more confident, and below "
-        "1.0 is excellent."
-    ),
-    "what_we_did_next": (
-        "Nothing &mdash; this run existed to prove the pipeline. On a real "
-        "backbone the next step is to raise the sequence count to 50 or "
-        "more, then fold the best few with ESMFold or ColabFold to see "
-        "which of them actually adopt the shape you designed them for."
+        "<li>Sequence recovery is 53% and 50%, which is healthy on a "
+        "real backbone; 0.95 would be suspicious.</li>"
+        "<li>Score is negative log-likelihood per residue, so the 0.758 "
+        "and 0.756 are confident.</li>"
     ),
     "structure_file": "1HEW.pdb",
 }

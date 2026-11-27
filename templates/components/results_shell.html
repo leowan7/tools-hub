@@ -287,39 +287,36 @@
    guard on campaign-modal- in components/candidate_table.html), so there
    they stay links to ranomics.com. #}
 {% if candidates %}
+  {# On the worked example this was a two-button panel repeating the lab
+     offer that the page already carries elsewhere, so under the sentinel it
+     is one line (Leo, 2026-11-27: the pages are too wordy). The real
+     results page keeps the full panel, including the shortlist controls
+     that only a real job has. #}
+  {% if is_example %}
+  <p style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.9rem;">
+    Ranomics tests designs like these in the lab, by yeast display,
+    mammalian display, BLI and DMS.
+    <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Test binders in the lab</a>
+  </p>
+  {% else %}
   <div class="panel" style="margin-top: 1rem;">
     <div class="panel-body" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
       <div style="flex: 1 1 320px;">
         <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Ranomics makes and measures designs like these</strong>
         <span style="color: var(--text-secondary); font-size: 0.9rem;">
-          {# Both halves of the normal sentence name a control the worked
-             example suppresses — the per-design download and the shortlist
-             button — so under the example sentinel it would promise two
-             things that are not on the page. Same offer, phrased about the
-             reader's own run instead of about this table. #}
-          {% if is_example %}
-          Yeast display, mammalian display, BLI and DMS, on the same data
-          loop that produced these designs. Designs from your own run are
-          yours to download and take anywhere, either way.
-          {% else %}
           Yeast display, mammalian display, BLI and DMS, on the same data
           loop &mdash; star the designs you want tested, then use the
           shortlist button above or pick a programme here. The
           designs above are yours to download and take anywhere, either way.
-          {% endif %}
         </span>
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-        {% if is_example %}
-        <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Test binders in the lab</a>
-        <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">AI Binder Sprint</a>
-        {% else %}
         {% set lab_scope = campaign_id or job_id %}
         <button type="button" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;" onclick="openCampaignModal('{{ lab_scope }}', 'pilot')">Test binders in the lab</button>
         <button type="button" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;" onclick="openCampaignModal('{{ lab_scope }}', 'sprint')">AI Binder Sprint</button>
-        {% endif %}
       </div>
     </div>
   </div>
+  {% endif %}
 {% endif %}
 {% endmacro %}

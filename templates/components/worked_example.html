@@ -23,7 +23,9 @@ rather than shipped.
 
 Deliberately NOT reproduced here: the 3D viewer from job_detail.html.
 It pulls artifacts from Supabase storage, which an example has none of.
-A plain download of the input structure from static/example/ instead.
+templates/examples/page.html renders a Mol* viewer over the committed
+copies in static/example/ instead. No download of them anywhere: the
+example pages make no such offer (Leo, 2026-11-27).
 
 Numbers in the narration are recorded facts from one specific past run,
 and the closing line labels them that way. The run's recorded cost and
@@ -35,7 +37,10 @@ Usage:
     {{ worked_example(adapter, ex) }}
 #}
 
-{% macro worked_example(adapter, ex) %}
+{# ``show_target``: the examples page prints ex.target in its own hero, so
+   it passes false and this macro skips the panel that would repeat it. The
+   About panel on a tool page has no such hero and keeps it. #}
+{% macro worked_example(adapter, ex, show_target=true) %}
   {% if ex and adapter.results_partial %}
     {# id is the deep-link target for the tool chooser on /tools, which
        links to <tool route>#worked-example. shared/tool_chooser.py only
@@ -44,34 +49,16 @@ Usage:
        macro gates on, so the fragment is only emitted for a page where
        this macro renders. Pinned by
        tests/test_tool_chooser.py::test_has_example_agrees_with_the_renderer_for_every_tool. #}
-    <aside class="panel about-panel" id="worked-example">
-      <div class="panel-header">
-        <span class="panel-title">A past run we actually did</span>
-      </div>
-      <div class="panel-body">
-        <h3>The target</h3>
-        <p>{{ ex.target|safe }}</p>
-        <p>{{ ex.why_this_target|safe }}</p>
-
-        <h3>What we put in the form</h3>
-        <dl>
-          {% for field, value, why in ex.inputs_used %}
-            <dt><strong>{{ field }}</strong> &mdash; <code>{{ value }}</code></dt>
-            <dd>{{ why|safe }}</dd>
-          {% endfor %}
-        </dl>
-        {% if ex.structure_file %}
-          <p>
-            <a href="{{ url_for('static', filename='example/' ~ ex.structure_file) }}" download>
-              Download the structure we used ({{ ex.structure_file }})
-            </a>
-          </p>
-        {% endif %}
-
-        <h3>What came back</h3>
-        <p>{{ ex.what_came_back|safe }}</p>
-      </div>
-    </aside>
+    {% if show_target %}
+      <aside class="panel about-panel" id="worked-example">
+        <div class="panel-header">
+          <span class="panel-title">A past run we actually did</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ ex.target|safe }}</p>
+        </div>
+      </aside>
+    {% endif %}
 
     {# The tool's real results component, outside the panel body so it
        keeps its own chrome — exactly as it renders on /jobs/<id>. #}
@@ -94,29 +81,44 @@ Usage:
        } %}
     {% include adapter.results_partial %}
 
+    {# Settings as a two-column table: the field name and the value put in
+       it, with no explanation beside either. The explanation each tuple
+       still carries (element 2) is no longer rendered anywhere; it is kept
+       in meta.py because tests read it, and because a tool may want it back.
+       Leo, 2026-11-27: "the pages are still very wordy". #}
     <aside class="panel about-panel">
+      <div class="panel-header">
+        <span class="panel-title">Settings we used</span>
+      </div>
       <div class="panel-body">
-        {# Both are optional and BOTH headings move with them. Rendering
-           the heading unconditionally leaves a dangling <h3> over an
-           empty paragraph when a field is missing, and an unguarded
-           |safe prints the literal string "None" onto a public page
-           when a field is present but null. Every example ships both
-           today, so tool nine is what trips this. #}
-        {% if ex.how_to_read_it %}
-          <h3>How to read that</h3>
-          <p>{{ ex.how_to_read_it|safe }}</p>
-        {% endif %}
-
-        {% if ex.what_we_did_next %}
-          <h3>What happened next</h3>
-          <p>{{ ex.what_we_did_next|safe }}</p>
-        {% endif %}
-
-        <p style="color: var(--text-tertiary); font-size: 0.8rem;">
-          Recorded from that one past run. That is what it did, not a
-          prediction for yours.
-        </p>
+        <table style="width: 100%; border-collapse: collapse;">
+          <tbody>
+            {% for field, value, _why in ex.inputs_used %}
+              <tr style="border-bottom: 1px solid var(--border);">
+                <th scope="row" style="text-align: left; padding: 0.45rem 1rem 0.45rem 0; font-weight: 600; vertical-align: top;">{{ field }}</th>
+                <td style="padding: 0.45rem 0; color: var(--text-secondary); overflow-wrap: anywhere;"><code>{{ value }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </aside>
+
+    {% if ex.how_to_read_it %}
+      <aside class="panel about-panel">
+        <div class="panel-header">
+          <span class="panel-title">How to read it</span>
+        </div>
+        <div class="panel-body">
+          {# The field holds <li> items only, so the list markup lives
+             here and every tool gets the same one (Leo, 2026-11-27:
+             "Just give sentence bullet points"). #}
+          <ul style="margin: 0 0 0.75rem; padding-left: 1.15rem; list-style: disc;">{{ ex.how_to_read_it|safe }}</ul>
+          <p style="color: var(--text-tertiary); font-size: 0.8rem; margin-bottom: 0;">
+            Recorded from one past run, not a prediction for yours.
+          </p>
+        </div>
+      </aside>
+    {% endif %}
   {% endif %}
 {% endmacro %}

@@ -188,9 +188,12 @@ PILOT: dict | None = {
 # THE REFERENCE PEPTIDES ARE NOT ROWS IN THE PAYLOAD, deliberately. They
 # carry no contact count, so the hotspot grid would have rendered them
 # "0 / 14" — claiming the native p53 ligand touches none of the cleft it
-# is defined by. Their numbers live in the narration instead, where they
-# can be labelled. The band quoted below is the full min-to-max across
-# all three seeds of each.
+# is defined by. Their numbers used to live in the narration, where they
+# could be labelled; the 2026-11-27 cut took the band out of it, so the
+# only place the three are now described is this comment. What the page
+# still says of them is that PMI binds tightest and scored lowest, which
+# the band below is the record for: it is the full min-to-max across all
+# three seeds of each.
 #
 # NO DESIGNED SEQUENCES. The peptides are Ranomics campaign output; the
 # page teaches the reader to read the scores without handing over the
@@ -201,76 +204,54 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "MDM2 &mdash; PDB <code>1YCR</code>, chain A, 85 residues. The "
-        "pocket p53 binds."
-    ),
-    "why_this_target": (
-        "Because this one can be marked. MDM2 is the most heavily "
-        "characterised protein-protein interface in drug discovery: the "
-        "natural ligand is known, several tighter binders have been "
-        "published, and every one of them has a measured affinity. So we "
-        "can fold designs and known binders through the identical path "
-        "and read the designs against a real scale rather than against a "
-        "threshold somebody picked."
+        "The target is human MDM2, chain A of <strong>PDB 1YCR</strong> "
+        "(UniProt Q00987), which is 85 residues and holds the "
+        "pocket that p53 binds."
     ),
     "inputs_used": [
         (
             "Antigen PDB",
             "1YCR, chain A",
-            "MDM2's p53-binding domain. Chain B in that file is the p53 "
-            "peptide itself and was removed &mdash; leaving it in would "
-            "have let the model copy the answer.",
+            "We uploaded 1YCR and used chain A, which is MDM2's p53-binding "
+            "domain. Chain B in that file is the p53 peptide itself and was "
+            "removed, because leaving it in would have let the model copy "
+            "the answer.",
         ),
         (
             "Binder sequences",
             "12 designed peptides, 12 to 20 residues",
-            "Submitted in one batch. Boltz-2 designs nothing; it folds "
-            "what you give it against the target and scores the "
-            "interface, so a batch is just twelve independent verdicts.",
+            "We submitted 12 designed peptides of 12 to 20 residues in one "
+            "batch. Boltz-2 designs nothing; it folds what you give it "
+            "against the target and scores the interface, so a batch is "
+            "simply twelve independent verdicts.",
         ),
         (
             "Hotspot residues (optional)",
             "54, 57, 58, 61, 62, 67, 72, 75, 86, 91, 93, 96, 99, 100",
-            "The 14 residues lining the cleft &mdash; L54, L57, G58, "
-            "I61, M62, Y67, Q72, V75, F86, F91, V93, H96, I99, Y100 "
-            "&mdash; where p53's Phe19, Trp23 and Leu26 insert. Naming "
-            "them makes the run report whether a design lands in the "
-            "pocket, instead of only whether it scores well somewhere.",
+            "We named the 14 residues lining the cleft, which are L54, L57, "
+            "G58, I61, M62, Y67, Q72, V75, F86, F91, V93, H96, I99 and Y100, "
+            "where p53's Phe19, Trp23 and Leu26 insert. Naming them makes "
+            "the run report whether a design lands in the pocket, instead of "
+            "only whether it scores well somewhere.",
         ),
         (
             "Preset",
             "msa_server",
-            "Builds an alignment for the antigen before folding. Worth "
-            "it on a target with many known relatives.",
+            "We used the msa_server preset, which builds an alignment for "
+            "the antigen before folding. It is worth having on a target with "
+            "many known relatives.",
         ),
     ],
     "what_came_back": (
-        "Twelve complexes, every one <code>strict_pass</code>. ipTM runs "
-        "from 0.874 to 0.952, complex pLDDT from 91.3 to 97.1, and each "
-        "design contacts 13 or 14 of the 14 cleft residues."
+        "Twelve complexes came back, every one <code>strict_pass</code>. "
+        "ipTM runs from 0.874 to 0.952, complex pLDDT from 91.3 to 97.1, and "
+        "each design contacts 13 or 14 of the 14 cleft residues."
     ),
     "how_to_read_it": (
-        "Read the numbers against the scale, not against zero. Folded "
-        "through the identical path, three published MDM2 binders scored: "
-        "the native p53 peptide 0.933&ndash;0.941, PDI 0.930&ndash;0.935, "
-        "and PMI 0.905&ndash;0.912, each across three seeds. The designs "
-        "sit inside that band and the better half sit above it &mdash; "
-        "which is the useful reading of 0.94, rather than &ldquo;0.94 "
-        "sounds high&rdquo;. "
-        "Now the part worth carrying away: PMI is the tightest of the "
-        "three at roughly 3 nM, an order of magnitude better than the "
-        "native peptide, and it scored the LOWEST of the three. ipTM "
-        "tells you the model is confident these two things form the "
-        "complex you asked about. It does not rank affinity, and nothing "
-        "on this page does. Treat a good score as a reason to make the "
-        "molecule, never as a predicted K&#8321;."
-    ),
-    "what_we_did_next": (
-        "Took the panel into a developability screen &mdash; several of "
-        "the twelve were then rejected on protease liability, which the "
-        "interface score says nothing about &mdash; and carried what "
-        "survived toward synthesis. On your own candidates the same shape "
-        "works: fold the batch, keep what clears the bar, and let the "
-        "next filter be the one this score cannot see."
+        "<li>ipTM runs 0.874 to 0.952, so every complex here is "
+        "confidently predicted.</li>"
+        "<li>ipTM does not rank affinity: of the three published MDM2 "
+        "binders folded through this same path, PMI binds tightest and "
+        "scored the lowest.</li>"
     ),
 }

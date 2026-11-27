@@ -151,42 +151,37 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Not a natural protein &mdash; a 101-residue sequence ProteinMPNN "
-        "wrote for a backbone, folded here as an independent check."
-    ),
-    "why_this_target": (
-        "This is the step that catches design failures before they cost "
-        "anything at the bench. ProteinMPNN scores its own output, but those "
-        "numbers only say the sequence suits the backbone it was handed "
-        "&mdash; they are not a prediction that it folds. Re-folding it here, "
-        "with a model that never saw that backbone, is an independent check. "
-        "This run is one that did not come back clean."
+        "The target is a designed 101-residue sequence that ProteinMPNN "
+        "wrote for a backbone, so there is no UniProt or PDB entry to "
+        "cite for it."
     ),
     "inputs_used": [
         (
             "Preset",
             "Standalone, one FASTA",
-            "One design, folded on its own. The batch preset takes a whole "
-            "set of MPNN outputs in a single submission, which is the usual "
-            "way to run this once the loop is worth having.",
+            "We used the standalone preset with one FASTA, so one design "
+            "folds on its own. The batch preset takes a whole set of MPNN "
+            "outputs in a single submission, which is the usual way to run "
+            "this once the loop is worth having.",
         ),
         (
             "FASTA",
             "101 aa, one chain",
-            "One MPNN sequence for that backbone, pasted as FASTA.",
+            "The FASTA held one chain of 101 amino acids, a single MPNN "
+            "sequence for that backbone, pasted straight into the field.",
         ),
         (
             "Number of recycles",
             "2",
-            "How many times the model refines its own answer. More recycles "
-            "let a borderline fold settle and use proportionally more GPU "
-            "time; 2 is "
+            "We set the number of recycles to 2, which is how many times the "
+            "model refines its own answer. More recycles let a borderline "
+            "fold settle and use proportionally more GPU time, and 2 is "
             "enough to see whether a design is in trouble.",
         ),
     ],
     "what_came_back": (
-        "A mean pLDDT of <strong>61.05</strong> and a pTM of 0.62 &mdash; "
-        "under any threshold you would set, a fail. "
+        "The run came back with a mean pLDDT of <strong>61.05</strong> and a "
+        "pTM of 0.62, which is a fail under any threshold you would set. "
         "But the mean is the wrong summary here, and opening "
         "<em>Per-residue pLDDT</em> shows why. The first "
         "<strong>22 residues</strong> are red, every one below 50. The other "
@@ -196,27 +191,11 @@ EXAMPLE: dict | None = {
         "hanging off the front.</strong>"
     ),
     "how_to_read_it": (
-        "One number for a whole chain averages together the parts the model "
-        "is sure of and the parts it is not, and the two failures that hides "
-        "need opposite responses. Uniformly low across the whole strip means "
-        "the sequence does not fold and the design is dead. Low at one end "
-        "and high through the middle &mdash; this run &mdash; means most of "
-        "the design is fine and a specific, locatable piece of it is not. "
-        "<strong>The mean cannot tell those apart; the strip can.</strong> "
-        "Read the trace before deciding the fate of a design, because the "
-        "difference between them is a redesign versus a 22-residue edit. "
-        "It is still a fail as submitted: a floppy 22-residue terminus is a "
-        "protease target and it will not behave in an assay. But you now know "
-        "which 22 residues, which is a different morning's work."
-    ),
-    "what_we_did_next": (
-        "The move a result like this points to is to trim the tail and re-fold. "
-        "If the remaining 79 residues hold up alone, the core was real and the "
-        "terminus was the whole problem. If the core collapses without it, the "
-        "fold depended on that tail after all and it is the backbone that "
-        "needs revisiting, not the sequence. Either way it is one more cheap "
-        "fold before anything gets ordered, which is the reason this step is "
-        "in the loop at all."
+        "<li>Mean pLDDT is 61.05 across the 101 residues.</li>"
+        "<li>The first 22 residues score low and the rest holds "
+        "up.</li>"
+        "<li>The mean cannot tell those apart; the per-residue strip "
+        "does.</li>"
     ),
     "cost_usd": "0.07",
     "runtime": "55 seconds",

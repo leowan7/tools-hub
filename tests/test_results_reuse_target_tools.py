@@ -250,15 +250,26 @@ def _panel(flask_app, *, is_example: bool, handoff=None) -> str:
 @pytest.mark.parametrize("is_example", [True, False])
 def test_the_cross_sell_leads_with_what_ranomics_does(tools_app, is_example):
     """Leo's words were that leading on validation being optional is a bad
-    cross-sell. The heading now names the service; the "yours to download"
-    trust line stays in both branches."""
+    cross-sell, so neither branch may go back to that line.
+
+    The branches say it at different lengths since 2026-11-27: a real
+    results page keeps the panel, and the worked example, which repeats
+    the lab offer elsewhere, carries one sentence instead. The example
+    also lost the "yours to download" line, because the example pages no
+    longer hand the reader any file.
+    """
     flask_app, _ = tools_app
     with flask_app.test_request_context("/jobs/job-1"):
         html = _panel(flask_app, is_example=is_example)
 
-    assert "Ranomics makes and measures designs like these" in html
     assert "Validating in the lab is optional" not in html
-    assert "yours to download and take anywhere" in html
+    if is_example:
+        assert "Ranomics tests designs like these in the lab" in html
+        assert "Ranomics makes and measures designs like these" not in html
+        assert "yours to download and take anywhere" not in html
+    else:
+        assert "Ranomics makes and measures designs like these" in html
+        assert "yours to download and take anywhere" in html
 
 
 @pytest.mark.parametrize("is_example", [True, False])

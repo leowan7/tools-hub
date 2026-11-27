@@ -20,6 +20,7 @@ from typing import Optional
 
 from flask import (
     Blueprint,
+    abort,
     current_app,
     g,
     redirect,
@@ -35,7 +36,7 @@ from shared import resample as _resample
 from shared import tool_chooser
 from shared.auth import login_required
 from shared.credits import load_user_context
-from shared.feature_flags import tool_enabled
+from shared.feature_flags import example_pages_enabled, tool_enabled
 from shared.handoffs import get_handoff, mark_consumed
 from shared.idempotency import idempotent
 from shared.jobs import (
@@ -1290,6 +1291,74 @@ def proteinmpnn_slug_redirect():
     if qs:
         target = f"{target}?{qs}"
     return redirect(target, code=301)
+
+# ------------------------------------------------------------------
+# Public example-run pages, behind EXAMPLE_PAGES_ENABLED (off by default).
+# One page per tool that has a worked example: the same narration and
+# results partial the tool page renders, plus the structure files from
+# that run when static/example/<slug>/ holds them.
+# ------------------------------------------------------------------
+_EXAMPLE_STATIC_DIR = Path(__file__).resolve().parent.parent / "static" / "example"
+_STRUCTURE_SUFFIXES = (".pdb", ".cif")
+
+
+@tools_bp.app_template_global("example_pages_enabled")
+def _example_pages_enabled_global() -> bool:
+    return example_pages_enabled()
+
+
+def _example_structures(slug: str) -> list[str]:
+    """Structure files committed under static/example/<slug>/, sorted by name."""
+    folder = _EXAMPLE_STATIC_DIR / slug
+    if not folder.is_dir():
+        return []
+    return sorted(
+        p.name for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in _STRUCTURE_SUFFIXES
+    )
+
+
+def _example_entries() -> list[dict]:
+    """Every enabled tool whose page renders a worked example, in registry order."""
+    entries = []
+    for adapter in tool_base.all_adapters():
+        if not tool_enabled(adapter.slug) or not adapter.results_partial:
+            continue
+        ex = _public_tool_context(adapter).get("example")
+        if ex:
+            entries.append({
+                "adapter": adapter,
+                "example": ex,
+                "has_structures": bool(_example_structures(adapter.slug)),
+            })
+    return entries
+
+
+@tools_bp.route("/examples", methods=["GET"])
+def examples_index():
+    if not example_pages_enabled():
+        abort(404)
+    return render_template("examples/index.html", entries=_example_entries())
+
+
+@tools_bp.route("/examples/<tool>", methods=["GET"])
+def example_page(tool: str):
+    if not example_pages_enabled():
+        abort(404)
+    adapter = tool_base.get(tool)
+    if adapter is None or not tool_enabled(tool) or not adapter.results_partial:
+        abort(404)
+    public_ctx = _public_tool_context(adapter)
+    if not public_ctx.get("example"):
+        abort(404)
+    return render_template(
+        "examples/page.html",
+        adapter=adapter,
+        ex=public_ctx["example"],
+        short_name=public_ctx["short_name"],
+        structures=_example_structures(adapter.slug),
+    )
+
 
 @tools_bp.route("/tools/<tool>", methods=["GET"])
 def tool_form(tool: str):

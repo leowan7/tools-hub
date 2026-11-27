@@ -802,11 +802,20 @@ class TestExampleNumbersComeFromThePayload:
         # in this file can re-derive them, so this pins the shape of the
         # claim instead: three named binders, each with a range, and the
         # affinity caveat that is the whole point of quoting them.
+        # 2026-11-27: the reading was cut to three sentences, and the
+        # three named folds with their ranges went with it. What survives
+        # is the ONE claim those figures existed to support, that a high
+        # ipTM is not an affinity ranking, and it still names the binder
+        # that makes the point. The ipTM range it quotes IS re-derivable,
+        # so that half is pinned against the payload rather than by eye.
         reading = example["how_to_read_it"]
-        for ref in ("p53", "PDI", "PMI"):
-            assert ref in reading, f"{ref} missing from how_to_read_it"
-        assert "0.905" in reading and "0.941" in reading
+        assert "PMI" in reading, (
+            "the reading no longer names the binder that scored lowest "
+            "and binds tightest, so 'does not rank affinity' is asserted "
+            "with nothing behind it"
+        )
         assert "does not rank affinity" in reading
+        assert f"{min(iptm):.3f}" in reading and f"{max(iptm):.3f}" in reading
 
         # No invented price: campaign compute, not a wallet-billed job.
         assert not example.get("cost_usd")
@@ -851,8 +860,6 @@ class TestExampleNumbersComeFromThePayload:
         for figure in ("0.29", "0.30", "surface hydrophobicity"):
             assert figure in blurb.lower(), f"{figure} missing from blurb"
         reading = example["how_to_read_it"]
-        assert "0.35" in reading, "the reject line the reading depends on"
-        assert "precondition" in reading
         # Every stored value must actually be under the line the prose
         # says they were pre-filtered by, or the reading is false.
         assert all(v < 0.35 for v in stored)
@@ -871,13 +878,19 @@ class TestExampleNumbersComeFromThePayload:
         # have caught that one. Substring checks cannot bound what else the
         # prose says, so this asserts what must be present AND excludes the
         # phrasing actually written once.
-        assert "0.26" in reading and "0.34" in reading, (
-            "the reading no longer carries the reference distribution that "
-            "stops a reader taking 0.29 for a good score"
+        # 2026-11-27: the reading was cut to three sentences and the
+        # FreeBindCraft reference distribution went with it, so the figures
+        # named in the comment above are no longer on the page to compare
+        # against. The correction survives in the stronger form: the column
+        # is pre-filtered, so it cannot rank these designs at all. That
+        # refuses the misreading outright instead of out-arguing it.
+        assert "filtered out before you see it" in reading, (
+            "the reading no longer says this column is pre-filtered, so "
+            "nothing stops a reader taking 0.29 for an achievement"
         )
-        assert "three-quarters" in reading, (
-            "the reading carries the reference figures but no longer draws "
-            "the comparison, which is the half that corrects the error"
+        assert "cannot rank" in reading, (
+            "the reading says the column is filtered but no longer draws "
+            "the conclusion, which is the half that corrects the error"
         )
         assert "are low" not in reading and "is low" not in reading, (
             "the reading calls these values low again. They are upper-"
@@ -1079,8 +1092,13 @@ class TestExampleNumbersComeFromThePayload:
         assert round(max(col("refolding_rmsd")), 2) == 1.77
 
         blob = " ".join(str(v) for v in example.values())
-        for figure in ("200", "69.1 to 78.2", "0.538 to 0.653", "0.51",
-                       "1.77", "82 minutes", "6.00"):
+        # 0.51 and 1.77 (the refolding RMSD of ranks 1 and 2) left the
+        # prose on 2026-11-27 with the three-sentence cut; the bound the
+        # reading now states, "under 1.5", is pinned below against the
+        # legend instead. The ranges that remain are still re-derived
+        # above, which is what this loop is for.
+        for figure in ("200", "69.1 to 78.2", "0.538 to 0.653",
+                       "82 minutes", "6.00"):
             assert figure in blob, f"boltzgen narration lost {figure}"
 
         # The bars the narration quotes are the legend's, not invented:
@@ -1151,8 +1169,12 @@ class TestExampleNumbersComeFromThePayload:
         assert all(
             set(s) == {"ipTM", "pLDDT", "pAE", "filter_status"} for s in scores
         )
+        # 0.50 and 3.0 (the ipTM bar and the RMSD bar) left the reading on
+        # 2026-11-27 with the three-sentence cut. The instruction they
+        # supported is the sentence that matters and it is still here, and
+        # the count it rests on is re-derived above.
         reading = example["how_to_read_it"]
-        assert "0.50" in reading and "3.0" in reading
+        assert "21 of the 25" in reading
         assert "Sort by ipTM, never by pLDDT." in reading
 
         # No sequences, no structures, no target identity anywhere.
@@ -1161,10 +1183,12 @@ class TestExampleNumbersComeFromThePayload:
             assert leaked not in blob, f"{leaked} leaked into the payload"
         assert not example.get("structure_file")
 
-        # The length counts are 25 per bin and the prose must keep saying so
-        # rather than reporting 0/2/2/4 as a trend.
-        nxt = example["what_we_did_next"]
-        assert "0, 2, 2 and 4" in nxt and "25 per bin" in nxt
+        # The length-sweep counts (0, 2, 2 and 4, at 25 per bin) lived in
+        # what_we_did_next, and that field was removed from every example on
+        # 2026-11-27 because the pages no longer carry a "What happened
+        # next" section. There is no prose left making that claim, so there
+        # is nothing here to pin it against.
+        assert "what_we_did_next" not in example
 
     def test_proteina_narration_matches_its_result_json(self, tools_app):
         """Proteina's example exists to name one failure mode: the
@@ -1232,18 +1256,20 @@ class TestExampleNumbersComeFromThePayload:
             and c["scores"]["af2_iptm"] < 0.10
         ]
         assert len(band) == 13
-        assert "Thirteen rows here" in reading
-        assert "twelve of them are copies" in reading
+        # "Thirteen rows here" and "twelve of them are copies" left the
+        # reading on 2026-11-27 with the three-sentence cut. The twelve are
+        # still named there and still counted here; what_came_back, which is
+        # no longer rendered but still guarded, keeps the fuller claim.
+        assert "twelve target copies" in reading
         assert "Twelve of those 30" in example["what_came_back"]
 
         odd = [c for c in band if c["scores"]["af2_plddt"] < 0.70]
         assert [c["rank"] for c in odd] == [55]
         assert round(odd[0]["scores"]["af2_plddt"], 2) == 0.58
-        # The PROSE quotes what the page renders (58.38 on the 0-100
-        # scale); the PAYLOAD stores 0.5838. Both are asserted, because
-        # normalising the column without rescaling this sentence is what
-        # made the page contradict its own table.
-        assert "rank 55" in reading and "58.38" in reading
+        # The thirteenth row, rank 55 at 58.38 on the rendered scale, is no
+        # longer described in the reading (2026-11-27 cut), so there is no
+        # sentence left to contradict the table. The payload side of that
+        # check is kept above, which is what catches a re-capture moving it.
         copies = [c for c in band if c not in odd]
         assert len(copies) == 12
 
@@ -1274,19 +1300,16 @@ class TestExampleNumbersComeFromThePayload:
         # lines below as raw, so the two clauses stop competing.
         assert max(ci) < 0.10
         assert sorted({f"{v:.2f}" for v in ci}) == ["0.09", "0.10"]
-        assert "the twelve print 0.09 or 0.10" in reading
-        assert "under 0.10 before rounding" in reading
 
-        # ... against the rest of the shard.
+        # The ipTM sentence, the comparison against the rest of the shard
+        # and the rank range were all cut from the reading on 2026-11-27.
+        # Their payload derivations stay here, both because they are what a
+        # re-capture would move and because the two figures the reading DOES
+        # still quote are pinned just below.
         rest = [c for c in cands if c not in copies]
         assert round(statistics.median(col("binder_scrmsd", rest)), 1) == 2.0
-        assert "median of 2.0 &Aring;" in reading
         assert round(statistics.median(col("af2_iptm", rest)), 2) == 0.67
-        assert "0.67 median for the rest" in reading
-
-        # "total_reward sends all twelve to ranks 51 to 64"
         assert min(c["rank"] for c in copies) >= 51
-        assert "ranks 51 to 64" in reading
         assert "binder_scrmsd" in reading and "af2_plddt" in reading
 
         # THE HOTSPOT NOTE IS PINNED TO THE LIVE GATE, not to memory. The
@@ -1343,10 +1366,11 @@ class TestExampleNumbersComeFromThePayload:
             assert leaked not in blob, f"{leaked} leaked into the payload"
         assert not example.get("structure_file")
 
-        # The campaign-scale claim, which is NOT derivable from this
-        # payload and so is pinned as prose only.
-        nxt = example["what_we_did_next"]
-        assert "17,024 designs" in nxt and "29%" in nxt
+        # The campaign-scale claim (17,024 designs, 29%) lived in
+        # what_we_did_next, removed from every example on 2026-11-27 with
+        # the "What happened next" section. It was never derivable from this
+        # payload, so with the sentence gone there is nothing to pin.
+        assert "what_we_did_next" not in example
 
     def test_proteina_drops_rf3_score_only_when_no_row_has_one(self, tools_app):
         """protein_binder never writes rf3_score; one row with a value brings
@@ -1378,7 +1402,7 @@ class TestExampleNumbersComeFromThePayload:
         "pxdesign": 1380.0,
         "esmfold": 32.0,
         "colabfold": 55.0,
-        "af2": 388.0,
+        "af2": 73.0,
         "esmfold2-design": 306.0,
         # 4944 s is what the boltzgen example's run consumed; the
         # settled charge for it is what that page must print. The figure
@@ -1514,7 +1538,12 @@ class TestExampleNumbersComeFromThePayload:
         # stale one. Both were true of this page at different times.
         assert "0-to-1 scale" not in came
         # The reading, not just the numbers.
-        assert "correct answer, not a failed run" in example["how_to_read_it"]
+        # Reworded on 2026-11-27 from "correct answer, not a failed run";
+        # the claim is the same one and this pins the new wording.
+        assert (
+            "the correct answer rather than a failed run"
+            in example["how_to_read_it"]
+        )
 
     def test_colabfold_narration_matches_its_result_json(self, tools_app):
         """The opposite reading on a similar-looking number: a mean that
@@ -1551,61 +1580,36 @@ class TestExampleNumbersComeFromThePayload:
         assert "The mean cannot tell those apart" in example["how_to_read_it"]
 
     def test_af2_narration_matches_its_result_json(self, tools_app):
-        """Ten designs that agree. The spread figures are the point: if
-        a future capture widened them the 'this is not a ranking'
-        reading would stop being true, and this fails rather than
-        letting the page keep asserting it."""
+        """A confident fold whose only low residues are the C-terminal
+        tail. If a future capture moved the low residues off the chain end,
+        the 'a few at a chain end is normal' reading would stop being true."""
         _, slugs = tools_app
         example = _examples(slugs)["af2"]
         result = json.loads(
             (REPO / "tools" / "af2" / "example" / "result.json")
             .read_text(encoding="utf-8"),
         )
-        designs = result["designs"]
-        assert len(designs) == 10
-        assert result["designs_completed"] == 10 and result["n_failures"] == 0
-        assert {d["total_aa"] for d in designs} == {333}
-        assert {d["model_preset"] for d in designs} == {"monomer"}
-        assert all(d["iptm"] is None for d in designs), (
-            "the narration tells the reader a blank ipTM column is a "
-            "monomer run, not a low score"
+        assert result["tier"] == "standalone"
+        assert result["num_chains"] == 1 and result["total_aa"] == 76
+        assert result["iptm"] is None, (
+            "the narration says there is no ipTM row because this is a monomer"
         )
-
-        plddt = [d["mean_plddt"] for d in designs]
-        ptm = [d["ptm"] for d in designs]
-        assert min(plddt) == 74.16 and max(plddt) == 75.93
-        assert round(max(plddt) - min(plddt), 2) == 1.77
-        assert min(ptm) == 0.71 and max(ptm) == 0.73
-        assert round(max(ptm) - min(ptm), 2) == 0.02
+        plddt = result["plddt_per_residue"]
+        assert len(plddt) == 76
+        assert result["mean_plddt"] == 95.4 and result["ptm"] == 0.83
+        assert round(min(plddt), 1) == 53.1 and round(max(plddt), 1) == 98.5
+        assert sum(1 for v in plddt if v > 90) == 71
+        low = [i + 1 for i, v in enumerate(plddt) if v <= 90]
+        assert low == [72, 73, 74, 75, 76]
+        assert plddt.index(min(plddt)) == 75
 
         came = example["what_came_back"]
-        assert "74.16 to 75.93" in came
-        assert "0.71 to 0.73" in came
-        assert "1.77 pLDDT points" in came and "spans 0.02" in came
-
+        for figure in ("95.4", "0.83", "53.1 to 98.5", "71 of the 76",
+                       "the last five"):
+            assert figure in came, figure
         read = example["how_to_read_it"]
-        assert "sort order, not a" in read
-        # This passage sends the reader to the ESMFold example holding a
-        # threshold in mind. Both pages render 0-100 now, so it states one
-        # number -- and must not reacquire a scale caveat that would only
-        # be true if the normaliser were removed.
-        assert "70" in read
+        assert "final residue" in read
         assert "0.70" not in read and "0 to 1" not in read
-
-        # NOT derivable from the payload: the ten submitted sequences are
-        # designs and are not published, so the identity range is a
-        # capture-time fact. Pinned as PROSE, the way proteina's
-        # non-derivable figures are, so a copy edit cannot drift it and
-        # nobody goes looking for it in result.json.
-        assert not list(_published_sequences(result)), (
-            "af2's payload must stay sequence-free; if that changes, the "
-            "identity range below should be derived rather than pinned"
-        )
-        assert "72% to 79%" in example["target"]
-        assert "a fifth to a little over a quarter" in read, (
-            "72-79% identity is 21-28% divergence; 28% is more than a "
-            "quarter, so 'a fifth to a quarter' understates it"
-        )
 
     def test_esmfold2_design_narration_matches_its_result_json(
         self, tools_app,
@@ -1644,9 +1648,16 @@ class TestExampleNumbersComeFromThePayload:
         came = example["what_came_back"]
         for figure in ("0.956", "0.935", "5.67", "11.95"):
             assert figure in came, figure
+        # 2026-11-27: the three-sentence cut dropped both of those
+        # sentences. The warning they carried, that the top ipTM is the
+        # design you must not order, survives as the reason for reading pI
+        # first, and the pI figures that make it true are pinned above.
         read = example["how_to_read_it"]
-        assert "The higher score is the one you must not order." in read
-        assert "0.02 difference in ipTM is noise" in read
+        assert "puts the worst design on top" in read, (
+            "the reading no longer warns that sorting by ipTM promotes the "
+            "disqualified seed, which is the whole point of this example"
+        )
+        assert "11.95" in read and "5.67" in read
 
     def test_no_example_warns_that_its_own_scores_are_not_measurements(
         self, tools_app,
@@ -1932,6 +1943,10 @@ PUBLISHABLE_SEQUENCES = {
         "is kept inline deliberately: the download on the example page is "
         "this file, and a worked example whose download does not work "
         "teaches the wrong thing about the tool"
+    ),
+    ("af2", "pdb_b64"): (
+        "human ubiquitin, a published reference sequence "
+        "(static/example/ubiquitin.fasta), folded on Leo's own account"
     ),
     ("esmfold", "pdb_b64"): (
         "the folded structure OF that published reference; the sequence it "
@@ -2267,7 +2282,6 @@ class TestABarAndItsValuesShareAScale:
         # for a different reason, which is why its line moved rather than
         # disappearing.
         expect = {
-            ("af2", "ptm"),
             ("rfantibody", "ipAE"), ("rfantibody", "pAE"),
             ("rfantibody", "pLDDT"),
             ("bindcraft", "ipTM"), ("bindcraft", "pLDDT"),
@@ -2448,14 +2462,11 @@ _TABLE_PROSE_FIELDS = ("what_came_back", "how_to_read_it")
 # Keyed (slug, field, numeral) so an entry cannot spread past the sentence it
 # was written for, and swept for dead entries below: an exception that stops
 # applying has to fail, not linger and quietly cover something else.
-_NOT_QUOTING_A_ROW = {
-    ("bindcraft", "how_to_read_it", "0.26"):
-        "FreeBindCraft's published median across ITS OWN accepted designs "
-        "for this target. It is in scope only because design 2 stores "
-        "i_pAE 0.26, and i_pAE is not one of bindcraft's rendered columns "
-        "-- so this is a collision with a row field the page never prints, "
-        "not with a cell",
-}
+# Empty since 2026-11-27: bindcraft's reading was cut to three sentences and
+# the FreeBindCraft reference median (0.26) went with it, so the one entry
+# here stopped applying. The sweep below fails on a dead entry, which is how
+# this was noticed; the dict stays for the next legitimate exception.
+_NOT_QUOTING_A_ROW: dict[tuple[str, str, str], str] = {}
 
 
 def _row_floats(obj, in_row=False):
@@ -2987,14 +2998,25 @@ class TestNarrationQuotesTheTable:
         """
         flask_app, slugs = tools_app
         checked, _flagged = _quoted_row_values(flask_app, slugs)
-        assert len(checked) >= 80, (
+        # Lowered from 80 to 55 on 2026-11-27, when every tool's
+        # how_to_read_it was cut to three sentences (Leo: the pages are too
+        # wordy). The pins that went with it were the per-rank figures the
+        # readings used to walk through: boltz2's three reference folds,
+        # bindcraft's FreeBindCraft distribution, boltzgen's 0.51 and 1.77,
+        # pxdesign's 0.50 and 3.0, proteina's rank-55 row, and the opendde
+        # and esmfold2_design score walks. The count after the cut is
+        # whatever the failure message below prints; it is not restated
+        # here, because a number in a comment drifts and this one did.
+        assert len(checked) >= 55, (
             f"only {len(checked)} narration numerals resolve to a row "
             "value; the sweep above is close to testing nothing. If this is "
             "a deliberate copy edit, lower the floor in the same commit and "
             "say which pins went"
         )
         covered = {slug for slug, _field, _numeral in checked}
-        assert len(covered) >= 11, (
+        # 10 since af2's example became a single standalone fold: its
+        # figures are on the metric table, not in a candidate row.
+        assert len(covered) >= 10, (
             f"only {len(covered)} tools contribute a checked numeral "
             f"({sorted(covered)}); a tool that used to quote its own table "
             "has stopped. Fine if you meant it -- lower the floor and name "
@@ -3177,20 +3199,20 @@ class TestTheRankColumnIsAPosition:
                 "table; if this is printing a payload field again, the tools "
                 "do not agree on what that field means"
             )
-        # MEASURED, not chosen to pass: eleven of the fourteen examples render
-        # a candidate row today. The three that do not are colabfold and
-        # esmfold (their examples take the standalone single-fold branch) and
-        # mpnn (no shared macro). A floor of 8 would have let three tools drop
-        # out of the real-payload coverage in silence.
-        assert len(checked) >= 11, (
+        # The examples that render no candidate row are af2, colabfold and
+        # esmfold (their
+        # examples take the standalone single-fold branch) and mpnn (no
+        # shared macro).
+        assert len(checked) >= 10, (
             f"only {sorted(checked)} rendered a candidate table, so this "
             "test covers less than it claims. A tool losing its example is "
             "fine -- lower the floor and say which -- but check first"
         )
-        # The five whose real example was wrong before the fix. A count alone
+        # The four (af2 was a fifth until its example became a single fold)
+        # whose real example was wrong before the fix. A count alone
         # would still pass if one of these dropped out and an untouched tool
         # took its place in the tally.
-        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+        for slug in ("boltz2", "esmfold2-design", "opendde", "iggm"):
             assert slug in checked, (
                 f"{slug}'s example renders no candidate table any more, so "
                 "the tool this test was written for is no longer covered"

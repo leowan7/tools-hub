@@ -118,7 +118,7 @@ def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
 # tests/test_esmfold2_reject_surfaces.py::test_the_plddt_preference_is_complete,
 # so a tenth spelling added there cannot silently become unreachable here.
 _PLDDT_PREFERENCE = (
-    "pLDDT", "plddt", "mean_pLDDT", "mean_plddt",
+    "pLDDT", "plddt", "mean_pLDDT", "mean_plddt", "plddt_mean",
     "complex_pLDDT", "complex_plddt", "complex_iplddt", "iplddt", "af2_plddt",
 )
 

@@ -230,80 +230,64 @@ PILOT: dict | None = {
 # the first run on the fixed container.
 EXAMPLE: dict | None = {
     "target": (
-        "Human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
-        "Hotspots Ile54, Tyr56 and Met115."
-    ),
-    "why_this_target": (
-        "Chain B of the same file is PD-1, the natural partner, so the three "
-        "hotspots are not a guess &mdash; they are residues a real binding "
-        "protein is known to cover. It is also the target the BoltzGen "
-        "worked example uses, so the two pages can be read against each "
-        "other: the same epitope, two different generators."
+        "The target is human PD-L1, the IgV domain, chain A of <strong>PDB "
+        "4ZQK</strong> (UniProt Q9NZQ7), with hotspots Ile54, Tyr56 and "
+        "Met115."
     ),
     "inputs_used": [
         (
             "Target PDB",
             "the 4ZQK file, uploaded whole",
-            "Both chains, exactly as it downloads from the PDB. No trimming "
-            "and no renumbering, so chain A keeps its crystal numbering "
-            "18-132 &mdash; which is the numbering the hotspot field "
-            "expects.",
+            "We uploaded the 4ZQK file whole, with both chains, exactly "
+            "as it downloads from the PDB. There was no trimming and no "
+            "renumbering, so chain A keeps its crystal numbering "
+            "18-132, which is the numbering the hotspot field expects.",
         ),
         (
             "Target chain",
             "A",
-            "This is what restricts the design to PD-L1. Chain B in the same "
-            "file is PD-1, and the run ignores it &mdash; otherwise the "
-            "model would be designing into an occupied site.",
+            "We named chain A, which is what restricts the design to "
+            "PD-L1. Chain B in the same file is PD-1, and the run "
+            "ignores it, since otherwise the model would be designing "
+            "into an occupied site.",
         ),
         (
             "Hotspot residues",
             "54, 56, 115",
-            "Ile54, Tyr56 and Met115 in the file's own numbering. Three is a "
-            "normal number: enough to aim the binder at one patch, few "
-            "enough that you have not drawn the interface yourself.",
+            "We gave 54, 56 and 115, which are Ile54, Tyr56 and Met115 "
+            "in the file's own numbering. Three is a normal number, "
+            "enough to aim the binder at one patch and few enough that "
+            "you have not drawn the interface yourself.",
         ),
         (
             "Binder length (residues)",
             "55 to 65",
-            "A window rather than a fixed number &mdash; RFdiffusion samples "
-            "a length inside it. The default window, left alone.",
+            "We left the binder length window at 55 to 65 residues, "
+            "which is a window rather than a fixed number because "
+            "RFdiffusion samples a length inside it. This is the "
+            "default window, left alone.",
         ),
         (
             "Number of designs",
             "8",
-            "A trial-run batch. Enough to tell whether the target and "
-            "hotspots are workable before committing to 100+, which is what "
-            "this preset is for.",
+            "We asked for 8 designs, which is a trial-run batch. That "
+            "is enough to tell whether the target and hotspots are "
+            "workable before committing to 100+, which is what this "
+            "preset is for.",
         ),
     ],
     "what_came_back": (
-        "Eight designs, <strong>two of them above the bar</strong>. The best "
-        "scores ipTM 0.88 with an interface pAE of 3.65 &Aring; and pLDDT "
-        "95.5; the second is ipTM 0.82. The other six fall away from 0.46 to "
-        "0.19."
+        "Eight designs came back, <strong>two of them above the "
+        "bar</strong>. The best scores ipTM 0.88 with an interface pAE "
+        "of 3.65 &Aring; and pLDDT 95.5, and the second scores ipTM "
+        "0.82. The other six fall away from 0.46 to 0.19."
     ),
     "how_to_read_it": (
-        "Sort by ipTM: 0.65 or more is a credible binder, 0.75 or more is "
-        "strong. Then read i_pAE beside it, because the two agreeing is what "
-        "makes either believable &mdash; here the two passing designs sit "
-        "under 4.3 &Aring; while everything below ipTM 0.5 is above 13 "
-        "&Aring;, and that gap is the real separation in this table. "
-        "<strong>Look at the spread, not only the top row.</strong> A run "
-        "whose eight designs all score within a whisker of each other is "
-        "usually telling you something went wrong upstream rather than that "
-        "you have eight equally good binders; a run that fans out from 0.88 "
-        "to 0.19 is one where the scoring actually discriminated."
-    ),
-    "what_we_did_next": (
-        "Kept the two passing designs and dropped the other six. For those "
-        "two the next step is an independent re-fold against the same target "
-        "&mdash; a different model, so it is a real second opinion rather "
-        "than the same one twice &mdash; and then SPR or BLI if they survive "
-        "it. One trial run is a screen, not a result: two hits out of eight is "
-        "roughly the yield this tool is scoped for, and the point of the "
-        "trial run is to earn the bigger run."
+        "<li>An ipTM of 0.65 or more is a credible binder and 0.75 or "
+        "more is strong.</li>"
+        "<li>The two passing designs sit under 4.3 &Aring; on i_pAE, "
+        "while everything below ipTM 0.5 is above 13 &Aring;.</li>"
+        "<li>That gap is the separation in this table.</li>"
     ),
     "cost_usd": "2.69",
     "runtime": "37 minutes",

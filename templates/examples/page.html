@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% from "components/worked_example.html" import worked_example %}
+
+{% block title %}{{ short_name or adapter.label }} example run: Ranomics Tools{% endblock %}
+{% block description %}{{ ex.teaser }}{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>{{ adapter.label }}: an example result</h1>
+    <p class="subtitle">{{ ex.teaser }}</p>
+    <p style="margin: 0.9rem 0 0; position: relative; font-size: 0.9rem;">
+      <a href="{{ url_for('tools.tool_form', tool=adapter.slug) }}">Run {{ short_name or adapter.label }} on your own target &rarr;</a>
+      &nbsp;&middot;&nbsp;
+      <a href="{{ url_for('tools.examples_index') }}">All example runs</a>
+    </p>
+  </div>
+
+  <div style="display: grid; gap: 1.25rem; min-width: 0;">
+    {# show_target=false: the hero above already carries ex.target. #}
+    {{ worked_example(adapter, ex, show_target=false) }}
+
+    {# Nothing to show when the payload carries its own structure: the
+       results partial already renders that viewer, and there is no
+       download beside it any more. #}
+    {% if structures and not ex.result.get('pdb_b64') %}
+      <section class="panel" id="example-structures">
+        <div class="panel-header">
+          <span class="panel-title">Structures from this run</span>
+        </div>
+        <div class="panel-body">
+          {# A payload with an inline structure (pdb_b64) already gets a
+             viewer from its own results partial, so this panel adds one
+             only when it does not.
+
+             No download link, and no download of the structure anywhere on
+             this page (Leo, 2026-11-27: "we don't let people download the
+             structure"). The viewer still fetches the file from
+             /static/example/..., which is a public URL, so this stops the
+             offer rather than the access. #}
+          {% set _own_viewer = not ex.result.get('pdb_b64') %}
+          {% if _own_viewer %}
+            {# data-example-first drives the initial load, so the viewer
+               fills even when there is only one structure and therefore no
+               button to click. #}
+            <div id="example-viewer-0"
+                 data-example-first="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ structures[0]) }}"
+                 style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+            {% if structures|length > 1 %}
+              {# Each button carries the file's OWN name, not its position in
+                 this list. A position reads as a row number of the table
+                 above and is not one: boltzgen's files start at design_002
+                 because rank 1 has no file, and opendde's sort by seed while
+                 its table sorts by rank. #}
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                {% for name in structures %}
+                  <button type="button" class="btn btn-secondary" style="font-family: var(--font-mono, monospace); font-size: 0.8rem;" data-example-view="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) }}">{{ name.rsplit('.', 1)[0] }}</button>
+                {% endfor %}
+              </div>
+            {% endif %}
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+  </div>
+
+  {% if structures and not ex.result.get('pdb_b64') %}
+    <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
+    <script>
+      (function () {
+        // mol_viewer.js initialises a container once, so each structure
+        // gets a fresh container that replaces the previous one.
+        var n = 0;
+        function show(url) {
+          var old = document.getElementById('example-viewer-' + n);
+          if (!old || !window.initMolViewerFromUrl) return;
+          var el = old.cloneNode(false);
+          n += 1;
+          el.id = 'example-viewer-' + n;
+          el.removeAttribute('data-initialized');
+          old.parentNode.replaceChild(el, old);
+          window.initMolViewerFromUrl(el.id, url);
+        }
+        var buttons = document.querySelectorAll('[data-example-view]');
+        Array.prototype.forEach.call(buttons, function (b) {
+          b.addEventListener('click', function () { show(b.getAttribute('data-example-view')); });
+        });
+        var first = document.getElementById('example-viewer-0');
+        if (first && first.getAttribute('data-example-first')) {
+          show(first.getAttribute('data-example-first'));
+        }
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

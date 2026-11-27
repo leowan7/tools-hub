@@ -234,7 +234,13 @@
               + (1 if show_name else 0)
               + (1 if show_length else 0)
               + (1 if show_refold else 0)
-              - (0 if has_structures else 2) %}
+              - (0 if has_structures else 2)
+              - (1 if (has_structures and is_example) else 0) %}
+{# The last term: a worked example keeps the 3D column but drops the
+   Structure one, whose cell is a download. boltzgen is the example that
+   reaches it, its payload carrying inline bytes, so has_structures stays
+   true under the sentinel. Without the term the viewer and group rows
+   colspan one wider than the header row. #}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
@@ -833,7 +839,13 @@
         {% endif %}
         {% if has_structures %}
         <th style="width:4.5rem;">3D</th>
+        {# The Structure cell below is a download link, and a worked example
+           makes no download offer (Leo, 2026-11-27: "we don't let people
+           download the structure"), so the column goes with it. The 3D
+           column stays: that is the viewer. #}
+        {% if not is_example %}
         <th style="width:4.5rem;">Structure</th>
+        {% endif %}
         {% endif %}
       </tr>
     </thead>
@@ -1282,6 +1294,9 @@
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
           </td>
+          {# Dropped on a worked example, with its header above: this cell
+             is the per-design download. #}
+          {% if not is_example %}
           <td>
             {% if has_pdb %}
               {# Both branches label the row with the extension of the name
@@ -1319,6 +1334,7 @@
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
           </td>
+          {% endif %}
           {% endif %}
         </tr>
 

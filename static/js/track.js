@@ -13,6 +13,7 @@
  *   - tool_form_submit when a <form> inside /tools/<slug> submits
  *   - result_download   on a click of an export / structure download link
  *   - outbound_click    on a click of a ranomics.com link
+ *   - example_view      when path matches /examples/<slug>
  *
  * Also exposes window.track(eventType, props) for ad-hoc events.
  *
@@ -77,6 +78,11 @@
     return m ? m[1] : null;
   }
 
+  function parseExample(path) {
+    var m = path.match(/^\/examples\/([a-z0-9_-]+)\/?$/i);
+    return m ? m[1] : null;
+  }
+
   // Result-page exits we had no numbers for: which downloads people take,
   // and how many leave through a ranomics.com link instead of running
   // another job. Both are plain anchors in half a dozen templates, so this
@@ -111,6 +117,11 @@
 
     if (path === "/pricing" || path.indexOf("/pricing") === 0) {
       track("pricing_view");
+    }
+
+    var exampleTool = parseExample(path);
+    if (exampleTool) {
+      track("example_view", { tool: exampleTool });
     }
 
     var tool = parseTool(path);

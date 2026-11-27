@@ -272,86 +272,51 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "PD-L1, the checkpoint protein &mdash; picked from this form's "
-        "built-in target list rather than uploaded, so there was no structure "
-        "to prepare."
-    ),
-    "why_this_target": (
-        "PD-L1 is about as well-trodden as a binder target gets, which makes "
-        "it the right place to show what this tool's scores do and do not "
-        "settle. Two seeds is the smallest run that could show it at all, and "
-        "this one happens to show it clearly."
+        "The target is human PD-L1, residues 17 to 132 (UniProt Q9NZQ7), "
+        "taken from this form's built-in target list rather than uploaded."
     ),
     "inputs_used": [
         (
             "Target preset",
             "PD-L1 (Q9NZQ7, 17 to 132), immune checkpoint",
-            "A built-in target, so there was no structure to upload or "
-            "prepare &mdash; usually the slowest part of a first run. The "
-            "preset covers the IgV domain, which is the face a binder needs.",
+            "We used the built-in PD-L1 preset, so there was no structure "
+            "to upload or prepare, which is usually the slowest part of a "
+            "first run. The preset covers the IgV domain, which is the "
+            "face a binder needs.",
         ),
         (
             "Binder mode",
             "De novo minibinder (60 to 200 aa)",
-            "A small de novo binder rather than an antibody. The tool judges "
-            "antibodies on different criteria, so this choice changes which "
-            "columns come back &mdash; the pI column below is a minibinder "
-            "column.",
+            "We asked for a small de novo binder rather than an antibody. "
+            "The tool judges antibodies on different criteria, so this "
+            "choice changes which columns come back, and the pI column "
+            "below is a minibinder column.",
         ),
         (
             "Seeds to run",
             "2",
-            "Two independent starting points. Each seed explores separately, "
-            "so two seeds is two genuinely different attempts rather than two "
-            "variations on one &mdash; which is what makes the comparison "
-            "below meaningful.",
+            "We ran two seeds, which are two independent starting points. "
+            "Each seed explores separately, so two seeds are two genuinely "
+            "different attempts rather than two variations on one, and "
+            "that is what makes the comparison below meaningful.",
         ),
     ],
     "what_came_back": (
-        "Two designs, both scoring far above the ipTM band that would have "
-        "decided them if ipTM had been the deciding column. "
+        "Two designs came back, both scoring far above the ipTM band that "
+        "would have decided them if ipTM had been the deciding column. "
         "Seed 0 came back at <strong>ipTM 0.956</strong>, the better of the "
-        "two. Seed 1 came back at 0.935. "
+        "two, and seed 1 came back at 0.935. "
         "<strong>The tool passed seed 1 and dropped seed 0.</strong> "
-        "The reason is in the <code>pI</code> column: seed 1 has an isoelectric "
-        "point of 5.67, and seed 0 has one of <strong>11.95</strong>."
+        "The reason is in the <code>pI</code> column, where seed 1 has an "
+        "isoelectric point of 5.67 and seed 0 has one of "
+        "<strong>11.95</strong>."
     ),
     "how_to_read_it": (
-        "<code>pI</code> is a hard gate and it is checked <em>first</em>: a "
-        "design with pI 6 or above is dropped whatever its ipTM. Only for "
-        "the designs that clear it do the ipTM bands apply &mdash; "
-        "<code>&ge; 0.75</code> passes strictly, <code>&ge; 0.70</code> comes "
-        "back <code>borderline</code>, and below that it drops. So seed 0 was "
-        "not out-scored by seed 1. It was disqualified before its 0.956 "
-        "counted for anything. "
-        "A pI near 12 means a strongly positively charged peptide at "
-        "the pH of every buffer you own. Those stick to things &mdash; "
-        "membranes, columns, the wrong protein &mdash; and they read as "
-        "binders in an assay for reasons that have nothing to do with the "
-        "site you aimed at. You do not need to see the sequence to act on "
-        "that; the <code>pI</code> column has already told you. "
-        "<strong>The higher score is the one you must not order.</strong> "
-        "A 0.02 difference in ipTM is noise; the gap between pI 5.67 and 11.95 "
-        "is the entire decision. "
-        "So read <code>pI</code> first and treat the score column as a "
-        "tie-breaker among the designs that survive it &mdash; never the other "
-        "way round. Sorting this table by ipTM puts the worst design on top. "
-        "There is deliberately no pass/fail column here to read instead. This "
-        "tool&rsquo;s gate changes shape with the mode &mdash; an scFv is decided "
-        "on a CDR proxy <em>and</em> ipTM, a minibinder on ipTM <em>and</em> pI "
-        "&mdash; and a "
-        "single column claiming to summarise both would have printed "
-        "&ldquo;meets&rdquo; over seed 0, the design this whole example exists "
-        "to tell you not to order."
-    ),
-    "what_we_did_next": (
-        "Seed 1 is the one worth anything here, and a two-seed run that yields "
-        "one usable design is a signal to widen rather than to proceed: the "
-        "same settings at more seeds give a set to choose among instead of a "
-        "single survivor. Seed 0 is worth keeping in view as a reminder of "
-        "what a top score can look like &mdash; the next junk design will "
-        "score just as well, and the pI column will be the thing that catches "
-        "it again."
+        "<li>Seed 0 was disqualified at pI 11.95, before its ipTM of "
+        "0.956 counted.</li>"
+        "<li>Seed 1 passed at pI 5.67.</li>"
+        "<li><code>pI</code> is a hard gate checked first, so sorting "
+        "by ipTM puts the worst design on top.</li>"
     ),
     "cost_usd": "1.26",
     "runtime": "5 minutes",

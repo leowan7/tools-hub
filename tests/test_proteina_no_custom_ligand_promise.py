@@ -75,15 +75,20 @@ _VOCAB = re.compile(
 _REVIEWED = {
     # tools/proteina/meta.py -- the about panel, the FAQ, the FAQPage
     # JSON-LD, the homepage card and /tools all read from here.
+    # Re-approved 2026-11-27: the sentence was rewritten as connected prose
+    # (no dash separator) and re-read against _CUSTOM_TARGET_PRESETS. It
+    # still says protein_binder is the ONLY variant that takes an uploaded
+    # structure, and still sends the others to bundled benchmarks, so it
+    # promises no customer-supplied molecule.
     (
-        "The only variant that designs against a structure you "
-        "upload; the others run curated ligand and motif "
-        "benchmarks. It is also why the table below has no "
-        "<code>rf3_score</code> column: RF3 is a second "
-        "scoring stack those other variants need, a protein binder "
-        "run does not, and it is not free. That is a consequence of "
-        "this choice rather than a switch of its own &mdash; there "
-        "is no RF3 control on the form."
+        "We chose the protein binder variant, which is the only "
+        "variant that designs against a structure you upload, since "
+        "the others run curated ligand and motif benchmarks. It is "
+        "also why the table below has no <code>rf3_score</code> "
+        "column: RF3 is a second scoring stack those other variants "
+        "need, a protein binder run does not, and it is not free. "
+        "That follows from this choice rather than being a switch of "
+        "its own, because there is no RF3 control on the form."
     ),
     (
         "Designs binders for the targets the standard tools find "

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Example runs: Ranomics Tools{% endblock %}
+{% block description %}Real past runs of each protein design tool on tools.ranomics.com, shown as the results page a customer sees.{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>Example runs</h1>
+    <p class="subtitle">
+      One real run of each tool that we did ourselves, shown as the results
+      page you would get back.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body">
+      {% for e in entries %}
+        <div style="padding: 0.9rem 0; {% if not loop.last %}border-bottom: 1px solid var(--border);{% endif %}">
+          <h3 style="margin: 0 0 0.35rem;">
+            <a href="{{ url_for('tools.example_page', tool=e.adapter.slug) }}">{{ e.adapter.label }}</a>
+          </h3>
+          <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">{{ e.example.teaser }}</p>
+          {% if e.has_structures %}
+            <p style="margin: 0.35rem 0 0; font-size: 0.8rem; color: var(--text-tertiary);">
+              This example includes a 3D viewer and the structure files.
+            </p>
+          {% endif %}
+        </div>
+      {% else %}
+        <p>There are no example runs yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+{% endblock %}

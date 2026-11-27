@@ -86,6 +86,10 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     # the drop-off; before these there was no event on this path at all.
     "scout_handoff_created",
     "scout_handoff_opened",
+    # static/js/track.js, on the public /examples/<slug> pages. There is no
+    # download event beside it: the pages stopped offering the structure
+    # files (Leo, 2026-11-27), so nothing emits one.
+    "example_view",
 })
 
 
