@@ -211,14 +211,8 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is hen egg-white lysozyme, chain A of PDB "
-        "<code>1HEW</code>, which is 129 residues long."
-    ),
-    "why_this_target": (
-        "Its real sequence is known, so every sequence the model writes "
-        "can be scored against the one nature uses. A de-novo backbone "
-        "has nothing to compare against, which makes a solved structure "
-        "the only way to see whether the model is behaving."
+        "The target is hen egg-white lysozyme, chain A of <strong>PDB "
+        "1HEW</strong> (UniProt P00698), which is 129 residues."
     ),
     "inputs_used": [
         (

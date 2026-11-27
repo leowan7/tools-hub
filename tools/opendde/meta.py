@@ -175,20 +175,9 @@ PILOT: dict | None = None
 # either way.
 EXAMPLE: dict | None = {
     "target": (
-        "The target is bovine trypsin with benzamidine bound, which is "
-        "chain A of <strong>PDB 3PTB</strong> at 223 residues, together "
-        "with the ligand <code>CCD_BEN</code>."
-    ),
-    "why_this_target": (
-        "OpenDDE is for complexes that are not all protein, so an "
-        "all-protein example would be demonstrating the one case it is not "
-        "for. This is the textbook protein-plus-small-molecule pair, with "
-        "benzamidine sitting in the trypsin S1 pocket, deposited in 1982 "
-        "and used to check docking methods ever since. It is also a "
-        "deliberate correction. The first run this page ever showed folded "
-        "a single ubiquitin chain, which has no second entity at all, so "
-        "its ipTM of 0 was arithmetically correct and told you nothing, "
-        "because there was no interface to score."
+        "The target is bovine trypsin, chain A of <strong>PDB 3PTB</strong> "
+        "(UniProt P00760) at 223 residues, with benzamidine (CCD_BEN) "
+        "bound."
     ),
     "inputs_used": [
         (

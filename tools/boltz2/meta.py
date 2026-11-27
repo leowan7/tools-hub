@@ -201,17 +201,9 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is MDM2, taken as chain A of PDB <code>1YCR</code>, "
-        "which is 85 residues and holds the pocket that p53 binds."
-    ),
-    "why_this_target": (
-        "We picked this one because it can be marked. MDM2 is the most "
-        "heavily characterised protein-protein interface in drug discovery: "
-        "the natural ligand is known, several tighter binders have been "
-        "published, and every one of them has a measured affinity. So we "
-        "can fold designs and known binders through the identical path "
-        "and read the designs against a real scale rather than against a "
-        "threshold somebody picked."
+        "The target is human MDM2, chain A of <strong>PDB 1YCR</strong> "
+        "(UniProt Q00987), which is 85 residues and holds the pocket that "
+        "p53 binds."
     ),
     "inputs_used": [
         (

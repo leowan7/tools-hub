@@ -325,18 +325,9 @@ PILOT: dict | None = {
 # pxdesign example has to describe its target instead of naming it.
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong>, which is the solved PD-1/PD-L1 complex. "
-        "It has 115 modelled residues in crystal numbering 18-132, and the "
-        "hotspots are Ile54, Tyr56 and Met115."
-    ),
-    "why_this_target": (
-        "It is a target you can mark your own homework on. Chain B of the "
-        "same file is PD-1, the natural partner, so the three hotspots are "
-        "not a guess, and they are residues a real binding protein is known "
-        "to cover. That makes one question answerable here that usually is "
-        "not: never mind whether these designs are good, did the model aim "
-        "where it was pointed?"
+        "The target is human PD-L1, the IgV domain, chain A of <strong>PDB "
+        "4ZQK</strong> (UniProt Q9NZQ7), which is 115 modelled residues in "
+        "crystal numbering 18-132, with hotspots Ile54, Tyr56 and Met115."
     ),
     "inputs_used": [
         (

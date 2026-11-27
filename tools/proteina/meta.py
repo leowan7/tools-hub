@@ -472,16 +472,9 @@ PILOT: dict | None = {
 EXAMPLE: dict | None = {
     "target": (
         "The target is a two-chain human secreted protein of about 210 "
-        "residues per chain, taken from a solved crystal structure. We "
-        "named eighteen hotspot residues, nine on each chain, across "
-        "the two-fold interface where the chains meet."
-    ),
-    "why_this_target": (
-        "The site sits on a symmetry axis, so a binder has to reach "
-        "both chains at once rather than settle on either one. It is "
-        "also a target whose own sequence the generator already knows "
-        "well, which turns out to be what this run is worth reading "
-        "for."
+        "residues per chain, taken from a solved crystal structure we do "
+        "not name here, with eighteen hotspot residues, nine on each chain, "
+        "across the two-fold interface."
     ),
     "inputs_used": [
         (

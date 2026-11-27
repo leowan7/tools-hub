@@ -277,17 +277,9 @@ PILOT: dict | None = {
 # was a precondition of the design existing rather than a result.
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong>, which is the solved PD-1/PD-L1 complex. "
-        "The hotspots are Ile54, Tyr56 and Met115."
-    ),
-    "why_this_target": (
-        "This is the same target, chain and hotspots as the RFdiffusion and "
-        "BoltzGen examples on this site, and that is the point: three "
-        "different generators aimed at one epitope, so the three pages can "
-        "be read against each other. Chain B of the same file is PD-1, the "
-        "natural partner, so the hotspots are residues a real binding "
-        "protein is known to cover rather than a guess."
+        "The target is human PD-L1, the IgV domain, chain A of <strong>PDB "
+        "4ZQK</strong> (UniProt Q9NZQ7), with hotspots Ile54, Tyr56 and "
+        "Met115."
     ),
     "inputs_used": [
         (

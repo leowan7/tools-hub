@@ -151,17 +151,9 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is not a natural protein but a 101-residue sequence that "
-        "ProteinMPNN wrote for a backbone, folded here as an independent "
-        "check."
-    ),
-    "why_this_target": (
-        "This is the step that catches design failures before they cost "
-        "anything at the bench. ProteinMPNN scores its own output, but those "
-        "numbers only say the sequence suits the backbone it was handed, and "
-        "they are not a prediction that it folds. Re-folding it here with a "
-        "model that never saw that backbone is an independent check. This "
-        "run is one that did not come back clean."
+        "The target is a designed 101-residue sequence that ProteinMPNN "
+        "wrote for a backbone, so it has no UniProt or PDB entry of its "
+        "own."
     ),
     "inputs_used": [
         (

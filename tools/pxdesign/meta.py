@@ -231,15 +231,9 @@ PILOT: dict | None = {
 EXAMPLE: dict | None = {
     "target": (
         "The target is a two-chain human secreted protein of about 210 "
-        "residues per chain, taken from a solved crystal structure. We "
-        "named six hotspot residues, three on each chain, across the "
-        "two-fold interface where the chains meet."
-    ),
-    "why_this_target": (
-        "The binding site sits on a symmetry axis, so a binder has to "
-        "reach both chains at once rather than settle on either one. "
-        "That is a harder ask than a single flat face, and it is why so "
-        "much of this round fails in the specific way shown below."
+        "residues per chain, taken from a solved crystal structure we do "
+        "not name here, with six hotspot residues, three on each chain, "
+        "across the two-fold interface."
     ),
     "inputs_used": [
         (

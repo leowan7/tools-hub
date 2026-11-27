@@ -202,19 +202,8 @@ PILOT: dict | None = {
 EXAMPLE: dict | None = {
     "target": (
         "The target is hen egg-white lysozyme, chain A of <strong>PDB "
-        "1HEW</strong>, which is 129 residues long. We named a "
-        "nine-residue epitope on its surface, residues 63 to 68 and 73 "
-        "to 75."
-    ),
-    "why_this_target": (
-        "IgGM is not a de novo binder tool, so a worked example needs a "
-        "real antibody as well as a real antigen. It takes an antibody you "
-        "already have and rewrites its CDR loops, and there is nothing for "
-        "it to do without one. Lysozyme is the textbook antigen for "
-        "exactly this work because it is small, rigid and thoroughly "
-        "characterised. The nine residues are one contiguous surface "
-        "patch, which is the shape of thing you would type if you had "
-        "mapped an epitope and wanted the loops aimed at it."
+        "1HEW</strong> (UniProt P00698), which is 129 residues, with a "
+        "nine-residue epitope at 63 to 68 and 73 to 75."
     ),
     "inputs_used": [
         (

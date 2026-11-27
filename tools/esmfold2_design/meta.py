@@ -272,15 +272,8 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is PD-L1, the checkpoint protein. We picked it from "
-        "this form's built-in target list rather than uploading it, so "
-        "there was no structure to prepare."
-    ),
-    "why_this_target": (
-        "PD-L1 is about as well-trodden as a binder target gets, which "
-        "makes it the right place to show what this tool's scores do and do "
-        "not settle. Two seeds is the smallest run that could show it at "
-        "all, and this one happens to show it clearly."
+        "The target is human PD-L1, residues 17 to 132 (UniProt Q9NZQ7), "
+        "taken from this form's built-in target list rather than uploaded."
     ),
     "inputs_used": [
         (

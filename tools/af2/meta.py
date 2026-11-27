@@ -184,16 +184,8 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human ubiquitin, a single chain of 76 residues, and "
-        "it is the example FASTA this form ships with. The sequence is a "
-        "published reference sequence rather than a design."
-    ),
-    "why_this_target": (
-        "Ubiquitin is one of the most studied small folds there is, with "
-        "crystal structures going back decades, so the right answer is known "
-        "before the run starts. That makes it the cleanest way to see what a "
-        "confident AlphaFold2 result looks like, and what the one honestly "
-        "uncertain part of a confident result looks like too."
+        "The target is human ubiquitin, the 76-residue sequence this form "
+        "ships as its example FASTA (UniProt P0CG48, solved as PDB 1UBQ)."
     ),
     "inputs_used": [
         (

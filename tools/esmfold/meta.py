@@ -128,18 +128,8 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human myelin basic protein, a single chain of 304 "
-        "residues pasted as plain FASTA. It is a published reference "
-        "sequence rather than a design."
-    ),
-    "why_this_target": (
-        "Myelin basic protein is one of the textbook <em>intrinsically "
-        "disordered</em> proteins, because on its own in solution it has no "
-        "single fixed structure to predict. That makes it a useful example "
-        "precisely because the answer is known in advance. It shows what "
-        "something every user runs into sooner or later actually looks "
-        "like, which is a low score coming back with no obvious way to tell "
-        "whether the tool failed or the protein did."
+        "The target is human myelin basic protein, all 304 residues "
+        "(UniProt P02686), pasted as plain FASTA."
     ),
     "inputs_used": [
         (

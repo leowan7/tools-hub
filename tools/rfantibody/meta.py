@@ -187,20 +187,9 @@ PILOT: dict | None = {
 # carries it and the form help has been corrected to match.
 EXAMPLE: dict | None = {
     "target": (
-        "The target is human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong>, the solved PD-1/PD-L1 complex. The "
-        "hotspots are Ile54, Tyr56 and Met115."
-    ),
-    "why_this_target": (
-        "This run uses the same target, chain and hotspots as the "
-        "RFdiffusion, BoltzGen and BindCraft examples on this site. "
-        "That makes four generators aimed at one epitope, and this is "
-        "the only one of the four that answers with an "
-        "<em>antibody</em>, a VHH nanobody whose framework is fixed and "
-        "in which only the three heavy-chain CDR loops are designed. So "
-        "the comparison worth making across those four pages is not "
-        "which tool scores higher; it is what shape of molecule you get "
-        "back for the same request."
+        "The target is human PD-L1, the IgV domain, chain A of <strong>PDB "
+        "4ZQK</strong> (UniProt Q9NZQ7), with hotspots Ile54, Tyr56 and "
+        "Met115."
     ),
     "inputs_used": [
         (

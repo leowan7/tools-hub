@@ -281,18 +281,9 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "The target is <strong>PD-L1</strong>, chain A, 115 residues, "
-        "taken from the vendor's own example condition spec that ships "
-        "inside the upstream image. There is one hotspot residue, 56."
-    ),
-    "why_this_target": (
-        "This run was ours but it was not a customer's: it is the "
-        "validation run that proved the container works, driven "
-        "straight from the binder condition spec that ships inside the "
-        "upstream image rather than from the form above. So read it for "
-        "the <em>shape</em> of what comes back, eight complete "
-        "structures and no scores, and not as a result on a target of "
-        "your own."
+        "The target is human PD-L1, residues 17 to 131 (UniProt Q9NZQ7), "
+        "chain A of the vendor's own example condition spec, with one "
+        "hotspot at residue 56."
     ),
     "inputs_used": [
         (

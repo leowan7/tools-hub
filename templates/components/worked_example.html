@@ -51,7 +51,10 @@ Usage:
       <div class="panel-body">
         <h3>The target</h3>
         <p>{{ ex.target|safe }}</p>
-        <p>{{ ex.why_this_target|safe }}</p>
+        {# Optional, and the <p> goes with it: an unguarded |safe prints
+           the literal "None" when the key is absent, which is now every
+           tool. Kept so a tool may reintroduce it. #}
+        {% if ex.why_this_target %}<p>{{ ex.why_this_target|safe }}</p>{% endif %}
 
         <h3>What we put in the form</h3>
         <dl>
