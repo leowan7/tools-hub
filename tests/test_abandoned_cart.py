@@ -52,6 +52,17 @@ def test_topup_page_names_the_tool_from_its_query():
     assert c.tool == "bindcraft"
 
 
+def test_form_then_bare_topup_visit_keeps_the_tool_in_the_subject(monkeypatch):
+    [c] = _select([_ev(ago=timedelta(hours=3)),
+                   _ev(kind="page_view", tool=None, path="/account/wallet/topup")])
+    assert (c.tool, c.tool_label) == ("boltz2", "Boltz-2")
+    sent = {}
+    monkeypatch.setenv("SESSION_SECRET_KEY", "k")
+    monkeypatch.setattr(email, "_post_resend", lambda **kw: sent.update(kw) or True)
+    assert email.send_abandoned_cart_email(candidate=c, base_url="https://t.example")
+    assert sent["subject"] == "Your Boltz-2 run is waiting"
+
+
 def test_other_page_views_do_not_trigger():
     assert _select([_ev(kind="page_view", tool=None, path="/pricing")]) == []
 
