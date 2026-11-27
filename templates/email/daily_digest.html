@@ -73,7 +73,8 @@
         {%- set e = p.cart_events -%}
         {{ e.get('sent', 0) }} sent, {{ e.get('delivered', 0) }} delivered,
         {{ e.get('delivery_delayed', 0) }} delayed, {{ e.get('bounced', 0) }} bounced,
-        {{ e.get('opened', 0) }} opened, {{ e.get('clicked', 0) }} clicked;
+        {%- if e.get('opened') %} {{ e.opened }} opened,{% endif %}
+        {%- if e.get('clicked') %} {{ e.clicked }} clicked,{% endif %}
         then so far {{ 'unknown' if p.cart_topped_up is none else p.cart_topped_up }} topped up,
         {{ 'unknown' if p.cart_ran_job is none else p.cart_ran_job }} ran a job
         {%- else -%}unreadable{%- endif -%}
@@ -84,6 +85,34 @@
       <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.commercial_signups }}</td>
     </tr>
   </table>
+
+  {# ------- Section 1a: Email deliverability (public.email_events) ------- #}
+  {% if p.cart_events_ok and p.deliverability %}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Email deliverability
+  </h2>
+  <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:.75rem;">
+    <tr style="color:#888;">
+      <td style="padding:4px 0;"></td>
+      <td style="padding:4px 0;text-align:right;">Sent</td>
+      <td style="padding:4px 0;text-align:right;">Deliv.</td>
+      <td style="padding:4px 0;text-align:right;">Delayed</td>
+      <td style="padding:4px 0;text-align:right;">Bounce</td>
+      <td style="padding:4px 0;text-align:right;">Complaint</td>
+    </tr>
+    {% for row in p.deliverability + p.deliverability_by_provider %}
+    <tr style="{{ 'color:#b00020;font-weight:600;' if row.flag else '' }}{{ 'border-top:1px solid #e5e5e5;' if loop.index == p.deliverability|length + 1 else '' }}">
+      <td style="padding:4px 0;">{{ row.label }}{% if row.flag %} &#9888;{% endif %}</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.sent }}</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.delivered }}</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.delayed }}</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.bounced }} ({{ '%.1f' % (100 * row.bounce_rate) }}%)</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.complained }} ({{ '%.2f' % (100 * row.complaint_rate) }}%)</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p style="font-size:12px;color:#888;margin:0;">Emails sent in the window, by kind, then by recipient provider. &#9888; = bounces over 4% or complaints over 0.1% of sent.</p>
+  {% endif %}
 
   {# ------- Section 1b: Money ------- #}
   <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">

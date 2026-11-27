@@ -364,3 +364,96 @@ def test_template_renders_cart_block(monkeypatch):
         html = daily_digest.render_digest_html(p)
     assert "2 sent, 1 delivered" in " ".join(html.split())
     assert "then so far 1 topped up, 2 ran a job" in " ".join(html.split())
+
+
+@pytest.mark.parametrize("recipient, group", [
+    ("li@qq.com", daily_digest.CHINA_GROUP),
+    ("Li@FoxMail.com", daily_digest.CHINA_GROUP),
+    ("a@163.com", daily_digest.CHINA_GROUP),
+    ("a@126.com", daily_digest.CHINA_GROUP),
+    ("a@yeah.net", daily_digest.CHINA_GROUP),
+    ("a@sina.com", daily_digest.CHINA_GROUP),
+    ("a@sina.cn", daily_digest.CHINA_GROUP),
+    ("a@sohu.com", daily_digest.CHINA_GROUP),
+    ("a@aliyun.com", daily_digest.CHINA_GROUP),
+    ("a@139.com", daily_digest.CHINA_GROUP),
+    ("a@pku.edu.cn", daily_digest.CHINA_GROUP),
+    ("a@gmail.com", daily_digest.OTHER_GROUP),
+    ("a@qq.com.evil.io", daily_digest.OTHER_GROUP),
+    ("a@notqq.com", daily_digest.OTHER_GROUP),
+    (None, daily_digest.OTHER_GROUP),
+])
+def test_provider_group(recipient, group):
+    assert daily_digest._provider_group(recipient) == group
+
+
+@pytest.mark.parametrize("counts, flag", [
+    ({"sent": 100, "bounced": 4}, False),          # exactly 4%: not over
+    ({"sent": 100, "bounced": 5}, True),
+    ({"sent": 1000, "complained": 1}, False),      # exactly 0.1%: not over
+    ({"sent": 999, "complained": 1}, True),
+    ({"sent": 0}, False),
+])
+def test_rate_line_thresholds(counts, flag):
+    assert daily_digest._rate_line("x", counts)["flag"] is flag
+
+
+def _deliv_tables():
+    sent = (NOW - timedelta(hours=3)).isoformat()
+    t = _tables()
+    rows = []
+
+    def add(email_id, kind, recipient, *types, uid="u-b"):
+        for type_ in ("sent",) + types:
+            rows.append({"svix_id": f"{email_id}-{type_}", "resend_email_id": email_id,
+                         "event_type": type_, "recipient": recipient,
+                         "email_kind": kind, "user_id": uid, "event_at": sent})
+
+    add("w1", "welcome", "a@qq.com", "delivered")
+    add("w2", "welcome", "b@163.com", "bounced")
+    add("w3", "welcome", "c@gmail.com", "delivered")
+    add("w4", "welcome", "d@gmail.com", "delivery_delayed", "delivered", "complained")
+    add("t1", None, "e@gmail.com", "delivered")
+    add("d1", "daily_digest", "leo@ranomics.com", "delivered", uid=None)  # internal
+    t["email_events"] = rows
+    return t
+
+
+def test_deliverability_by_kind_and_provider(monkeypatch):
+    p = _payload(monkeypatch, tables=_deliv_tables())
+    by_label = {r["label"]: r for r in p.deliverability}
+    assert list(by_label) == ["untagged", "welcome"]
+    w = by_label["welcome"]
+    assert (w["sent"], w["delivered"], w["delayed"], w["bounced"], w["complained"]) == (4, 3, 1, 1, 1)
+    assert w["bounce_rate"] == 0.25 and w["flag"] is True
+    assert by_label["untagged"]["flag"] is False
+    groups = {r["label"]: r for r in p.deliverability_by_provider}
+    assert list(groups) == [daily_digest.CHINA_GROUP, daily_digest.OTHER_GROUP]
+    assert (groups[daily_digest.CHINA_GROUP]["sent"], groups[daily_digest.CHINA_GROUP]["bounced"]) == (2, 1)
+    assert (groups[daily_digest.OTHER_GROUP]["sent"], groups[daily_digest.OTHER_GROUP]["complained"]) == (3, 1)
+
+
+def test_deliverability_renders_without_addresses_or_open_columns(monkeypatch):
+    p = _payload(monkeypatch, tables=_deliv_tables())
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    text = " ".join(html.split())
+    assert "Email deliverability" in text
+    assert "Chinese providers" in text and "1 (50.0%)" in text
+    for addr in ("a@qq.com", "b@163.com", "c@gmail.com", "d@gmail.com", "e@gmail.com"):
+        assert addr not in html
+    assert "opened" not in text.lower() and "clicked" not in text.lower()
+
+
+def test_cart_row_omits_open_and_click_when_none(monkeypatch):
+    tables = _cart_tables()
+    tables["email_events"] = [r for r in tables["email_events"]
+                              if r["event_type"] not in ("opened", "clicked")]
+    p = _payload(monkeypatch, tables=tables)
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    text = " ".join(html.split())
+    assert "1 bounced, then so far 1 topped up" in text
+    assert "opened" not in text and "clicked" not in text

@@ -62,6 +62,43 @@ def _is_internal(email: Optional[str]) -> bool:
     )
 
 
+CHINA_GROUP = "Chinese providers"
+OTHER_GROUP = "Everyone else"
+_CHINA_DOMAINS = frozenset({
+    "qq.com", "foxmail.com", "163.com", "126.com", "yeah.net", "sina.com",
+    "sina.cn", "sohu.com", "aliyun.com", "139.com",
+})
+# Flag levels: a bounce rate over 4% or a complaint rate over 0.1% of sent.
+BOUNCE_FLAG = 0.04
+COMPLAINT_FLAG = 0.001
+
+
+def _provider_group(recipient: Optional[str]) -> str:
+    domain = (recipient or "").rpartition("@")[2].strip().lower()
+    if domain in _CHINA_DOMAINS or domain.endswith(".cn"):
+        return CHINA_GROUP
+    return OTHER_GROUP
+
+
+def _rate_line(label: str, counts: Dict[str, int]) -> Dict[str, Any]:
+    sent = counts.get("sent", 0)
+    bounced, complained = counts.get("bounced", 0), counts.get("complained", 0)
+    bounce_rate = bounced / sent if sent else None
+    complaint_rate = complained / sent if sent else None
+    return {
+        "label": label,
+        "sent": sent,
+        "delivered": counts.get("delivered", 0),
+        "delayed": counts.get("delivery_delayed", 0),
+        "bounced": bounced,
+        "complained": complained,
+        "bounce_rate": bounce_rate,
+        "complaint_rate": complaint_rate,
+        "flag": bool(sent) and (bounce_rate > BOUNCE_FLAG
+                                or complaint_rate > COMPLAINT_FLAG),
+    }
+
+
 def _commercial_signals(email: Optional[str], purpose: str) -> List[str]:
     """Why a signup might be a buyer: a company domain, or a purpose word."""
     from shared.email_domain import EmailClass, classify_email  # noqa: PLC0415
@@ -129,8 +166,12 @@ class DigestPayload:
     # their users topped up / started a run after that email was sent, up to
     # when this digest ran. Events after the digest are counted in no digest.
     # None = the ledger / tool_jobs read failed.
+    # cart_events_ok False = email_events unreadable (both email blocks).
     cart_events_ok: bool = True
     cart_events: Dict[str, int] = field(default_factory=dict)
+    # Every kind, same cohort rule: one _rate_line dict per kind / provider group.
+    deliverability: List[Dict[str, Any]] = field(default_factory=list)
+    deliverability_by_provider: List[Dict[str, Any]] = field(default_factory=list)
     cart_topped_up: Optional[int] = 0
     cart_ran_job: Optional[int] = 0
     # False when auth.users could not be listed: internal_ids stays empty,
@@ -602,52 +643,87 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         reverse=True,
     )
 
-    # --- 8. Abandoned-cart delivery (public.email_events) -------------------
-    _fold_cart_events(payload, client, window_start_iso, internal_ids,
+    # --- 8. Email delivery (public.email_events) ---------------------------
+    _fold_email_events(payload, client, window_start_iso, internal_ids,
                       payment_rows if payload.money_ok else None,
                       run_rows if runs_ok else None)
 
     return payload
 
 
-def _fold_cart_events(payload, client, since_iso, internal_ids,
-                      payment_rows, run_rows) -> None:
-    """Cohort = abandoned-cart emails with an ``sent`` event since ``since_iso``."""
+def _email_event_rows(client, since_iso: str) -> List[dict]:
     rows: List[dict] = []
+    while True:
+        page = (
+            client.table("email_events")
+            .select("svix_id,resend_email_id,event_type,recipient,email_kind,user_id,event_at")
+            .gte("event_at", since_iso)
+            .order("svix_id")
+            .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < _LEDGER_PAGE:
+            return rows
+
+
+def _sent_cohort(rows, keep) -> dict:
+    """resend_email_id -> its ``sent`` row, for sent rows ``keep`` accepts."""
+    return {r["resend_email_id"]: r for r in rows
+            if r.get("event_type") == "sent" and keep(r)}
+
+
+def _distinct_by_type(rows, cohort) -> Dict[str, int]:
+    seen: dict = defaultdict(set)
+    for r in rows:
+        if r.get("resend_email_id") in cohort:
+            seen[r.get("event_type")].add(r["resend_email_id"])
+    return {t: len(ids) for t, ids in seen.items()}
+
+
+def _fold_email_events(payload, client, since_iso, internal_ids,
+                       payment_rows, run_rows) -> None:
+    """Cohort = emails with a ``sent`` event since ``since_iso``; their events
+    are counted up to when the digest runs."""
     try:
-        while True:
-            page = (
-                client.table("email_events")
-                .select("svix_id,resend_email_id,event_type,user_id,event_at")
-                .eq("email_kind", "abandoned_cart")
-                .gte("event_at", since_iso)
-                .order("svix_id")
-                .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
-                .execute()
-                .data
-                or []
-            )
-            rows.extend(page)
-            if len(page) < _LEDGER_PAGE:
-                break
+        rows = _email_event_rows(client, since_iso)
     except Exception:
         payload.cart_events_ok = False
         logger.warning("digest: email_events query failed", exc_info=True)
         return
-    sent_at: dict = {}  # resend_email_id -> (user_id, sent time)
-    for r in rows:
-        if r.get("event_type") == "sent" and r.get("user_id") not in internal_ids:
-            sent_at[r["resend_email_id"]] = (r.get("user_id"), str(r.get("event_at") or ""))
-    seen: dict = defaultdict(set)
-    for r in rows:
-        if r.get("resend_email_id") in sent_at:
-            seen[r.get("event_type")].add(r["resend_email_id"])
+
+    def external(r):
+        return (r.get("user_id") not in internal_ids
+                and not _is_internal(r.get("recipient")))
+
+    # Deliverability, every kind.
+    cohort = _sent_cohort(rows, external)
+    by_kind: dict = defaultdict(dict)
+    by_group: dict = defaultdict(dict)
+    for email_id, r in cohort.items():
+        by_kind[r.get("email_kind") or "untagged"][email_id] = r
+        by_group[_provider_group(r.get("recipient"))][email_id] = r
+    payload.deliverability = [
+        _rate_line(kind, _distinct_by_type(rows, ids))
+        for kind, ids in sorted(by_kind.items())
+    ]
+    payload.deliverability_by_provider = [
+        _rate_line(group, _distinct_by_type(rows, by_group[group]))
+        for group in (CHINA_GROUP, OTHER_GROUP) if group in by_group
+    ]
+
+    # Abandoned cart.
+    cart = {k: r for k, r in cohort.items() if r.get("email_kind") == "abandoned_cart"}
+    counts = _distinct_by_type(rows, cart)
     payload.cart_events = {
-        t: len(seen.get(t, ()))
+        t: counts.get(t, 0)
         for t in ("sent", "delivered", "delivery_delayed", "bounced", "opened", "clicked")
     }
     first_send: dict = {}
-    for uid, ts in sent_at.values():
+    for r in cart.values():
+        uid, ts = r.get("user_id"), str(r.get("event_at") or "")
         if uid and (uid not in first_send or ts < first_send[uid]):
             first_send[uid] = ts
 
