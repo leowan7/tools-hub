@@ -97,8 +97,9 @@ def _rate_line(label: str, counts: Dict[str, int]) -> Dict[str, Any]:
         "complained": complained,
         "bounce_rate": bounce_rate,
         "complaint_rate": complaint_rate,
-        "flag": bool(sent) and (bounce_rate > BOUNCE_FLAG
-                                or complaint_rate > COMPLAINT_FLAG),
+        # Nothing sent in the window: any bounce or complaint flags.
+        "flag": (bounce_rate > BOUNCE_FLAG or complaint_rate > COMPLAINT_FLAG)
+        if sent else bool(bounced or complained),
     }
 
 
@@ -660,7 +661,7 @@ def _email_event_rows(client, since_iso: str) -> List[dict]:
         page = (
             client.table("email_events")
             .select("svix_id,resend_email_id,event_type,recipient,email_kind,user_id,event_at")
-            .gte("event_at", since_iso)
+            .gte("received_at", since_iso)
             .order("svix_id")
             .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
             .execute()
@@ -688,8 +689,9 @@ def _distinct_by_type(rows, cohort) -> Dict[str, int]:
 
 def _fold_email_events(payload, client, since_iso, internal_ids,
                        payment_rows, run_rows) -> None:
-    """Cohort = emails with a ``sent`` event since ``since_iso``; their events
-    are counted up to when the digest runs."""
+    """Reads events stored (``received_at``) since ``since_iso``, so a
+    webhook Resend retried late still lands in a digest. Cart cohort = emails
+    whose ``sent`` event is among them; their events count up to now."""
     try:
         rows = _email_event_rows(client, since_iso)
     except Exception:

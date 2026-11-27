@@ -296,7 +296,7 @@ def _cart_tables():
 
     def ev(i, email_id, type_, uid, at=sent, kind="abandoned_cart"):
         return {"svix_id": f"m{i}", "resend_email_id": email_id, "event_type": type_,
-                "user_id": uid, "event_at": at, "email_kind": kind}
+                "user_id": uid, "event_at": at, "received_at": at, "email_kind": kind}
 
     t = _tables()
     t["email_events"] = [
@@ -396,6 +396,8 @@ def test_provider_group(recipient, group):
     ({"sent": 1000, "complained": 1}, False),      # exactly 0.1%: not over
     ({"sent": 999, "complained": 1}, True),
     ({"sent": 0}, False),
+    ({"sent": 0, "bounced": 1}, True),            # late bounce, nothing sent today
+    ({"sent": 0, "complained": 1}, True),
 ])
 def test_rate_line_thresholds(counts, flag):
     assert daily_digest._rate_line("x", counts)["flag"] is flag
@@ -410,7 +412,8 @@ def _deliv_tables():
         for type_ in ("sent",) + types:
             rows.append({"svix_id": f"{email_id}-{type_}", "resend_email_id": email_id,
                          "event_type": type_, "recipient": recipient,
-                         "email_kind": kind, "user_id": uid, "event_at": sent})
+                         "email_kind": kind, "user_id": uid, "event_at": sent,
+                         "received_at": sent})
 
     add("w1", "welcome", "a@qq.com", "delivered")
     add("w2", "welcome", "b@163.com", "bounced")
@@ -453,13 +456,17 @@ def test_late_bounce_counts_in_the_next_digest(monkeypatch):
     t = _tables()
     t["email_events"] = [
         {"svix_id": "s", "resend_email_id": "old", "event_type": "sent",
-         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b", "event_at": OLD},
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b",
+         "event_at": OLD, "received_at": OLD},
+        # Bounced before the window, but the webhook was only stored inside it.
         {"svix_id": "b", "resend_email_id": "old", "event_type": "bounced",
-         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b", "event_at": RECENT},
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b",
+         "event_at": OLD, "received_at": RECENT},
     ]
     p = _payload(monkeypatch, tables=t)
     (line,) = p.deliverability
     assert (line["sent"], line["bounced"], line["bounce_rate"]) == (0, 1, None)
+    assert line["flag"] is True
     assert p.deliverability_by_provider[0]["label"] == daily_digest.CHINA_GROUP
     app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
     with app.app_context():
