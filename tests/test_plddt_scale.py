@@ -289,18 +289,27 @@ class TestPrecisionDidNotChange:
     1.77 spread between top and bottom row.
     """
 
-    def test_af2_batch_table_keeps_two_decimals(self, example_pages):
-        cells = re.findall(
-            r'data-col="mean_pLDDT"[^>]*>([0-9.]+)<',
-            example_pages["af2"],
-        )
-        assert cells, "af2's mean_pLDDT column did not render"
-        assert "75.93" in cells, cells[:5]
+    def test_af2_batch_table_keeps_two_decimals(self, tools_app):
+        # af2's worked example is a single fold now, so the batch table is
+        # rendered from the synthetic fixture.
+        import json
+        from types import SimpleNamespace
 
-    def test_the_af2_narration_still_matches_its_table(self, example_pages):
-        html = example_pages["af2"]
-        assert "74.16 to 75.93" in html
-        assert "1.77 pLDDT points" in html
+        from flask import render_template
+
+        flask_app, _slugs = tools_app
+        result = json.loads(
+            (REPO / "tests" / "fixtures" / "af2_batch_result.json")
+            .read_text(encoding="utf-8"),
+        )
+        job = SimpleNamespace(id="example", tool="af2", status="succeeded",
+                              inputs={}, result=result, created_at=None)
+        with flask_app.test_request_context("/jobs/example"):
+            html = render_template("tools/af2_results.html", job=job,
+                                   send_target_tools=None)
+        cells = re.findall(r'data-col="mean_pLDDT"[^>]*>([0-9.]+)<', html)
+        assert cells, "af2's mean_pLDDT column did not render"
+        assert "82.47" in cells, cells[:5]
 
 
 class TestNoSiteAppliesTheRuleTwice:
@@ -637,8 +646,7 @@ class TestEveryKnownDisplaySiteStillCallsTheRule:
         "templates/components/candidate_table.html": ("plddt_on_100(raw)", 1),
         "templates/tools/esmfold_results.html": ("plddt_on_100(", 3),
         "templates/tools/colabfold_results.html": ("plddt_on_100(", 3),
-        # mean, min and max, none of which any render scan reaches:
-        # af2's example is batch-shaped and carries no plddt_per_residue.
+        # mean, min and max on the standalone metric table.
         "templates/tools/af2_results.html": ("plddt_on_100(", 3),
     }
 

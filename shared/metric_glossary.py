@@ -416,7 +416,7 @@ def format_value(metric_key: str, raw) -> str:
 # at an interface, on the same scale as their sibling.
 PLDDT_COLUMNS = frozenset({
     "pLDDT", "plddt",
-    "mean_pLDDT", "mean_plddt",
+    "mean_pLDDT", "mean_plddt", "plddt_mean",
     "af2_plddt",
     "complex_pLDDT", "complex_plddt",
     "iplddt", "complex_iplddt",

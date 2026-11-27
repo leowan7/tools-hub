@@ -51,6 +51,10 @@ TABLE_TOOLS = (
 
 def _example(slug: str) -> dict:
     pkg = slug.replace("-", "_")
+    if slug == "af2":
+        # af2's example is a single standalone fold; the batch table these
+        # tests exercise comes from a synthetic fixture instead.
+        return json.loads((REPO / "tests" / "fixtures" / "af2_batch_result.json").read_text())
     return json.loads((REPO / "tools" / pkg / "example" / "result.json").read_text())
 
 

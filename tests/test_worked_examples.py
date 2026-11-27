@@ -1378,7 +1378,7 @@ class TestExampleNumbersComeFromThePayload:
         "pxdesign": 1380.0,
         "esmfold": 32.0,
         "colabfold": 55.0,
-        "af2": 388.0,
+        "af2": 73.0,
         "esmfold2-design": 306.0,
         # 4944 s is what the boltzgen example's run consumed; the
         # settled charge for it is what that page must print. The figure
@@ -1551,61 +1551,36 @@ class TestExampleNumbersComeFromThePayload:
         assert "The mean cannot tell those apart" in example["how_to_read_it"]
 
     def test_af2_narration_matches_its_result_json(self, tools_app):
-        """Ten designs that agree. The spread figures are the point: if
-        a future capture widened them the 'this is not a ranking'
-        reading would stop being true, and this fails rather than
-        letting the page keep asserting it."""
+        """A confident fold whose only low residues are the C-terminal
+        tail. If a future capture moved the low residues off the chain end,
+        the 'a few at a chain end is normal' reading would stop being true."""
         _, slugs = tools_app
         example = _examples(slugs)["af2"]
         result = json.loads(
             (REPO / "tools" / "af2" / "example" / "result.json")
             .read_text(encoding="utf-8"),
         )
-        designs = result["designs"]
-        assert len(designs) == 10
-        assert result["designs_completed"] == 10 and result["n_failures"] == 0
-        assert {d["total_aa"] for d in designs} == {333}
-        assert {d["model_preset"] for d in designs} == {"monomer"}
-        assert all(d["iptm"] is None for d in designs), (
-            "the narration tells the reader a blank ipTM column is a "
-            "monomer run, not a low score"
+        assert result["tier"] == "standalone"
+        assert result["num_chains"] == 1 and result["total_aa"] == 76
+        assert result["iptm"] is None, (
+            "the narration says there is no ipTM row because this is a monomer"
         )
-
-        plddt = [d["mean_plddt"] for d in designs]
-        ptm = [d["ptm"] for d in designs]
-        assert min(plddt) == 74.16 and max(plddt) == 75.93
-        assert round(max(plddt) - min(plddt), 2) == 1.77
-        assert min(ptm) == 0.71 and max(ptm) == 0.73
-        assert round(max(ptm) - min(ptm), 2) == 0.02
+        plddt = result["plddt_per_residue"]
+        assert len(plddt) == 76
+        assert result["mean_plddt"] == 95.4 and result["ptm"] == 0.83
+        assert round(min(plddt), 1) == 53.1 and round(max(plddt), 1) == 98.5
+        assert sum(1 for v in plddt if v > 90) == 71
+        low = [i + 1 for i, v in enumerate(plddt) if v <= 90]
+        assert low == [72, 73, 74, 75, 76]
+        assert plddt.index(min(plddt)) == 75
 
         came = example["what_came_back"]
-        assert "74.16 to 75.93" in came
-        assert "0.71 to 0.73" in came
-        assert "1.77 pLDDT points" in came and "spans 0.02" in came
-
+        for figure in ("95.4", "0.83", "53.1 to 98.5", "71 of the 76",
+                       "the last five"):
+            assert figure in came, figure
         read = example["how_to_read_it"]
-        assert "sort order, not a" in read
-        # This passage sends the reader to the ESMFold example holding a
-        # threshold in mind. Both pages render 0-100 now, so it states one
-        # number -- and must not reacquire a scale caveat that would only
-        # be true if the normaliser were removed.
-        assert "70" in read
+        assert "final residue" in read
         assert "0.70" not in read and "0 to 1" not in read
-
-        # NOT derivable from the payload: the ten submitted sequences are
-        # designs and are not published, so the identity range is a
-        # capture-time fact. Pinned as PROSE, the way proteina's
-        # non-derivable figures are, so a copy edit cannot drift it and
-        # nobody goes looking for it in result.json.
-        assert not list(_published_sequences(result)), (
-            "af2's payload must stay sequence-free; if that changes, the "
-            "identity range below should be derived rather than pinned"
-        )
-        assert "72% to 79%" in example["target"]
-        assert "a fifth to a little over a quarter" in read, (
-            "72-79% identity is 21-28% divergence; 28% is more than a "
-            "quarter, so 'a fifth to a quarter' understates it"
-        )
 
     def test_esmfold2_design_narration_matches_its_result_json(
         self, tools_app,
@@ -1932,6 +1907,10 @@ PUBLISHABLE_SEQUENCES = {
         "is kept inline deliberately: the download on the example page is "
         "this file, and a worked example whose download does not work "
         "teaches the wrong thing about the tool"
+    ),
+    ("af2", "pdb_b64"): (
+        "human ubiquitin, a published reference sequence "
+        "(static/example/ubiquitin.fasta), folded on Leo's own account"
     ),
     ("esmfold", "pdb_b64"): (
         "the folded structure OF that published reference; the sequence it "
@@ -2267,7 +2246,6 @@ class TestABarAndItsValuesShareAScale:
         # for a different reason, which is why its line moved rather than
         # disappearing.
         expect = {
-            ("af2", "ptm"),
             ("rfantibody", "ipAE"), ("rfantibody", "pAE"),
             ("rfantibody", "pLDDT"),
             ("bindcraft", "ipTM"), ("bindcraft", "pLDDT"),
@@ -2994,7 +2972,9 @@ class TestNarrationQuotesTheTable:
             "say which pins went"
         )
         covered = {slug for slug, _field, _numeral in checked}
-        assert len(covered) >= 11, (
+        # 10 since af2's example became a single standalone fold: its
+        # figures are on the metric table, not in a candidate row.
+        assert len(covered) >= 10, (
             f"only {len(covered)} tools contribute a checked numeral "
             f"({sorted(covered)}); a tool that used to quote its own table "
             "has stopped. Fine if you meant it -- lower the floor and name "
@@ -3177,20 +3157,20 @@ class TestTheRankColumnIsAPosition:
                 "table; if this is printing a payload field again, the tools "
                 "do not agree on what that field means"
             )
-        # MEASURED, not chosen to pass: eleven of the fourteen examples render
-        # a candidate row today. The three that do not are colabfold and
-        # esmfold (their examples take the standalone single-fold branch) and
-        # mpnn (no shared macro). A floor of 8 would have let three tools drop
-        # out of the real-payload coverage in silence.
-        assert len(checked) >= 11, (
+        # The examples that render no candidate row are af2, colabfold and
+        # esmfold (their
+        # examples take the standalone single-fold branch) and mpnn (no
+        # shared macro).
+        assert len(checked) >= 10, (
             f"only {sorted(checked)} rendered a candidate table, so this "
             "test covers less than it claims. A tool losing its example is "
             "fine -- lower the floor and say which -- but check first"
         )
-        # The five whose real example was wrong before the fix. A count alone
+        # The four (af2 was a fifth until its example became a single fold)
+        # whose real example was wrong before the fix. A count alone
         # would still pass if one of these dropped out and an untouched tool
         # took its place in the tally.
-        for slug in ("af2", "boltz2", "esmfold2-design", "opendde", "iggm"):
+        for slug in ("boltz2", "esmfold2-design", "opendde", "iggm"):
             assert slug in checked, (
                 f"{slug}'s example renders no candidate table any more, so "
                 "the tool this test was written for is no longer covered"

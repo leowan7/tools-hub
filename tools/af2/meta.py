@@ -164,66 +164,49 @@ PILOT: dict | None = None
 # tools/af2/example/result.json replayed through this tool's OWN results
 # partial, so the demo can never drift from the real job page.
 #
-# PROVENANCE. One `batch` run on the same Modal app this form submits to,
-# pulled from the jobs table by scripts/capture_example_result.py (job
-# dd44f46f, 388 GPU-seconds). Re-run that script against the same job to
-# re-derive every figure below.
+# PROVENANCE. One `standalone` run on Leo's own account, pulled from the
+# jobs table by scripts/capture_example_result.py (job df0b5d35, 73
+# GPU-seconds). Re-run that script against the same job to re-derive every
+# figure below. It replaces an earlier batch example whose source job was
+# not on an internal account.
 #
-# This supersedes the note that stood here refusing an example: the only
-# payload on disk then was a deliberately degraded smoke fixture (58-residue
-# BPTI, MSA off, one recycle) that measured the fixture rather than the tool.
-# This is a real MSA-backed batch.
+# The folded sequence is human ubiquitin, a published reference sequence
+# (static/example/ubiquitin.fasta), not a design. pdb_b64 is kept, so the
+# results partial draws its own viewer.
 #
-# The ten folded sequences were DESIGNS and are not published. They live in
-# job.inputs, which a worked example never renders - the payload here is
-# job.result, which for a batch carries scores only and no sequence at all.
-# Nothing had to be stripped.
+# Figures quoted below, all from result.json: mean pLDDT 95.4, pTM 0.83,
+# per-residue range 53.1 to 98.5 (the two numbers the page prints). Of 76
+# residues, 71 are above 90; the five at or below 90 are positions 72-76,
+# with the minimum at residue 76.
 #
-# The "72% to 79% identical" range in `target` was computed at CAPTURE time
-# from the ten submitted FASTA records. Those sequences are designs, so they
-# are not in the payload below and the figure cannot be re-derived from it -
-# do not go looking for it in result.json and do not "correct" it to
-# something the payload does support. tests/test_worked_examples.py pins the
-# wording instead, the way proteina's non-derivable figures are pinned.
-#
-# The per-design `runtime_seconds` in this payload are CUMULATIVE elapsed
-# time, not per-design durations: they climb 101 -> 358 and sum to far more
-# than the job's own 388. Do not quote them as "this design took N seconds".
-#
-# COST is compute_charge_usd(388, "A100-80GB") - the charge, not the raw
+# COST is compute_charge_usd(73, "A100-80GB") - the charge, not the raw
 # Modal cost. tests/test_worked_examples.py recomputes it from the rate card.
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Ten designed variants of a microbial rhodopsin &mdash; the "
-        "seven-transmembrane-helix light-driven channel family &mdash; at 333 "
-        "residues each, folded in one submission. They came off a generative "
-        "model as ten samples from one design round, each 72% to 79% "
-        "identical to the first."
+        "Human ubiquitin &mdash; one chain, 76 residues, the example FASTA "
+        "this form ships with. A published reference sequence, not a design."
     ),
     "why_this_target": (
-        "A membrane protein is a hard case for a structure predictor, and ten "
-        "near-siblings is the shape a real design round actually arrives in. "
-        "The interesting part is not whether they fold &mdash; it is what you "
-        "are entitled to conclude from a table of ten scores, which is less "
-        "than the table's own layout suggests."
+        "Ubiquitin is one of the most studied small folds there is, with "
+        "crystal structures going back decades, so the right answer is known "
+        "before the run starts. That makes it the cleanest way to see what a "
+        "confident AlphaFold2 result looks like, and what the one honestly "
+        "uncertain part of a confident result looks like too."
     ),
     "inputs_used": [
         (
             "Preset",
-            "Batch for many fold targets",
-            "Ten sequences in one submission rather than ten submissions. "
-            "Same cost per sequence, one job to watch.",
+            "Standalone, one FASTA",
+            "One chain, one fold. The other preset, batch, folds many "
+            "sequences in a single submission.",
         ),
         (
-            "Fold targets (FASTA or one per line)",
-            "10 records, one chain each",
-            "Whether a record folds as a monomer or a multimer is not a "
-            "setting &mdash; it follows from the record itself, and joining "
-            "chains with a colon is what makes one a multimer. These are "
-            "single chains, so all ten folded as monomers, which is why the "
-            "ipTM column stays blank throughout: there is no second chain, so "
-            "there is no interface to score. Blank is not a low score.",
+            "FASTA",
+            "1 record, 76 aa",
+            "A single chain, so it folds as a monomer. That is why there is "
+            "no ipTM row on the result: with no second chain there is no "
+            "interface to score.",
         ),
         (
             "Number of recycles",
@@ -234,47 +217,38 @@ EXAMPLE: dict | None = {
         (
             "Use PDB templates",
             "on",
-            "Known structures are allowed as scaffolding. The rhodopsin fold "
-            "is well represented in the PDB, so there is real signal to use.",
+            "Known structures are allowed as scaffolding, and ubiquitin has "
+            "plenty in the PDB.",
         ),
     ],
     "what_came_back": (
-        "All ten folded, no failures. Mean pLDDT runs from "
-        "<strong>74.16 to 75.93</strong> and pTM from 0.71 to 0.73. "
-        "The table sorts by mean pLDDT and highlights the top row &mdash; but "
-        "the top row beats the bottom row by <strong>1.77 pLDDT points, and "
-        "the whole pTM column spans 0.02</strong>. "
-        "Every one of the ten landed in the same place."
+        "A complete structure with a mean pLDDT of <strong>95.4</strong> and "
+        "a pTM of <strong>0.83</strong>. The per-residue range runs from "
+        "<strong>53.1 to 98.5</strong>: 71 of the 76 residues sit above 90, "
+        "and the five that do not are the last five, at the C-terminal end."
     ),
     "how_to_read_it": (
-        "<strong>The highlight on the top row is a sort order, not a "
-        "verdict.</strong> A ranked table implies the first row is better "
-        "than the last, and across a spread this narrow it simply is not: "
-        "re-run the same ten sequences with a different seed and the order "
-        "would reshuffle. Nothing here distinguishes these designs, and "
-        "picking the top one to carry forward is picking at random while "
-        "feeling informed. "
-        "The result that <em>is</em> real is the agreement. Ten variants "
-        "differing at a fifth to a little over a quarter of their residues "
-        "all folding to the same "
-        "confidence says the scaffold tolerates that much variation &mdash; "
-        "which is a genuine finding about the design round, and the opposite "
-        "of what you would conclude by reading row one. "
-        "For scale: 70 is the usual line for a confidently folded structure, "
-        "and all ten clear it. Compare with the ESMFold example on this "
-        "site, where a genuinely disordered protein has no residue reaching "
-        "70 anywhere in the chain."
+        "<strong>The mean and the minimum are both right.</strong> A mean of "
+        "95.4 says the fold is predicted with very high confidence, and it "
+        "is: the compact core of the protein is placed almost exactly. The "
+        "53.1 at the bottom of the range is not a flaw in that core. It is "
+        "the final residue of a short tail that sticks out from the folded "
+        "body, and the viewer shows it as the one stretch that fades from "
+        "blue toward red. That tail is known to be flexible in the real "
+        "protein, so a lower score there is the model being accurate about "
+        "what it cannot pin down, not the model failing. "
+        "Read a wide pLDDT range by asking WHERE the low residues are: a few "
+        "at a chain end is normal, a low patch in the middle of a domain is "
+        "worth worrying about. Compare the ESMFold example on this site, "
+        "where the whole chain is low end to end."
     ),
     "what_we_did_next": (
-        "A batch this tight does not narrow itself, so the choice has to come "
-        "from somewhere other than these scores &mdash; a property the table "
-        "does not carry, or an experiment. The runs worth doing next are the "
-        "ones that can separate the ten: fold them against the partner or "
-        "ligand that matters if there is one, which turns a blank ipTM column "
-        "into a real interface number, or take several forward together "
-        "rather than betting on row one. When a screen comes back this "
-        "uniform, that is the screen telling you it has finished its job."
+        "Nothing; the run was a check that the tool returns a known answer, "
+        "and it did. On a protein of your own the useful next step depends "
+        "on where any low residues fall: trim a floppy end before you use "
+        "the structure as a design target, or fold it again with the partner "
+        "it binds if the low region is an interface."
     ),
-    "cost_usd": "0.68",
-    "runtime": "6 minutes",
+    "cost_usd": "0.13",
+    "runtime": "73 seconds",
 }

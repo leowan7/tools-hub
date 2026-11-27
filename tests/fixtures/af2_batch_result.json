@@ -1,0 +1,120 @@
+{
+  "tier": "batch",
+  "designs_completed": 10,
+  "designs_total": 10,
+  "n_failures": 0,
+  "num_recycles": 3,
+  "use_templates": true,
+  "designs": [
+    {
+      "rank": 0,
+      "name": "design_00",
+      "pdb_key": "design_00.pdb",
+      "mean_plddt": 82.47,
+      "ptm": 0.78,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 1,
+      "name": "design_01",
+      "pdb_key": "design_01.pdb",
+      "mean_plddt": 81.93,
+      "ptm": 0.775,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 2,
+      "name": "design_02",
+      "pdb_key": "design_02.pdb",
+      "mean_plddt": 81.36,
+      "ptm": 0.77,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 3,
+      "name": "design_03",
+      "pdb_key": "design_03.pdb",
+      "mean_plddt": 80.88,
+      "ptm": 0.765,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 4,
+      "name": "design_04",
+      "pdb_key": "design_04.pdb",
+      "mean_plddt": 80.12,
+      "ptm": 0.76,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 5,
+      "name": "design_05",
+      "pdb_key": "design_05.pdb",
+      "mean_plddt": 79.65,
+      "ptm": 0.755,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 6,
+      "name": "design_06",
+      "pdb_key": "design_06.pdb",
+      "mean_plddt": 79.04,
+      "ptm": 0.75,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 7,
+      "name": "design_07",
+      "pdb_key": "design_07.pdb",
+      "mean_plddt": 78.51,
+      "ptm": 0.745,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 8,
+      "name": "design_08",
+      "pdb_key": "design_08.pdb",
+      "mean_plddt": 77.86,
+      "ptm": 0.74,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    },
+    {
+      "rank": 9,
+      "name": "design_09",
+      "pdb_key": "design_09.pdb",
+      "mean_plddt": 77.29,
+      "ptm": 0.735,
+      "iptm": null,
+      "model_preset": "monomer",
+      "num_chains": 1,
+      "total_aa": 120
+    }
+  ]
+}

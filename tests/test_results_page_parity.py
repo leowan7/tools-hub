@@ -36,6 +36,10 @@ def _unwrapped(text):
 
 
 def _example(tool):
+    if tool == "af2":
+        # af2's example is a single standalone fold; batch-shaped tests use
+        # the synthetic fixture tests/test_export_page_parity.py uses too.
+        return json.loads((ROOT / "tests" / "fixtures" / "af2_batch_result.json").read_text(encoding="utf-8"))
     return json.loads((ROOT / "tools" / tool / "example" / "result.json").read_text(encoding="utf-8"))
 
 
