@@ -50,6 +50,24 @@ DEFAULT_FROM = "Ranomics Tools <noreply@tools.ranomics.com>"
 DEFAULT_BASE_URL = "https://tools.ranomics.com"
 RESEND_ENDPOINT = "https://api.resend.com/emails"
 
+_TAG_SAFE = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
+
+def _resend_tags(log_tag: str) -> list:
+    """Resend ``tags`` read off a log tag shaped ``"<kind> user=<id> ..."``.
+
+    webhooks/resend.py reads ``kind`` and ``user_id`` back off each delivery
+    event. A word outside Resend's tag alphabet is left out, not sent.
+    """
+    words = (log_tag or "").split()
+    tags = []
+    if words and _TAG_SAFE.fullmatch(words[0]):
+        tags.append({"name": "kind", "value": words[0]})
+    user = next((w[len("user="):] for w in words if w.startswith("user=")), "")
+    if _TAG_SAFE.fullmatch(user):
+        tags.append({"name": "user_id", "value": user})
+    return tags
+
 
 class RecipientRejected(Exception):
     """Resend refused the "to" address itself (HTTP 422 naming the to field)."""
@@ -109,6 +127,9 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
                 "subject": subject,
                 "html": html_body,
                 "text": text_body,
+                "tags": _resend_tags(
+                    f"job_complete user={getattr(job, 'user_id', '')}"
+                ),
             },
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -1157,16 +1178,19 @@ def send_campaign_submitted_emails(
         )
         return
 
-    for to_addr, subject, html_body, text_body in [
-        (user_email, user_subject, user_html, user_text),
-        (list(STAFF_EMAILS), staff_subject, staff_html, staff_text),
+    user_tag = f"campaign_submitted user={getattr(campaign, 'user_id', '')}"
+    for to_addr, subject, html_body, text_body, log_tag in [
+        (user_email, user_subject, user_html, user_text, user_tag),
+        (list(STAFF_EMAILS), staff_subject, staff_html, staff_text,
+         "campaign_submitted_staff"),
     ]:
         try:
             to_list = to_addr if isinstance(to_addr, list) else [to_addr]
             requests.post(
                 RESEND_ENDPOINT,
                 json={"from": from_addr, "to": to_list, "subject": subject,
-                      "html": html_body, "text": text_body},
+                      "html": html_body, "text": text_body,
+                      "tags": _resend_tags(log_tag)},
                 headers={"Authorization": f"Bearer {api_key}",
                          "Content-Type": "application/json"},
                 timeout=10,
@@ -1224,7 +1248,10 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
         requests.post(
             RESEND_ENDPOINT,
             json={"from": from_addr, "to": [user_email], "subject": subject,
-                  "html": html_body, "text": html_body},
+                  "html": html_body, "text": html_body,
+                  "tags": _resend_tags(
+                      f"campaign_status user={getattr(campaign, 'user_id', '')}"
+                  )},
             headers={"Authorization": f"Bearer {api_key}",
                      "Content-Type": "application/json"},
             timeout=10,
@@ -1484,6 +1511,7 @@ def _send_simple(
                 "subject": subject,
                 "html": html_body,
                 "text": text_body,
+                "tags": _resend_tags(log_tag),
             },
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -2168,6 +2196,7 @@ def _post_resend(
         "subject": subject,
         "html": html_body,
         "text": text_body or _html_to_text(html_body),
+        "tags": _resend_tags(log_tag),
     }
     if unsubscribe_link:
         payload["text"] += f"\n\nUnsubscribe: {unsubscribe_link}"

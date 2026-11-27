@@ -62,6 +62,47 @@ def _is_internal(email: Optional[str]) -> bool:
     )
 
 
+CHINA_GROUP = "Chinese providers"
+OTHER_GROUP = "Everyone else"
+_CHINA_DOMAINS = frozenset({
+    "qq.com", "foxmail.com", "163.com", "126.com", "yeah.net", "sina.com",
+    "sina.cn", "sohu.com", "aliyun.com", "139.com", "188.com", "21cn.com",
+    "tom.com",
+})
+# Flag levels: a bounce rate over 4% or a complaint rate over 0.1% of sent.
+BOUNCE_FLAG = 0.04
+COMPLAINT_FLAG = 0.001
+
+
+def _provider_group(recipient: Optional[str]) -> str:
+    domain = (recipient or "").rpartition("@")[2].strip().lower()
+    if domain.endswith(".cn") or any(
+        domain == d or domain.endswith("." + d) for d in _CHINA_DOMAINS
+    ):
+        return CHINA_GROUP
+    return OTHER_GROUP
+
+
+def _rate_line(label: str, counts: Dict[str, int]) -> Dict[str, Any]:
+    sent = counts.get("sent", 0)
+    bounced, complained = counts.get("bounced", 0), counts.get("complained", 0)
+    bounce_rate = bounced / sent if sent else None
+    complaint_rate = complained / sent if sent else None
+    return {
+        "label": label,
+        "sent": sent,
+        "delivered": counts.get("delivered", 0),
+        "delayed": counts.get("delivery_delayed", 0),
+        "bounced": bounced,
+        "complained": complained,
+        "bounce_rate": bounce_rate,
+        "complaint_rate": complaint_rate,
+        # Nothing sent in the window: any bounce or complaint flags.
+        "flag": (bounce_rate > BOUNCE_FLAG or complaint_rate > COMPLAINT_FLAG)
+        if sent else bool(bounced or complained),
+    }
+
+
 def _commercial_signals(email: Optional[str], purpose: str) -> List[str]:
     """Why a signup might be a buyer: a company domain, or a purpose word."""
     from shared.email_domain import EmailClass, classify_email  # noqa: PLC0415
@@ -124,6 +165,19 @@ class DigestPayload:
     # Users whose abandoned-cart stamp (cron/abandoned_cart.py) is in the window;
     # a refused address keeps its stamp, so this can exceed emails delivered.
     abandoned_cart_sent: int = 0
+    # Abandoned-cart emails Resend reported as sent in the window
+    # (public.email_events): distinct emails per event type, then how many of
+    # their users topped up / started a run after that email was sent, up to
+    # when this digest ran. Events after the digest are counted in no digest.
+    # None = the ledger / tool_jobs read failed.
+    # cart_events_ok False = email_events unreadable (both email blocks).
+    cart_events_ok: bool = True
+    cart_events: Dict[str, int] = field(default_factory=dict)
+    # Every kind, same cohort rule: one _rate_line dict per kind / provider group.
+    deliverability: List[Dict[str, Any]] = field(default_factory=list)
+    deliverability_by_provider: List[Dict[str, Any]] = field(default_factory=list)
+    cart_topped_up: Optional[int] = 0
+    cart_ran_job: Optional[int] = 0
     # False when auth.users could not be listed: internal_ids stays empty,
     # so runs, events and money include internal accounts.
     internal_filter_ok: bool = True
@@ -337,6 +391,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
 
     # --- 3. Tool runs in window -------------------------------------------
     run_rows: List[dict] = []
+    runs_ok = True
     try:
         run_rows = (
             client.table("tool_jobs")
@@ -347,6 +402,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
             or []
         )
     except Exception:
+        runs_ok = False
         logger.warning("digest: tool_jobs query failed", exc_info=True)
     run_rows = [r for r in run_rows if r.get("user_id") not in internal_ids]
 
@@ -591,7 +647,106 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         reverse=True,
     )
 
+    # --- 8. Email delivery (public.email_events) ---------------------------
+    _fold_email_events(payload, client, window_start_iso, internal_ids,
+                      payment_rows if payload.money_ok else None,
+                      run_rows if runs_ok else None)
+
     return payload
+
+
+def _email_event_rows(client, since_iso: str) -> List[dict]:
+    rows: List[dict] = []
+    while True:
+        page = (
+            client.table("email_events")
+            .select("svix_id,resend_email_id,event_type,recipient,email_kind,user_id,event_at")
+            .gte("received_at", since_iso)
+            .order("svix_id")
+            .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(page)
+        if len(page) < _LEDGER_PAGE:
+            return rows
+
+
+def _sent_cohort(rows, keep) -> dict:
+    """resend_email_id -> its ``sent`` row, for sent rows ``keep`` accepts."""
+    return {r["resend_email_id"]: r for r in rows
+            if r.get("event_type") == "sent" and keep(r)}
+
+
+def _distinct_by_type(rows, cohort) -> Dict[str, int]:
+    seen: dict = defaultdict(set)
+    for r in rows:
+        if r.get("resend_email_id") in cohort:
+            seen[r.get("event_type")].add(r["resend_email_id"])
+    return {t: len(ids) for t, ids in seen.items()}
+
+
+def _fold_email_events(payload, client, since_iso, internal_ids,
+                       payment_rows, run_rows) -> None:
+    """Reads events stored (``received_at``) since ``since_iso``, so a
+    webhook Resend retried late still lands in a digest. Cart cohort = emails
+    whose ``sent`` event is among them; their events count up to now."""
+    try:
+        rows = _email_event_rows(client, since_iso)
+    except Exception:
+        payload.cart_events_ok = False
+        logger.warning("digest: email_events query failed", exc_info=True)
+        return
+
+    def external(r):
+        return (r.get("user_id") not in internal_ids
+                and not _is_internal(r.get("recipient")))
+
+    # Deliverability, every kind: events received in the window, whenever the
+    # email was sent, so a late bounce or complaint lands in the next digest.
+    by_kind: dict = defaultdict(lambda: defaultdict(set))
+    by_group: dict = defaultdict(lambda: defaultdict(set))
+    for r in rows:
+        if external(r):
+            email_id, type_ = r.get("resend_email_id"), r.get("event_type")
+            by_kind[r.get("email_kind") or "untagged"][type_].add(email_id)
+            by_group[_provider_group(r.get("recipient"))][type_].add(email_id)
+
+    def _lines(groups, order):
+        return [
+            _rate_line(label, {t: len(ids) for t, ids in groups[label].items()})
+            for label in order if label in groups
+        ]
+
+    payload.deliverability = _lines(by_kind, sorted(by_kind))
+    payload.deliverability_by_provider = _lines(by_group, (CHINA_GROUP, OTHER_GROUP))
+
+    # Abandoned cart: emails sent in the window, their events up to now.
+    cohort = _sent_cohort(rows, external)
+    cart = {k: r for k, r in cohort.items() if r.get("email_kind") == "abandoned_cart"}
+    counts = _distinct_by_type(rows, cart)
+    payload.cart_events = {
+        t: counts.get(t, 0)
+        for t in ("sent", "delivered", "delivery_delayed", "bounced", "opened", "clicked")
+    }
+    first_send: dict = {}
+    for r in cart.values():
+        uid, ts = r.get("user_id"), str(r.get("event_at") or "")
+        if uid and (uid not in first_send or ts < first_send[uid]):
+            first_send[uid] = ts
+
+    def _after(rows_):
+        if rows_ is None:
+            return None
+        return len({
+            r.get("user_id") for r in rows_
+            if r.get("user_id") in first_send
+            and str(r.get("created_at") or "") > first_send[r.get("user_id")]
+        })
+
+    payload.cart_topped_up = _after(payment_rows)
+    payload.cart_ran_job = _after(run_rows)
 
 
 # ---------------------------------------------------------------------------

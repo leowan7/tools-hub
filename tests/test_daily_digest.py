@@ -287,3 +287,200 @@ def test_abandoned_cart_sends_counted_in_window_without_internal(monkeypatch):
     auth = [stamped(AUTH_USERS[0], RECENT), stamped(AUTH_USERS[2], RECENT),
             stamped(AUTH_USERS[3], OLD), AUTH_USERS[4]]
     assert _payload(monkeypatch, auth=auth).abandoned_cart_sent == 1
+
+
+def _cart_tables():
+    sent = (NOW - timedelta(hours=3)).isoformat()
+    before = (NOW - timedelta(hours=4)).isoformat()
+    after = (NOW - timedelta(hours=2)).isoformat()
+
+    def ev(i, email_id, type_, uid, at=sent, kind="abandoned_cart"):
+        return {"svix_id": f"m{i}", "resend_email_id": email_id, "event_type": type_,
+                "user_id": uid, "event_at": at, "received_at": at, "email_kind": kind}
+
+    t = _tables()
+    t["email_events"] = [
+        ev(1, "e-b", "sent", "u-b"), ev(2, "e-b", "delivered", "u-b"),
+        ev(3, "e-b", "opened", "u-b", after), ev(4, "e-b", "opened", "u-b", after),
+        ev(5, "e-b", "clicked", "u-b", after),
+        ev(6, "e-c", "sent", "u-c"), ev(7, "e-c", "bounced", "u-c"),
+        ev(8, "e-int", "sent", "u-int"),              # internal: left out
+        ev(9, "e-old", "delivered", "u-c"),           # its send is not in the window
+        ev(10, "e-w", "sent", "u-a", kind="welcome"),  # another kind
+        ev(11, "e-x", "sent", "u-a", at=OLD),          # sent before the window
+    ]
+    t["wallet_transactions"] = [
+        {"id": 1, "user_id": "u-b", "kind": "topup", "amount_usd": "10", "created_at": after},
+        {"id": 2, "user_id": "u-c", "kind": "topup", "amount_usd": "10", "created_at": before},
+        {"id": 3, "user_id": "u-int", "kind": "topup", "amount_usd": "10", "created_at": after},
+    ]
+    t["tool_jobs"] = [
+        {"user_id": "u-b", "tool": "boltz2", "status": "succeeded", "created_at": after},
+        {"user_id": "u-c", "tool": "boltz2", "status": "succeeded", "created_at": after},
+        {"user_id": "u-a", "tool": "boltz2", "status": "succeeded", "created_at": after},
+    ]
+    return t
+
+
+def test_abandoned_cart_delivery_block(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables())
+    assert p.cart_events_ok is True
+    # Cohort: e-b and e-c. The second "opened" on e-b counts once.
+    assert p.cart_events == {"sent": 2, "delivered": 1, "delivery_delayed": 0,
+                             "bounced": 1, "opened": 1, "clicked": 1}
+    # u-b topped up after the send; u-c's top-up came before it.
+    assert p.cart_topped_up == 1
+    # u-b and u-c ran after their sends; u-a got no cart email in the window.
+    assert p.cart_ran_job == 2
+
+
+def test_abandoned_cart_block_unreadable(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("email_events",))
+    assert p.cart_events_ok is False
+    assert p.cart_events == {}
+    assert p.payments_count == 2
+
+
+def test_abandoned_cart_unreadable_ledger_is_unknown_not_zero(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("wallet_transactions",))
+    assert p.cart_topped_up is None
+    assert p.cart_ran_job == 2
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("tool_jobs",))
+    assert p.cart_ran_job is None
+    assert p.cart_topped_up == 1
+
+
+def test_abandoned_cart_events_are_paged(monkeypatch):
+    monkeypatch.setattr(daily_digest, "_LEDGER_PAGE", 2)
+    p = _payload(monkeypatch, tables=_cart_tables())
+    assert p.cart_events["sent"] == 2
+    assert p.cart_events["clicked"] == 1
+
+
+def test_template_renders_cart_block(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables())
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    assert "2 sent, 1 delivered" in " ".join(html.split())
+    assert "then so far 1 topped up, 2 ran a job" in " ".join(html.split())
+
+
+@pytest.mark.parametrize("recipient, group", [
+    ("li@qq.com", daily_digest.CHINA_GROUP),
+    ("Li@FoxMail.com", daily_digest.CHINA_GROUP),
+    ("a@163.com", daily_digest.CHINA_GROUP),
+    ("a@126.com", daily_digest.CHINA_GROUP),
+    ("a@yeah.net", daily_digest.CHINA_GROUP),
+    ("a@sina.com", daily_digest.CHINA_GROUP),
+    ("a@sina.cn", daily_digest.CHINA_GROUP),
+    ("a@sohu.com", daily_digest.CHINA_GROUP),
+    ("a@aliyun.com", daily_digest.CHINA_GROUP),
+    ("a@139.com", daily_digest.CHINA_GROUP),
+    ("a@pku.edu.cn", daily_digest.CHINA_GROUP),
+    ("li@vip.qq.com", daily_digest.CHINA_GROUP),
+    ("a@vip.163.com", daily_digest.CHINA_GROUP),
+    ("a@188.com", daily_digest.CHINA_GROUP),
+    ("a@gmail.com", daily_digest.OTHER_GROUP),
+    ("a@qq.com.evil.io", daily_digest.OTHER_GROUP),
+    ("a@notqq.com", daily_digest.OTHER_GROUP),
+    (None, daily_digest.OTHER_GROUP),
+])
+def test_provider_group(recipient, group):
+    assert daily_digest._provider_group(recipient) == group
+
+
+@pytest.mark.parametrize("counts, flag", [
+    ({"sent": 100, "bounced": 4}, False),          # exactly 4%: not over
+    ({"sent": 100, "bounced": 5}, True),
+    ({"sent": 1000, "complained": 1}, False),      # exactly 0.1%: not over
+    ({"sent": 999, "complained": 1}, True),
+    ({"sent": 0}, False),
+    ({"sent": 0, "bounced": 1}, True),            # late bounce, nothing sent today
+    ({"sent": 0, "complained": 1}, True),
+])
+def test_rate_line_thresholds(counts, flag):
+    assert daily_digest._rate_line("x", counts)["flag"] is flag
+
+
+def _deliv_tables():
+    sent = (NOW - timedelta(hours=3)).isoformat()
+    t = _tables()
+    rows = []
+
+    def add(email_id, kind, recipient, *types, uid="u-b"):
+        for type_ in ("sent",) + types:
+            rows.append({"svix_id": f"{email_id}-{type_}", "resend_email_id": email_id,
+                         "event_type": type_, "recipient": recipient,
+                         "email_kind": kind, "user_id": uid, "event_at": sent,
+                         "received_at": sent})
+
+    add("w1", "welcome", "a@qq.com", "delivered")
+    add("w2", "welcome", "b@163.com", "bounced")
+    add("w3", "welcome", "c@gmail.com", "delivered")
+    add("w4", "welcome", "d@gmail.com", "delivery_delayed", "delivered", "complained")
+    add("t1", None, "e@gmail.com", "delivered")
+    add("d1", "daily_digest", "leo@ranomics.com", "delivered", uid=None)  # internal
+    t["email_events"] = rows
+    return t
+
+
+def test_deliverability_by_kind_and_provider(monkeypatch):
+    p = _payload(monkeypatch, tables=_deliv_tables())
+    by_label = {r["label"]: r for r in p.deliverability}
+    assert list(by_label) == ["untagged", "welcome"]
+    w = by_label["welcome"]
+    assert (w["sent"], w["delivered"], w["delayed"], w["bounced"], w["complained"]) == (4, 3, 1, 1, 1)
+    assert w["bounce_rate"] == 0.25 and w["flag"] is True
+    assert by_label["untagged"]["flag"] is False
+    groups = {r["label"]: r for r in p.deliverability_by_provider}
+    assert list(groups) == [daily_digest.CHINA_GROUP, daily_digest.OTHER_GROUP]
+    assert (groups[daily_digest.CHINA_GROUP]["sent"], groups[daily_digest.CHINA_GROUP]["bounced"]) == (2, 1)
+    assert (groups[daily_digest.OTHER_GROUP]["sent"], groups[daily_digest.OTHER_GROUP]["complained"]) == (3, 1)
+
+
+def test_deliverability_renders_without_addresses_or_open_columns(monkeypatch):
+    p = _payload(monkeypatch, tables=_deliv_tables())
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    text = " ".join(html.split())
+    assert "Email deliverability" in text
+    assert "Chinese providers" in text and "1 (50.0%)" in text
+    for addr in ("a@qq.com", "b@163.com", "c@gmail.com", "d@gmail.com", "e@gmail.com"):
+        assert addr not in html
+    assert "opened" not in text.lower() and "clicked" not in text.lower()
+
+
+def test_late_bounce_counts_in_the_next_digest(monkeypatch):
+    t = _tables()
+    t["email_events"] = [
+        {"svix_id": "s", "resend_email_id": "old", "event_type": "sent",
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b",
+         "event_at": OLD, "received_at": OLD},
+        # Bounced before the window, but the webhook was only stored inside it.
+        {"svix_id": "b", "resend_email_id": "old", "event_type": "bounced",
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b",
+         "event_at": OLD, "received_at": RECENT},
+    ]
+    p = _payload(monkeypatch, tables=t)
+    (line,) = p.deliverability
+    assert (line["sent"], line["bounced"], line["bounce_rate"]) == (0, 1, None)
+    assert line["flag"] is True
+    assert p.deliverability_by_provider[0]["label"] == daily_digest.CHINA_GROUP
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        assert "Email deliverability" in daily_digest.render_digest_html(p)
+
+
+def test_cart_row_omits_open_and_click_when_none(monkeypatch):
+    tables = _cart_tables()
+    tables["email_events"] = [r for r in tables["email_events"]
+                              if r["event_type"] not in ("opened", "clicked")]
+    p = _payload(monkeypatch, tables=tables)
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    text = " ".join(html.split())
+    assert "1 bounced, then so far 1 topped up" in text
+    assert "opened" not in text and "clicked" not in text

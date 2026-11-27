@@ -172,6 +172,7 @@ from blueprints.wallet import wallet_bp
 from blueprints.tools import tools_bp
 from blueprints.prep import prep_bp
 from webhooks.modal import register_modal_webhooks
+from webhooks.resend import register_resend_webhook
 from webhooks.stripe import register_stripe_webhook
 from webhooks.uploads import register_upload_urls
 
@@ -832,6 +833,9 @@ def create_app() -> Flask:
     # Stripe webhook — mounted at /webhooks/stripe. Signature verification
     # + event_id idempotency live inside webhooks/stripe.py.
     register_stripe_webhook(flask_app)
+
+    # Resend delivery events -- /webhooks/resend (webhooks/resend.py).
+    register_resend_webhook(flask_app)
 
     # Prometheus /metrics (IP-allowlisted) + /healthz readiness probe.
     # The existing /health liveness probe below stays as a dumb 200.
