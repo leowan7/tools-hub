@@ -378,6 +378,9 @@ def test_template_renders_cart_block(monkeypatch):
     ("a@aliyun.com", daily_digest.CHINA_GROUP),
     ("a@139.com", daily_digest.CHINA_GROUP),
     ("a@pku.edu.cn", daily_digest.CHINA_GROUP),
+    ("li@vip.qq.com", daily_digest.CHINA_GROUP),
+    ("a@vip.163.com", daily_digest.CHINA_GROUP),
+    ("a@188.com", daily_digest.CHINA_GROUP),
     ("a@gmail.com", daily_digest.OTHER_GROUP),
     ("a@qq.com.evil.io", daily_digest.OTHER_GROUP),
     ("a@notqq.com", daily_digest.OTHER_GROUP),
@@ -444,6 +447,23 @@ def test_deliverability_renders_without_addresses_or_open_columns(monkeypatch):
     for addr in ("a@qq.com", "b@163.com", "c@gmail.com", "d@gmail.com", "e@gmail.com"):
         assert addr not in html
     assert "opened" not in text.lower() and "clicked" not in text.lower()
+
+
+def test_late_bounce_counts_in_the_next_digest(monkeypatch):
+    t = _tables()
+    t["email_events"] = [
+        {"svix_id": "s", "resend_email_id": "old", "event_type": "sent",
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b", "event_at": OLD},
+        {"svix_id": "b", "resend_email_id": "old", "event_type": "bounced",
+         "recipient": "x@qq.com", "email_kind": "welcome", "user_id": "u-b", "event_at": RECENT},
+    ]
+    p = _payload(monkeypatch, tables=t)
+    (line,) = p.deliverability
+    assert (line["sent"], line["bounced"], line["bounce_rate"]) == (0, 1, None)
+    assert p.deliverability_by_provider[0]["label"] == daily_digest.CHINA_GROUP
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        assert "Email deliverability" in daily_digest.render_digest_html(p)
 
 
 def test_cart_row_omits_open_and_click_when_none(monkeypatch):

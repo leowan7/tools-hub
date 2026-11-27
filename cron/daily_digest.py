@@ -66,7 +66,8 @@ CHINA_GROUP = "Chinese providers"
 OTHER_GROUP = "Everyone else"
 _CHINA_DOMAINS = frozenset({
     "qq.com", "foxmail.com", "163.com", "126.com", "yeah.net", "sina.com",
-    "sina.cn", "sohu.com", "aliyun.com", "139.com",
+    "sina.cn", "sohu.com", "aliyun.com", "139.com", "188.com", "21cn.com",
+    "tom.com",
 })
 # Flag levels: a bounce rate over 4% or a complaint rate over 0.1% of sent.
 BOUNCE_FLAG = 0.04
@@ -75,7 +76,9 @@ COMPLAINT_FLAG = 0.001
 
 def _provider_group(recipient: Optional[str]) -> str:
     domain = (recipient or "").rpartition("@")[2].strip().lower()
-    if domain in _CHINA_DOMAINS or domain.endswith(".cn"):
+    if domain.endswith(".cn") or any(
+        domain == d or domain.endswith("." + d) for d in _CHINA_DOMAINS
+    ):
         return CHINA_GROUP
     return OTHER_GROUP
 
@@ -698,23 +701,27 @@ def _fold_email_events(payload, client, since_iso, internal_ids,
         return (r.get("user_id") not in internal_ids
                 and not _is_internal(r.get("recipient")))
 
-    # Deliverability, every kind.
-    cohort = _sent_cohort(rows, external)
-    by_kind: dict = defaultdict(dict)
-    by_group: dict = defaultdict(dict)
-    for email_id, r in cohort.items():
-        by_kind[r.get("email_kind") or "untagged"][email_id] = r
-        by_group[_provider_group(r.get("recipient"))][email_id] = r
-    payload.deliverability = [
-        _rate_line(kind, _distinct_by_type(rows, ids))
-        for kind, ids in sorted(by_kind.items())
-    ]
-    payload.deliverability_by_provider = [
-        _rate_line(group, _distinct_by_type(rows, by_group[group]))
-        for group in (CHINA_GROUP, OTHER_GROUP) if group in by_group
-    ]
+    # Deliverability, every kind: events received in the window, whenever the
+    # email was sent, so a late bounce or complaint lands in the next digest.
+    by_kind: dict = defaultdict(lambda: defaultdict(set))
+    by_group: dict = defaultdict(lambda: defaultdict(set))
+    for r in rows:
+        if external(r):
+            email_id, type_ = r.get("resend_email_id"), r.get("event_type")
+            by_kind[r.get("email_kind") or "untagged"][type_].add(email_id)
+            by_group[_provider_group(r.get("recipient"))][type_].add(email_id)
 
-    # Abandoned cart.
+    def _lines(groups, order):
+        return [
+            _rate_line(label, {t: len(ids) for t, ids in groups[label].items()})
+            for label in order if label in groups
+        ]
+
+    payload.deliverability = _lines(by_kind, sorted(by_kind))
+    payload.deliverability_by_provider = _lines(by_group, (CHINA_GROUP, OTHER_GROUP))
+
+    # Abandoned cart: emails sent in the window, their events up to now.
+    cohort = _sent_cohort(rows, external)
     cart = {k: r for k, r in cohort.items() if r.get("email_kind") == "abandoned_cart"}
     counts = _distinct_by_type(rows, cart)
     payload.cart_events = {

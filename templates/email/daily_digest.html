@@ -106,12 +106,12 @@
       <td style="padding:4px 0;text-align:right;">{{ row.sent }}</td>
       <td style="padding:4px 0;text-align:right;">{{ row.delivered }}</td>
       <td style="padding:4px 0;text-align:right;">{{ row.delayed }}</td>
-      <td style="padding:4px 0;text-align:right;">{{ row.bounced }} ({{ '%.1f' % (100 * row.bounce_rate) }}%)</td>
-      <td style="padding:4px 0;text-align:right;">{{ row.complained }} ({{ '%.2f' % (100 * row.complaint_rate) }}%)</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.bounced }}{% if row.bounce_rate is not none %} ({{ '%.1f' % (100 * row.bounce_rate) }}%){% endif %}</td>
+      <td style="padding:4px 0;text-align:right;">{{ row.complained }}{% if row.complaint_rate is not none %} ({{ '%.2f' % (100 * row.complaint_rate) }}%){% endif %}</td>
     </tr>
     {% endfor %}
   </table>
-  <p style="font-size:12px;color:#888;margin:0;">Emails sent in the window, by kind, then by recipient provider. &#9888; = bounces over 4% or complaints over 0.1% of sent.</p>
+  <p style="font-size:12px;color:#888;margin:0;">Distinct emails per event received in the window, by kind, then by recipient provider; a bounce or complaint on an earlier email counts here, so rates are per email sent in the window. &#9888; = bounces over 4% or complaints over 0.1% of sent.</p>
   {% endif %}
 
   {# ------- Section 1b: Money ------- #}
