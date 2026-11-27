@@ -343,7 +343,7 @@ _SECTION_ANCHORS = {
     "meta / seo_faq": "How are Proteina-Complexa designs scored and ranked?",
     "meta / reward_attributions": "AlphaFold2 parameters",
     "meta / comparison_one_liner": "You have a hard protein target",
-    "meta / EXAMPLE": "A two-chain human secreted protein",
+    "meta / EXAMPLE": "two-chain human secreted protein",
     # Re-pointed 2026-09-24: the blurb said "Upload a protein or
     # small-molecule target" until the small-molecule promise was removed.
     "adapter / blurb": "name the chain and the residues you want gripped",
