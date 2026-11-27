@@ -1,4 +1,4 @@
-"""Abandoned-cart email: selection rules, flag gate, bilingual template."""
+"""Abandoned-cart email: selection rules, flag gate, English template."""
 
 from __future__ import annotations
 
@@ -169,27 +169,28 @@ def _render(monkeypatch, cand, *, wechat):
     return sent
 
 
-def test_email_names_the_tool_in_both_languages_with_links(monkeypatch):
+def test_email_names_the_tool_with_links_in_english_only(monkeypatch):
     sent = _render(monkeypatch, ac.Candidate("u1", "a@lab.org", "boltz2", "Boltz-2"), wechat=False)
     for body in (sent["html_body"], sent["text_body"]):
         assert "Your Boltz-2 run is waiting" in body
-        assert "您的 Boltz-2 任务还在等您" in body
         assert "https://t.example/tools/boltz2?utm_source=email&" in body.replace("&amp;", "&")
         assert "/account/wallet/topup?tool=boltz2&utm_source=email&utm_medium=abandoned_cart" \
             in body.replace("&amp;", "&")
-        assert "it is not charged" in body and "不收取费用" in body
-        assert "WeChat" not in body and "微信" not in body
+        assert "it is not charged" in body
+        assert not any("\u4e00" <= ch <= "\u9fff" for ch in body)
+        assert "WeChat" not in body
         assert "$" not in body
-    assert "Boltz-2" in sent["subject"] and sent["unsubscribe_link"]
+    assert sent["subject"] == "Your Boltz-2 run is waiting" and sent["unsubscribe_link"]
     assert "/email/unsubscribe/" in sent["html_body"]
 
 
 def test_email_mentions_wechat_only_when_the_flag_is_on(monkeypatch):
     sent = _render(monkeypatch, ac.Candidate("u1", "a@lab.org"), wechat=True)
     for body in (sent["html_body"], sent["text_body"]):
-        assert "WeChat Pay" in body and "微信支付" in body
+        assert "WeChat Pay" in body
         assert "https://t.example/tools?utm_source=email" in body
-        assert "Your run is waiting" in body and "您的任务还在等您" in body
+        assert "Your run is waiting" in body
+    assert sent["subject"] == "Your Ranomics Tools run is waiting"
 
 
 class _Q:

@@ -1413,7 +1413,7 @@ def send_reengagement_email(
 
 
 def send_abandoned_cart_email(*, candidate, base_url: str) -> bool:  # noqa: ANN001
-    """Abandoned-cart email (cron/abandoned_cart.py), English then Chinese.
+    """Abandoned-cart email (cron/abandoned_cart.py), English only.
 
     Returns True on confirmed send. Raises ``RecipientRejected`` when Resend
     refuses the address; other failures are logged and return False.
@@ -1426,11 +1426,11 @@ def send_abandoned_cart_email(*, candidate, base_url: str) -> bool:  # noqa: ANN
         return False
     tool, label = candidate.tool, candidate.tool_label
     if tool and label:
-        subject = f"Your {label} run is waiting | 您的 {label} 任务还在等您"
+        subject = f"Your {label} run is waiting"
         tool_url = with_utm(f"{base_url}/tools/{tool}")
         topup_url = with_utm(f"{base_url}/account/wallet/topup?tool={tool}")
     else:
-        subject = "Your Ranomics Tools run is waiting | 您的 Ranomics Tools 任务还在等您"
+        subject = "Your Ranomics Tools run is waiting"
         label = ""
         tool_url = with_utm(f"{base_url}/tools")
         topup_url = with_utm(f"{base_url}/account/wallet/topup")
