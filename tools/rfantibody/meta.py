@@ -187,92 +187,100 @@ PILOT: dict | None = {
 # carries it and the form help has been corrected to match.
 EXAMPLE: dict | None = {
     "target": (
-        "Human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
-        "Hotspots Ile54, Tyr56 and Met115."
+        "The target is human PD-L1, the IgV domain, taken as chain A of "
+        "<strong>PDB 4ZQK</strong>, the solved PD-1/PD-L1 complex. The "
+        "hotspots are Ile54, Tyr56 and Met115."
     ),
     "why_this_target": (
-        "The same target, chain and hotspots as the RFdiffusion, BoltzGen and "
-        "BindCraft examples on this site. That makes four generators aimed at "
-        "one epitope, and this is the only one of the four that answers with "
-        "an <em>antibody</em> &mdash; a VHH nanobody, framework fixed, with "
-        "only the three heavy-chain CDR loops designed. So the comparison "
-        "worth making across those four pages is not which tool scores "
-        "higher. It is what shape of molecule you get back for the same "
-        "request."
+        "This run uses the same target, chain and hotspots as the "
+        "RFdiffusion, BoltzGen and BindCraft examples on this site. "
+        "That makes four generators aimed at one epitope, and this is "
+        "the only one of the four that answers with an "
+        "<em>antibody</em>, a VHH nanobody whose framework is fixed and "
+        "in which only the three heavy-chain CDR loops are designed. So "
+        "the comparison worth making across those four pages is not "
+        "which tool scores higher; it is what shape of molecule you get "
+        "back for the same request."
     ),
     "inputs_used": [
         (
             "Target PDB",
             "the 4ZQK file, uploaded whole",
-            "Both chains, exactly as it downloads from the PDB. Chain A keeps "
-            "its crystal numbering 18-132, which is the numbering the hotspot "
-            "field expects.",
+            "We uploaded the 4ZQK file whole, with both chains, exactly "
+            "as it downloads from the PDB. Chain A keeps its crystal "
+            "numbering 18-132, which is the numbering the hotspot field "
+            "expects.",
         ),
         (
             "Target chain",
             "A",
-            "Restricts the design to PD-L1. Chain B in the same file is PD-1, "
-            "the natural partner; leaving it in the upload is harmless "
-            "because the run only reads the chain you name here.",
+            "We named chain A, which restricts the design to PD-L1. "
+            "Chain B in the same file is PD-1, the natural partner, and "
+            "leaving it in the upload is harmless because the run only "
+            "reads the chain you name here.",
         ),
         (
             "Hotspot residues",
             "54, 56, 115",
-            "Ile54, Tyr56 and Met115 in the file's own numbering &mdash; the "
-            "face PD-1 covers.",
+            "We gave 54, 56 and 115, which are Ile54, Tyr56 and Met115 "
+            "in the file's own numbering, the face PD-1 covers.",
         ),
         (
             "CDR lengths",
             "H1:8, H2:7, H3:10-16",
-            "The three heavy-chain loops. H1 and H2 are pinned at their "
-            "common lengths; H3 is given a range because it is the loop that "
-            "does most of the binding, so its length is the thing worth "
-            "sampling rather than fixing.",
+            "We set H1 to 8, H2 to 7 and H3 to a range of 10 to 16, "
+            "covering the three heavy-chain loops. H1 and H2 are pinned "
+            "at their common lengths, while H3 is given a range because "
+            "it is the loop that does most of the binding, so its "
+            "length is the thing worth sampling rather than fixing.",
         ),
         (
             "Number of backbones (5 candidates each)",
             "4",
-            "Four backbones &mdash; and this is the input to understand "
-            "before you spend. The field sets the backbone count, not the "
-            "candidate count: ProteinMPNN then designs five sequences on each "
-            "one, so four here returned <strong>20</strong> scored candidates "
-            "and twenty rows in the table below. Whatever you type, expect "
-            "five times as many rows and roughly five times the work.",
+            "We asked for four backbones, and this is the input to "
+            "understand before you spend. The field sets the backbone "
+            "count, not the candidate count: ProteinMPNN then designs "
+            "five sequences on each one, so four here returned "
+            "<strong>20</strong> scored candidates and twenty rows in "
+            "the table below. Whatever you type, expect five times as "
+            "many rows and roughly five times the work.",
         ),
     ],
     "what_came_back": (
-        "20 candidates. <strong>Five meet every bar; fifteen "
-        "do not.</strong> Interface pAE runs 3.72 to 17.48 &Aring;, global "
-        "pAE 2.68 to 9.84 &Aring;, and pLDDT 87 to 91."
+        "20 candidates came back, and <strong>five meet every bar while "
+        "fifteen do not.</strong> Interface pAE runs 3.72 to 17.48 "
+        "&Aring;, global pAE runs 2.68 to 9.84 &Aring;, and pLDDT runs "
+        "87 to 91."
     ),
     "how_to_read_it": (
-        "Start with the column that does <em>not</em> help. pLDDT is 87 to 91 "
-        "across all twenty, every failing candidate included, so all twenty "
-        "clear the 80 bar and the column separates nothing at all. That is "
-        "the normal case for an antibody run rather than a fault: the "
-        "framework is a real nanobody scaffold, so of course it folds. "
-        "Confidently folded is not bound. "
-        "<strong>The column that separates is ipAE</strong>, and it splits "
-        "cleanly instead of tailing off &mdash; five candidates between 3.72 "
-        "and 7.69 &Aring;, then nothing whatsoever until 12.56, then fifteen "
-        "more out to 17.48. A gap that wide is the real signal here. It says "
-        "the five are a different outcome from the fifteen, not merely the "
-        "top of a continuum, which is a much safer thing to act on than a "
-        "ranking. Global pAE agrees exactly: under 5 &Aring; for all five, "
-        "above 7 for every other one. The <em>vs. quality bar</em> column "
-        "spells it out per row &mdash; every rejection names ipAE and pAE, "
-        "and not one of them names pLDDT."
+        "Start with the column that does <em>not</em> help. pLDDT is 87 "
+        "to 91 across all twenty, every failing candidate included, so "
+        "all twenty clear the 80 bar and the column separates nothing "
+        "at all. That is the normal case for an antibody run rather "
+        "than a fault: the framework is a real nanobody scaffold, so of "
+        "course it folds. Confidently folded is not bound. <strong>The "
+        "column that separates is ipAE</strong>, and it splits cleanly "
+        "instead of tailing off, with five candidates between 3.72 and "
+        "7.69 &Aring;, then nothing whatsoever until 12.56, then "
+        "fifteen more out to 17.48. A gap that wide is the real signal "
+        "here. It says the five are a different outcome from the "
+        "fifteen, not merely the top of a continuum, which is a much "
+        "safer thing to act on than a ranking. Global pAE agrees "
+        "exactly, at under 5 &Aring; for all five and above 7 for every "
+        "other one. The <em>vs. quality bar</em> column spells it out "
+        "per row, where every rejection names ipAE and pAE and not one "
+        "of them names pLDDT."
     ),
     "what_we_did_next": (
-        "Treated the five as the only rows carrying information, and the size "
-        "of the ipAE gap as the reason to trust that split rather than "
-        "hedging down the list. On a real target the next run is more "
-        "backbones at these same settings &mdash; remembering the five-to-one "
-        "again, so the bill climbs faster than the number you type &mdash; "
-        "then an independent re-fold of the few that clear the bar, then "
-        "yeast display, and SPR or BLI only after that. Twenty candidates off "
-        "four backbones is a screen, not a shortlist."
+        "We treated the five as the only rows carrying information, and "
+        "the size of the ipAE gap as the reason to trust that split "
+        "rather than hedging down the list. On a real target the next "
+        "run is more backbones at these same settings, remembering the "
+        "five-to-one again, so the bill climbs faster than the number "
+        "you type. After that comes an independent re-fold of the few "
+        "that clear the bar, then yeast display, and SPR or BLI only "
+        "after that. Twenty candidates off four backbones is a screen, "
+        "not a shortlist."
     ),
     "cost_usd": "1.01",
     "runtime": "14 minutes",

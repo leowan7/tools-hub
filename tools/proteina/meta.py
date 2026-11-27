@@ -471,126 +471,132 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "A two-chain human secreted protein, about 210 residues per chain, "
-        "from a solved crystal structure. Eighteen hotspot residues, nine on "
-        "each chain, across the two-fold interface where the chains meet."
+        "The target is a two-chain human secreted protein of about 210 "
+        "residues per chain, taken from a solved crystal structure. We "
+        "named eighteen hotspot residues, nine on each chain, across "
+        "the two-fold interface where the chains meet."
     ),
     "why_this_target": (
-        "The site sits on a symmetry axis, so a binder has to reach both "
-        "chains at once rather than settle on either one. It is also a "
-        "target whose own sequence the generator already knows well, which "
-        "turns out to be what this run is worth reading for."
+        "The site sits on a symmetry axis, so a binder has to reach "
+        "both chains at once rather than settle on either one. It is "
+        "also a target whose own sequence the generator already knows "
+        "well, which turns out to be what this run is worth reading "
+        "for."
     ),
     "inputs_used": [
         (
             "Target structure",
             "the two-chain crystal structure, chains A and B",
-            "Both chains staged and both named as target chains. Give one "
-            "chain and the model designs against half a site that does not "
-            "exist on its own.",
+            "We staged the two-chain crystal structure and named both "
+            "chains A and B as target chains. Give one chain and the "
+            "model designs against half a site that does not exist on "
+            "its own.",
         ),
         (
             "Hotspot residues",
             "18 residues, 9 per chain, each written with its chain letter",
-            "The chain letter is required once a run names more than one "
-            "target chain, and the form refuses a bare <code>241</code> "
-            "there. It has to: the model matches hotspots literally as "
-            "chain plus number, and on a homodimer whose two protomers "
-            "share one numbering a bare token would resolve to chain A "
-            "alone &mdash; a run that looks symmetric and is not. Writing "
-            "<code>A241</code> and <code>B241</code> is what makes the ask "
-            "symmetric.",
+            "We named 18 hotspot residues, 9 per chain, each written "
+            "with its chain letter. The chain letter is required once a "
+            "run names more than one target chain, and the form refuses "
+            "a bare <code>241</code> there. It has to, because the "
+            "model matches hotspots literally as chain plus number, and "
+            "on a homodimer whose two protomers share one numbering a "
+            "bare token would resolve to chain A alone, which is a run "
+            "that looks symmetric and is not. Writing <code>A241</code> "
+            "and <code>B241</code> is what makes the ask symmetric.",
         ),
         (
             "Binder length (residues)",
             "60 to 69",
-            "A window, not a number &mdash; the generator draws a length "
-            "per design. Leaving the field empty gives you 60 to 120; this "
-            "is the bottom of that default, where binders are cheaper to "
-            "fold and easier to order later.",
+            "We set the binder length to a window of 60 to 69 residues "
+            "rather than a single number, because the generator draws a "
+            "length per design. Leaving the field empty gives you 60 to "
+            "120, and this is the bottom of that default, where binders "
+            "are cheaper to fold and easier to order later.",
         ),
         (
             "Number of designs",
             "64",
-            "Type 64 here and the run splits into eight shards of 8 "
-            "&mdash; not one shard of 64. Every shard the form can launch "
-            "is a fixed 8-design search and this box buys shards, so the "
-            "ranked list comes back pooled across all eight. The run below "
-            "is a single 64-design container, because it came from the "
-            "internal sweep driver, which widens one shard to 16 samples "
-            "with 4 replicas each; the form exposes neither control. That "
-            "width is also why how long it ran says nothing about what an "
-            "8-design shard launched from this form does. "
-            "The settings are reproducible; the "
+            "We typed 64 here, and the run splits into eight shards of "
+            "8, not one shard of 64. Every shard the form can launch is "
+            "a fixed 8-design search and this box buys shards, so the "
+            "ranked list comes back pooled across all eight. The run "
+            "below is a single 64-design container, because it came "
+            "from the internal sweep driver, which widens one shard to "
+            "16 samples with 4 replicas each, and the form exposes "
+            "neither control. That width is also why how long it ran "
+            "says nothing about what an 8-design shard launched from "
+            "this form does. The settings are reproducible, but the "
             "single-container shape of the table below is not.",
         ),
         (
             "Design variant",
             "Protein binder (de novo, vs a protein target)",
-            "The only variant that designs against a structure you upload; "
-            "the others run curated ligand and motif benchmarks. It is also "
-            "why the table below has no <code>rf3_score</code> column: "
-            "RF3 is a second scoring stack those other "
-            "variants need, a protein binder run does not, and it is not "
-            "free. That is a consequence of this choice rather than a switch "
-            "of its own &mdash; there is no RF3 control on the form.",
+            "We chose the protein binder variant, which is the only "
+            "variant that designs against a structure you upload, since "
+            "the others run curated ligand and motif benchmarks. It is "
+            "also why the table below has no <code>rf3_score</code> "
+            "column: RF3 is a second scoring stack those other variants "
+            "need, a protein binder run does not, and it is not free. "
+            "That follows from this choice rather than being a switch "
+            "of its own, because there is no RF3 control on the form.",
         ),
     ],
     "what_came_back": (
-        "64 designs, of which <strong>12 passed</strong> &mdash; ipTM at or "
-        "above 0.80 with the re-folded complex landing within 5 &Aring;. "
-        "They are ranks 1 to 11 and 13, so on this shard the ranking and the "
-        "filter agree: the top of the table is the answer. Rank 12 is the "
-        "one row you cannot settle from the table by eye. It prints the "
-        "same <code>0.80</code> as rank 13 and re-folds just as tightly "
-        "(1.26 &Aring; against 1.24 &Aring;), and it is out all the same: "
-        "the column rounds to two places, and the 0.80 line is drawn on the "
-        "stored ipTM &mdash; rank 12 falls just short of it where rank 13 "
-        "just clears. The best scored "
-        "ipTM 0.89 at pLDDT 88.50, re-folding 1.32 &Aring; from where the "
-        "generator put it. "
-        "Of the 52 that did not pass, 30 failed on the re-fold. "
-        "<strong>Twelve of those 30 are the model handing the target's own "
-        "sequence back as the binder</strong> &mdash; literal copies of a "
-        "stretch of the chain it was asked to bind."
+        "64 designs came back, of which <strong>12 passed</strong>, "
+        "meaning ipTM at or above 0.80 with the re-folded complex "
+        "landing within 5 &Aring;. They are ranks 1 to 11 and 13, so on "
+        "this shard the ranking and the filter agree, and the top of "
+        "the table is the answer. Rank 12 is the one row you cannot "
+        "settle from the table by eye. It prints the same "
+        "<code>0.80</code> as rank 13 and re-folds just as tightly, at "
+        "1.26 &Aring; against 1.24 &Aring;, and it is out all the same, "
+        "because the column rounds to two places and the 0.80 line is "
+        "drawn on the stored ipTM, so rank 12 falls just short of it "
+        "where rank 13 just clears. The best scored ipTM 0.89 at pLDDT "
+        "88.50, re-folding 1.32 &Aring; from where the generator put "
+        "it. Of the 52 that did not pass, 30 failed on the re-fold. "
+        "<strong>Twelve of those 30 are the model handing the target's "
+        "own sequence back as the binder</strong>, which is to say "
+        "literal copies of a stretch of the chain it was asked to bind."
     ),
     "how_to_read_it": (
         "<strong>Read <code>binder_scrmsd</code> before you trust "
         "<code>af2_plddt</code>.</strong> The twelve copies score pLDDT "
-        "70.79 to 75.65 &mdash; unremarkable, nothing that reads as broken "
-        "&mdash; while their <code>binder_scrmsd</code> is 32 to 44 &Aring; "
-        "against a median of 2.0 &Aring; for everything else. That column "
-        "is the generator's backbone compared against an independent re-fold "
-        "of its own sequence, and a target fragment re-folds into the target's "
-        "shape rather than the shape it was drawn as. "
-        "ipTM agrees (the twelve print 0.09 or 0.10, against a 0.67 median "
-        "for the rest) and "
-        "<code>total_reward</code> sends all twelve to ranks 51 to 64, so "
-        "reading the top of the table is safe. Reading the whole table is "
-        "what needs this paragraph. "
-        "<strong>The scores shortlist; they do not diagnose.</strong> "
-        "Thirteen rows here carry that profile &mdash; re-fold past 30 "
-        "&Aring; at ipTM under 0.10 before rounding &mdash; and twelve of "
-        "them are copies. "
-        "The thirteenth, at rank 55, is an ordinary de-novo sequence that "
-        "shares 4% of itself with the target and simply failed to re-fold. "
-        "Its pLDDT is 58.38, below the band the twelve sit in, but that gap "
-        "is one shard's worth of evidence and not a rule. We know which "
-        "twelve because we compared each sequence against the target's, "
-        "which takes a substring search and no GPU. If a row of yours looks "
-        "like this, that comparison is the check that settles it."
+        "70.79 to 75.65, which is unremarkable and reads as nothing "
+        "broken, while their <code>binder_scrmsd</code> is 32 to 44 "
+        "&Aring; against a median of 2.0 &Aring; for everything else. "
+        "That column is the generator's backbone compared against an "
+        "independent re-fold of its own sequence, and a target fragment "
+        "re-folds into the target's shape rather than the shape it was "
+        "drawn as. ipTM agrees, since the twelve print 0.09 or 0.10 "
+        "against a 0.67 median for the rest, and "
+        "<code>total_reward</code> sends all twelve to ranks 51 to 64, "
+        "so reading the top of the table is safe. Reading the whole "
+        "table is what needs this paragraph. <strong>The scores "
+        "shortlist; they do not diagnose.</strong> Thirteen rows here "
+        "carry that profile, a re-fold past 30 &Aring; at ipTM under "
+        "0.10 before rounding, and twelve of them are copies. The "
+        "thirteenth, at rank 55, is an ordinary de-novo sequence that "
+        "shares 4% of itself with the target and simply failed to re- "
+        "fold. Its pLDDT is 58.38, below the band the twelve sit in, "
+        "but that gap is one shard's worth of evidence and not a rule. "
+        "We know which twelve because we compared each sequence against "
+        "the target's, which takes a substring search and no GPU. If a "
+        "row of yours looks like this, that comparison is the check "
+        "that settles it."
     ),
     "what_we_did_next": (
-        "Scaled the same settings out to 17,024 designs across four rounds. "
-        "Target self-copies ran at 29% of everything generated and "
-        "<strong>not one of them ever cleared ipTM 0.80</strong>, so the "
-        "score gate that was already there kept them out of every shortlist. "
-        "That is the reassuring version: on this target the failure mode is "
-        "loud and it is caught. It is worth a look at your own output anyway, "
-        "because nothing in the tool is checking for it. "
-        "One note on price. A run settles on the GPU seconds it actually "
-        "used, not on a flat per-run figure, so you pay for the GPU "
-        "time your run uses."
+        "We scaled the same settings out to 17,024 designs across four "
+        "rounds. Target self-copies ran at 29% of everything generated "
+        "and <strong>not one of them ever cleared ipTM 0.80</strong>, "
+        "so the score gate that was already there kept them out of "
+        "every shortlist. That is the reassuring version: on this "
+        "target the failure mode is loud and it is caught. It is worth "
+        "a look at your own output anyway, because nothing in the tool "
+        "is checking for it. There is one note on price. A run settles "
+        "on the GPU seconds it actually used, not on a flat per-run "
+        "figure, so you pay for the GPU time your run uses."
     ),
     "cost_usd": "6.02",
     "runtime": "57 minutes",

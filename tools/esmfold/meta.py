@@ -128,65 +128,70 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Human myelin basic protein &mdash; one chain, 304 residues, pasted "
-        "as plain FASTA. A published reference sequence, not a design."
+        "The target is human myelin basic protein, a single chain of 304 "
+        "residues pasted as plain FASTA. It is a published reference "
+        "sequence rather than a design."
     ),
     "why_this_target": (
         "Myelin basic protein is one of the textbook <em>intrinsically "
-        "disordered</em> proteins: on its own in solution it has no single "
-        "fixed structure to predict. That makes it a useful example "
-        "precisely because the answer is known in advance: it shows what "
-        "something every user runs into sooner or later actually looks like "
-        "&mdash; a low score coming back, and no obvious way to tell whether "
-        "the tool failed or the protein did."
+        "disordered</em> proteins, because on its own in solution it has no "
+        "single fixed structure to predict. That makes it a useful example "
+        "precisely because the answer is known in advance. It shows what "
+        "something every user runs into sooner or later actually looks "
+        "like, which is a low score coming back with no obvious way to tell "
+        "whether the tool failed or the protein did."
     ),
     "inputs_used": [
         (
             "Preset",
             "Standalone, one FASTA",
-            "One chain, one fold. The other preset, batch, folds many "
+            "We used the standalone preset with one FASTA, which folds one "
+            "chain into one structure. The other preset, batch, folds many "
             "sequences in a single submission.",
         ),
         (
             "FASTA (single chain)",
             "304 aa, one chain",
-            "Pasted as FASTA. ESMFold reads the sequence alone &mdash; there "
-            "is no MSA step and nothing else to configure.",
+            "We pasted one chain of 304 residues as FASTA. ESMFold reads "
+            "the sequence alone, so there is no MSA step and nothing else "
+            "to configure.",
         ),
     ],
     "what_came_back": (
-        "A complete structure, a mean pLDDT of <strong>39.00</strong> and a "
-        "pTM of 0.119. Open <em>Per-residue pLDDT</em> under the result and "
-        "the 304-residue strip is red almost end to end: <strong>278 of 304 "
-        "residues sit below 50</strong>, 26 are amber above it, and nothing "
-        "reaches green or blue anywhere. <strong>Not one residue reaches "
-        "70</strong>; the highest in the chain is 65.9. The longest unbroken "
-        "stretch that even reaches 50 is 10 residues."
+        "A complete structure came back, with a mean pLDDT of "
+        "<strong>39.00</strong> and a pTM of 0.119. Open <em>Per-residue "
+        "pLDDT</em> under the result and the 304-residue strip is red "
+        "almost end to end, because <strong>278 of 304 residues sit below "
+        "50</strong>, 26 are amber above it, and nothing reaches green or "
+        "blue anywhere. <strong>Not one residue reaches 70</strong>, and "
+        "the highest in the chain is 65.9. The longest unbroken stretch "
+        "that even reaches 50 is 10 residues."
     ),
     "how_to_read_it": (
         "<strong>That is the correct answer, not a failed run.</strong> The "
         "model is not confused about this protein; it is reporting that the "
         "protein has no one shape to report, which is what the disorder "
-        "literature says about it too. A run that genuinely breaks returns an "
-        "error, not a structure. "
+        "literature says about it too. A run that genuinely breaks returns "
+        "an error rather than a structure. "
         "What separates the two readings is the <em>shape</em> of the "
-        "per-residue strip, not the mean. Here it is flat and low from end to "
-        "end &mdash; no folded region anywhere. A low mean with a high "
-        "plateau in the middle and red only at the edges would be the "
-        "opposite finding: a real folded region with floppy ends, where the "
-        "middle is trustworthy and only the termini are not. Similar mean, "
-        "different result, and the mean alone cannot tell them apart. Open "
-        "the strip."
+        "per-residue strip rather than the mean. Here the strip is flat and "
+        "low from end to end, with no folded region anywhere. A low mean "
+        "with a high plateau in the middle and red only at the edges would "
+        "be the opposite finding, a real folded region with floppy ends, "
+        "where the middle is trustworthy and only the termini are not. The "
+        "mean would look much the same in both cases and cannot tell them "
+        "apart, so open the strip."
     ),
     "what_we_did_next": (
-        "Nothing, because there is nothing here to fix &mdash; no setting on "
-        "this form would raise that number, and running it again returns the "
-        "same structure. When a chain comes back like this the useful move is "
-        "to change the question rather than the parameters: fold the fragment "
-        "that is known to fold, or fold it together with the partner it binds, "
-        "since many disordered proteins take a definite shape only in complex. "
-        "If instead you are looking at a <em>designed</em> sequence scoring "
-        "like this, that is a real failure and the design needs redoing."
+        "We did nothing, because there is nothing here to fix. No setting "
+        "on this form would raise that number, and running it again "
+        "returns the same structure. When a chain comes back like this, the "
+        "useful move is to change the question rather than the parameters, "
+        "so either fold the fragment that is known to fold, or fold it "
+        "together with the partner it binds, since many disordered "
+        "proteins take a definite shape only in complex. If instead you "
+        "are looking at a <em>designed</em> sequence scoring like this, "
+        "that is a real failure and the design needs redoing."
     ),
     "cost_usd": "0.05",
     "runtime": "32 seconds",

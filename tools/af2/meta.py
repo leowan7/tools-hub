@@ -184,8 +184,9 @@ PILOT: dict | None = None
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "Human ubiquitin &mdash; one chain, 76 residues, the example FASTA "
-        "this form ships with. A published reference sequence, not a design."
+        "The target is human ubiquitin, a single chain of 76 residues, and "
+        "it is the example FASTA this form ships with. The sequence is a "
+        "published reference sequence rather than a design."
     ),
     "why_this_target": (
         "Ubiquitin is one of the most studied small folds there is, with "
@@ -198,34 +199,37 @@ EXAMPLE: dict | None = {
         (
             "Preset",
             "Standalone, one FASTA",
-            "One chain, one fold. The other preset, batch, folds many "
-            "sequences in a single submission.",
+            "We used the standalone preset with one FASTA, which folds a "
+            "single chain. The other preset, batch, folds many sequences in "
+            "a single submission.",
         ),
         (
             "FASTA",
             "1 record, 76 aa",
-            "A single chain, so it folds as a monomer. That is why there is "
-            "no ipTM row on the result: with no second chain there is no "
-            "interface to score.",
+            "The FASTA held one record of 76 amino acids, so the sequence "
+            "folds as a monomer. That is why there is no ipTM row on the "
+            "result: with no second chain there is no interface to score.",
         ),
         (
             "Number of recycles",
             "3",
-            "The default. Each pass lets the model refine its own answer; "
-            "three is the standard setting behind published AF2 numbers.",
+            "We left the number of recycles at the default of 3. Each pass "
+            "lets the model refine its own answer, and three is the standard "
+            "setting behind published AF2 numbers.",
         ),
         (
             "Use PDB templates",
             "on",
-            "Known structures are allowed as scaffolding, and ubiquitin has "
-            "plenty in the PDB.",
+            "We left PDB templates on, so known structures are allowed as "
+            "scaffolding, and ubiquitin has plenty of them in the PDB.",
         ),
     ],
     "what_came_back": (
-        "A complete structure with a mean pLDDT of <strong>95.4</strong> and "
-        "a pTM of <strong>0.83</strong>. The per-residue range runs from "
-        "<strong>53.1 to 98.5</strong>: 71 of the 76 residues sit above 90, "
-        "and the five that do not are the last five, at the C-terminal end."
+        "The run returned a complete structure with a mean pLDDT of "
+        "<strong>95.4</strong> and a pTM of <strong>0.83</strong>. The "
+        "per-residue range runs from <strong>53.1 to 98.5</strong>, and "
+        "71 of the 76 residues sit above 90, while the five that do not are "
+        "the last five, at the C-terminal end."
     ),
     "how_to_read_it": (
         "<strong>The mean and the minimum are both right.</strong> A mean of "
@@ -237,17 +241,18 @@ EXAMPLE: dict | None = {
         "blue toward red. That tail is known to be flexible in the real "
         "protein, so a lower score there is the model being accurate about "
         "what it cannot pin down, not the model failing. "
-        "Read a wide pLDDT range by asking WHERE the low residues are: a few "
-        "at a chain end is normal, a low patch in the middle of a domain is "
-        "worth worrying about. Compare the ESMFold example on this site, "
-        "where the whole chain is low end to end."
+        "Read a wide pLDDT range by asking WHERE the low residues are, "
+        "because a few at a chain end is normal while a low patch in the "
+        "middle of a domain is worth worrying about. Compare the ESMFold "
+        "example on this site, where the whole chain is low end to end."
     ),
     "what_we_did_next": (
-        "Nothing; the run was a check that the tool returns a known answer, "
-        "and it did. On a protein of your own the useful next step depends "
-        "on where any low residues fall: trim a floppy end before you use "
-        "the structure as a design target, or fold it again with the partner "
-        "it binds if the low region is an interface."
+        "We did nothing further, because the run was a check that the tool "
+        "returns a known answer, and it did. On a protein of your own the "
+        "useful next step depends on where any low residues fall: trim a "
+        "floppy end before you use the structure as a design target, or fold "
+        "it again with the partner it binds if the low region is an "
+        "interface."
     ),
     "cost_usd": "0.13",
     "runtime": "73 seconds",

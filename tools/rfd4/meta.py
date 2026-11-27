@@ -281,77 +281,85 @@ PILOT: dict | None = {
 # ---------------------------------------------------------------------------
 EXAMPLE: dict | None = {
     "target": (
-        "<strong>PD-L1</strong>, chain A, 115 residues, taken "
-        "from the vendor's own example condition spec that ships "
-        "inside the upstream image. One hotspot residue, 56."
+        "The target is <strong>PD-L1</strong>, chain A, 115 residues, "
+        "taken from the vendor's own example condition spec that ships "
+        "inside the upstream image. There is one hotspot residue, 56."
     ),
     "why_this_target": (
         "This run was ours but it was not a customer's: it is the "
-        "validation run that proved the container works, driven straight "
-        "from the binder condition spec that ships inside the upstream "
-        "image rather than from the form above. So read it for the "
-        "<em>shape</em> of what comes back, eight complete structures and "
-        "no scores, and not as a result on a target of your own."
+        "validation run that proved the container works, driven "
+        "straight from the binder condition spec that ships inside the "
+        "upstream image rather than from the form above. So read it for "
+        "the <em>shape</em> of what comes back, eight complete "
+        "structures and no scores, and not as a result on a target of "
+        "your own."
     ),
     "inputs_used": [
         (
             "Target PDB",
             "PD-L1 chain A, 115 residues",
-            "Supplied to the container as the upstream spec's own "
-            "annotated structure rather than as an upload, because this "
-            "run predates the form. A run of your own uploads a .pdb or "
+            "The target was PD-L1 chain A, 115 residues, supplied to "
+            "the container as the upstream spec's own annotated "
+            "structure rather than as an upload, because this run "
+            "predates the form. A run of your own uploads a .pdb or "
             ".cif here and the normalizer does the rest.",
         ),
         (
             "Target chain",
             "A",
-            "One chain, and only one: the run designs against the chain "
-            "you name here and refuses a request that names more than "
-            "one.",
+            "We named chain A, one chain and only one, because the run "
+            "designs against the chain you name here and refuses a "
+            "request that names more than one.",
         ),
         (
             "Hotspot residues",
             "56",
-            "A single residue on the PD-1 face. One is enough to point "
-            "the binder at a patch; more narrows it further.",
+            "We gave residue 56, a single residue on the PD-1 face. One "
+            "is enough to point the binder at a patch, and more narrows "
+            "it further.",
         ),
         (
             "Binder length (residues)",
             "60-120",
-            "The default range, passed to the generator as the binder "
-            "length window. The eight structures that came back are not "
-            "all the same size, and a binder can come back longer than "
-            "the target, which is why the results page names the target "
-            "chain instead of telling you to take the shorter one.",
+            "We left the binder length at the default range of 60 to "
+            "120 residues, which is passed to the generator as the "
+            "binder length window. The eight structures that came back "
+            "are not all the same size, and a binder can come back "
+            "longer than the target, which is why the results page "
+            "names the target chain instead of telling you to take the "
+            "shorter one.",
         ),
         (
             "Number of designs",
             "8",
-            "Eight independent samples. Unlike the antibody tools there "
-            "is no multiplier hiding here: eight designs is eight "
-            "structures and eight rows.",
+            "We asked for 8 designs, which are eight independent "
+            "samples. Unlike the antibody tools there is no multiplier "
+            "hiding here, so eight designs is eight structures and "
+            "eight rows.",
         ),
     ],
     "what_came_back": (
-        "<strong>Eight structures, all eight of the eight asked for.</strong> "
-        "Each is one file holding chain A and the de-novo binder beside "
-        "it. The table has no score columns, because there are no scores "
-        "to put in them: every delivered design carries its position, its "
-        "name and its structure, and nothing more."
+        "<strong>Eight structures came back, all eight of the eight "
+        "asked for.</strong> Each is one file holding chain A and the "
+        "de-novo binder beside it. The table has no score columns, "
+        "because there are no scores to put in them: every delivered "
+        "design carries its position, its name and its structure, and "
+        "nothing more."
     ),
     "how_to_read_it": (
-        "The reading is structural. Open each file, find the chain "
-        "that is not A, and check it actually sits against residue 56 "
-        "rather than somewhere else on the surface. Eight samples at one "
-        "setting will not all do that."
+        "The reading is structural. Open each file, find the chain that "
+        "is not A, and check that it actually sits against residue 56 "
+        "rather than somewhere else on the surface. Eight samples at "
+        "one setting will not all do that."
     ),
     "what_we_did_next": (
-        "For this run, nothing: it existed to prove the container, and it "
-        "did. On a target of your own the next step is the one this page "
-        "cannot do for you: fold each complex through a predictor, "
-        "let that give you the confidence number, and only then decide "
-        "which handful is worth a larger sweep or a bench. Eight "
-        "unscored structures are a starting point, not a shortlist."
+        "For this run we did nothing further, because it existed to "
+        "prove the container and it did that. On a target of your own "
+        "the next step is the one this page cannot do for you: fold "
+        "each complex through a predictor, let that give you the "
+        "confidence number, and only then decide which handful is worth "
+        "a larger sweep or a bench. Eight unscored structures are a "
+        "starting point, not a shortlist."
     ),
     # 217 GPU-seconds on A100-80GB, the gpu_class in
     # shared/wallet_estimates.py TOOL_SPECS["rfd4"], is what

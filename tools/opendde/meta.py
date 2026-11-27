@@ -175,31 +175,32 @@ PILOT: dict | None = None
 # either way.
 EXAMPLE: dict | None = {
     "target": (
-        "Bovine trypsin with benzamidine bound &mdash; chain A of "
-        "<strong>PDB 3PTB</strong>, 223 residues, plus the ligand "
-        "<code>CCD_BEN</code>."
+        "The target is bovine trypsin with benzamidine bound, which is "
+        "chain A of <strong>PDB 3PTB</strong> at 223 residues, together "
+        "with the ligand <code>CCD_BEN</code>."
     ),
     "why_this_target": (
-        "OpenDDE is for complexes that are not all protein, so an all-protein "
-        "example would be demonstrating the one case it is not for. This is "
-        "the textbook protein-plus-small-molecule pair: benzamidine sitting "
-        "in the trypsin S1 pocket, deposited in 1982 and used to check "
-        "docking methods ever since. It is also a deliberate correction. The "
-        "first run this page ever showed folded a single ubiquitin chain, "
-        "which has no second entity at all &mdash; its ipTM of 0 was "
-        "arithmetically correct and told you nothing, because there was no "
-        "interface to score."
+        "OpenDDE is for complexes that are not all protein, so an "
+        "all-protein example would be demonstrating the one case it is not "
+        "for. This is the textbook protein-plus-small-molecule pair, with "
+        "benzamidine sitting in the trypsin S1 pocket, deposited in 1982 "
+        "and used to check docking methods ever since. It is also a "
+        "deliberate correction. The first run this page ever showed folded "
+        "a single ubiquitin chain, which has no second entity at all, so "
+        "its ipTM of 0 was arithmetically correct and told you nothing, "
+        "because there was no interface to score."
     ),
     "inputs_used": [
         (
             "Protein chains (FASTA)",
             "the 223-residue trypsin chain",
-            "One record. Worth a moment if you are preparing this yourself: "
-            "3PTB is numbered in the chymotrypsin convention, so the chain "
-            "carries three insertion-coded positions &mdash; 184A, 188A and "
-            "221A. A script that reads residue numbers and ignores the "
-            "insertion letter silently drops all three. Our first attempt at "
-            "this example came back 220 residues instead of 223 for exactly "
+            "We pasted the trypsin chain as a single record. It is worth a "
+            "moment if you are preparing this yourself, because 3PTB is "
+            "numbered in the chymotrypsin convention, so the chain carries "
+            "three insertion-coded positions, 184A, 188A and 221A. A "
+            "script that reads residue numbers and ignores the insertion "
+            "letter silently drops all three. Our first attempt at this "
+            "example came back 220 residues instead of 223 for exactly "
             "that reason, and handed the model a different protein. Count "
             "what you extract against the deposited length before you "
             "submit it.",
@@ -207,83 +208,90 @@ EXAMPLE: dict | None = {
         (
             "Ligands (one per line)",
             "CCD_BEN",
-            "Benzamidine, by its three-letter Chemical Component Dictionary "
-            "code. A bare SMILES string works too, but a CCD code names one "
-            "unambiguous molecule and needs no interpretation.",
+            "We named benzamidine by its three-letter Chemical Component "
+            "Dictionary code. A bare SMILES string works too, but a CCD "
+            "code names one unambiguous molecule and needs no "
+            "interpretation.",
         ),
         (
             "Samples / seed",
             "1",
-            "One prediction per seed. All of the variation in this run comes "
-            "from the seeds instead.",
+            "We asked for one prediction per seed. All of the variation in "
+            "this run comes from the seeds instead.",
         ),
         (
             "Seeds",
             "4",
-            "Four independent starting points, so four predictions. This is "
-            "the input that matters most here, and the results below are the "
-            "argument for it.",
+            "We ran four independent starting points, so four predictions "
+            "came back. This is the input that matters most here, and the "
+            "results below are the argument for it.",
         ),
         (
             "Diffusion steps",
             "200",
-            "The upstream default, left alone. More steps trade compute for "
-            "quality; nothing about this run suggested it was step-limited.",
+            "We left this at the upstream default. More steps trade "
+            "compute for quality, and nothing about this run suggested it "
+            "was step-limited.",
         ),
         (
             "Recycles",
             "10",
-            "Also the default. Worth raising on a complex that comes back "
-            "geometrically incoherent, which this one did not.",
+            "We left this at the default as well. It is worth raising on a "
+            "complex that comes back geometrically incoherent, which this "
+            "one did not.",
         ),
     ],
     "what_came_back": (
-        "Four predictions in about three and a half minutes, and they split "
-        "cleanly <strong>two and two</strong>. The top pair scores 0.67 and "
-        "0.66 on the ranking; the bottom pair 0.48 and 0.47. ipTM runs 0.471 "
+        "Four predictions came back in about three and a half minutes, and "
+        "they split cleanly <strong>two and two</strong>. The top pair "
+        "scores 0.67 and 0.66 on the ranking, and the bottom pair scores "
+        "0.48 and 0.47. ipTM runs 0.471 "
         "to 0.689, pTM 0.433 to 0.625, and pLDDT 42.8 to 52.9."
     ),
     "how_to_read_it": (
-        "<strong>The useful thing here is where all four columns agree.</strong> "
+        "<strong>The useful thing here is where all four columns "
+        "agree.</strong> "
         "Ranking, ipTM, pTM and pLDDT each draw the same line between the "
-        "same two pairs: the top two are 0.689 and 0.670 on ipTM with pLDDT "
-        "51.4 and 52.9, the bottom two are 0.493 and 0.471 with pLDDT 42.8 "
-        "and 44.4. Nothing crosses over. The columns measure different "
-        "things &mdash; ipTM the interface, pTM the whole complex, pLDDT "
-        "the per-residue confidence &mdash; and all four put the same two "
-        "predictions on top. Only the split is that robust: within each pair "
-        "pTM and pLDDT both invert the ranking's order. "
-        "Read the split as a ranking among these four and nothing more: "
-        "every one of them sits in the 40s or low 50s on pLDDT, so the "
-        "split says which pair to look at first, not that any of "
-        "them is a good structure. "
-        "<strong>Now the part that should change how you run this tool.</strong> "
-        "The form defaults to a single seed, and that seed is the one ranked "
-        "<em>last</em> here &mdash; the bottom row, 0.47 on the ranking, "
-        "ipTM 0.471, pLDDT 44.4. (The table ranks the predictions without "
-        "naming their seeds; the run's own file is where that pairing "
-        "lives.) Run "
-        "this target once, with the defaults, and you would have concluded it "
-        "does not co-fold with its ligand &mdash; when half the seeds land "
-        "at 0.67 and 0.66 and put the model's confidence in the same "
+        "same two pairs: the top two are 0.689 and 0.670 on ipTM with "
+        "pLDDT 51.4 and 52.9, while the bottom two are 0.493 and 0.471 "
+        "with pLDDT 42.8 and 44.4. Nothing crosses over. The columns "
+        "measure different things, since ipTM scores the interface, pTM "
+        "the whole complex and pLDDT the per-residue confidence, and all "
+        "four put the same two predictions on top. Only the split is that "
+        "robust, because within each pair pTM and pLDDT both invert the "
+        "ranking's order. "
+        "Read the split as a ranking among these four and nothing more, "
+        "because every one of them sits in the 40s or low 50s on pLDDT, "
+        "so the split says which pair to look at first rather than that "
+        "any of them is a good structure. "
+        "<strong>Now comes the part that should change how you run this "
+        "tool.</strong> "
+        "The form defaults to a single seed, and that seed is the one "
+        "ranked <em>last</em> here, the bottom row, at 0.47 on the "
+        "ranking, with ipTM 0.471 and pLDDT 44.4. (The table ranks the "
+        "predictions without naming their seeds, and the run's own file is "
+        "where that pairing lives.) Run "
+        "this target once with the defaults and you would have concluded "
+        "that it does not co-fold with its ligand, when half the seeds "
+        "land at 0.67 and 0.66 and put the model's confidence in the same "
         "place. One "
         "prediction on this tool is not a small version of four. It is a "
         "coin flip you cannot see the result of."
     ),
     "what_we_did_next": (
-        "Nothing &mdash; this run was captured for this page and stopped "
-        "here. What it would take next is the one thing the table cannot "
-        "show: whether the top two put the benzamidine in the same pocket. "
-        "Two predictions can agree on every score and still dock a ligand "
-        "in different places, so that question needs the structures "
-        "themselves, which every row carries on a run of your own. There "
-        "the viewer opens per row and two rows can be open at once, but "
-        "each "
-        "shows a single structure and nothing superposes them &mdash; the "
+        "We did nothing further, because this run was captured for this "
+        "page and stopped here. What it would take next is the one thing "
+        "the table cannot show, which is whether the top two put the "
+        "benzamidine in the same pocket. Two predictions can agree on "
+        "every score and still dock a ligand in different places, so that "
+        "question needs the structures themselves, which every row carries "
+        "on a run of your own. There the viewer opens per row and two rows "
+        "can be open at once, but each "
+        "shows a single structure and nothing superposes them, so the "
         "comparison is yours to make by eye. "
-        "Agreement on the pocket means more seeds will sharpen the pose; "
-        "disagreement means the scores were telling you about the fold and "
-        "not about the binding site."
+        "Agreement on the pocket means more seeds will sharpen the pose, "
+        "and disagreement means the scores were telling you about the fold "
+        "and not about the binding site."
     ),
     "cost_usd": "0.86",
     "runtime": "3.5 minutes",

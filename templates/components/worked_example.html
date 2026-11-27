@@ -56,7 +56,7 @@ Usage:
         <h3>What we put in the form</h3>
         <dl>
           {% for field, value, why in ex.inputs_used %}
-            <dt><strong>{{ field }}</strong> &mdash; <code>{{ value }}</code></dt>
+            <dt><strong>{{ field }}</strong></dt>
             <dd>{{ why|safe }}</dd>
           {% endfor %}
         </dl>
@@ -113,8 +113,8 @@ Usage:
         {% endif %}
 
         <p style="color: var(--text-tertiary); font-size: 0.8rem;">
-          Recorded from that one past run. That is what it did, not a
-          prediction for yours.
+          These figures were recorded from that one past run. They show
+          what it did, and they are not a prediction for yours.
         </p>
       </div>
     </aside>

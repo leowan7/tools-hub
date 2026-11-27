@@ -201,101 +201,109 @@ PILOT: dict | None = {
 # payload. It was checked both ways before being written.
 EXAMPLE: dict | None = {
     "target": (
-        "Hen egg-white lysozyme, chain A of <strong>PDB 1HEW</strong>, 129 "
-        "residues &mdash; with a nine-residue epitope named on its surface: "
-        "63 to 68 and 73 to 75."
+        "The target is hen egg-white lysozyme, chain A of <strong>PDB "
+        "1HEW</strong>, which is 129 residues long. We named a "
+        "nine-residue epitope on its surface, residues 63 to 68 and 73 "
+        "to 75."
     ),
     "why_this_target": (
-        "IgGM is not a de novo binder tool, so a worked example needs a real "
-        "antibody as well as a real antigen. It takes an antibody you already "
-        "have and rewrites its CDR loops; there is nothing for it to do "
-        "without one. Lysozyme is the textbook antigen for exactly this work "
-        "&mdash; small, rigid and thoroughly characterised &mdash; and the "
-        "nine residues are one contiguous surface patch, which is the shape "
-        "of thing you would type if you had mapped an epitope and wanted the "
-        "loops aimed at it."
+        "IgGM is not a de novo binder tool, so a worked example needs a "
+        "real antibody as well as a real antigen. It takes an antibody you "
+        "already have and rewrites its CDR loops, and there is nothing for "
+        "it to do without one. Lysozyme is the textbook antigen for "
+        "exactly this work because it is small, rigid and thoroughly "
+        "characterised. The nine residues are one contiguous surface "
+        "patch, which is the shape of thing you would type if you had "
+        "mapped an epitope and wanted the loops aimed at it."
     ),
     "inputs_used": [
         (
             "Mode",
             "CDR design",
-            "Redesigns the loops and leaves the framework alone. The other "
-            "modes rebuild the framework instead, or only predict the complex "
-            "without designing anything.",
+            "We used CDR design, which redesigns the loops and leaves the "
+            "framework alone. The other modes rebuild the framework "
+            "instead, or only predict the complex without designing "
+            "anything.",
         ),
         (
             "Antibody FASTA",
             "two records, H (114 aa) and L (107 aa)",
-            "The heavy chain carries five X characters, and X is the mask: "
-            "those are the positions IgGM is free to rewrite. A design mode "
-            "given an input with no X in it has nothing to design.",
+            "We supplied two records, a heavy chain of 114 residues and a "
+            "light chain of 107. The heavy chain carries five X "
+            "characters, and X is the mask, so those are the positions "
+            "IgGM is free to rewrite. A design mode given an input with no "
+            "X in it has nothing to design.",
         ),
         (
             "Antigen PDB",
             "the 1HEW file",
-            "Chain A is the lysozyme, numbered 1-129 as it downloads.",
+            "We uploaded the 1HEW file, in which chain A is the lysozyme, "
+            "numbered 1-129 as it downloads.",
         ),
         (
             "Antigen chain",
             "A",
-            "Names the chain the epitope numbers below refer to.",
+            "We named chain A, which is the chain the epitope numbers "
+            "below refer to.",
         ),
         (
             "Epitope residues (required)",
             "63 64 65 66 67 68 73 74 75",
-            "Space separated, in the file's own numbering: Trp63, Cys64, "
-            "Asn65, Asp66, Gly67 and Arg68, then Arg73, Asn74 and Leu75. "
-            "Worth knowing before you read the result &mdash; this is a "
-            "request, not a constraint. Nothing forces a design to land here.",
+            "We listed the nine residues space separated, in the file's "
+            "own numbering: Trp63, Cys64, Asn65, Asp66, Gly67 and Arg68, "
+            "then Arg73, Asn74 and Leu75. It is worth knowing before you "
+            "read the result that this is a request rather than a "
+            "constraint, because nothing forces a design to land here.",
         ),
         (
             "Samples",
             "40",
-            "Forty independent designs. Worth this many because the outcome "
-            "per design is close to all-or-nothing, so the useful answer is "
-            "the spread across a batch rather than any one design.",
+            "We asked for forty independent designs. Forty is worth it "
+            "because the outcome per design is close to all-or-nothing, so "
+            "the useful answer is the spread across a batch rather than "
+            "any one design.",
         ),
     ],
     "what_came_back": (
-        "40 designs, each scored by how many of the nine "
+        "Forty designs came back, each scored by how many of the nine "
         "requested epitope residues it actually contacts. "
         "<strong>Nineteen of the forty reach no part of the "
         "epitope.</strong> Fourteen reach exactly one residue. The rest "
-        "go further &mdash; three touch two, one "
-        "touches four, two touch five, and the best design touches six of "
-        "nine."
+        "go further, with three touching two, one touching four, two "
+        "touching five, and the best design touching six of nine."
     ),
     "how_to_read_it": (
         "There is one score column here, and reading it as a leaderboard "
-        "throws away most of what this run told you. Two other things matter "
-        "more. "
-        "<strong>First, the shape.</strong> Nearly half the designs miss the "
-        "epitope completely. That is an ordinary IgGM result, and it is why "
-        "forty samples is the right order of magnitude rather than four: a "
-        "run of four could easily have come back four zeros and told you "
-        "nothing about your antibody or your epitope. "
-        "<strong>Second, the contact grid below the table</strong>, which is "
-        "the part worth the most and the part with no number attached. Its "
-        "columns are your nine requested positions, and three of them "
-        "&mdash; <strong>63, 64 and 66</strong> &mdash; are empty for every "
-        "single design. Not rarely hit: never hit. Meanwhile position 73 is "
-        "contacted by seventeen of the forty, and is the <em>only</em> "
-        "contact five of them make. So the run is not sampling your "
-        "nine-residue patch evenly. It is repeatedly finding one reachable "
-        "sub-patch &mdash; 65, 67, 68, 73, 74 and 75 &mdash; while three "
-        "residues sit somewhere a CDR loop on this framework does not get "
-        "to. That is a finding about your epitope definition rather than "
-        "about any design, and no ranked column would ever have shown it to "
-        "you."
+        "throws away most of what this run told you. Two other things "
+        "matter more. "
+        "<strong>First, look at the shape.</strong> Nearly half the "
+        "designs miss the epitope completely. That is an ordinary IgGM "
+        "result, and it is why forty samples is the right order of "
+        "magnitude rather than four, because a run of four could easily "
+        "have come back four zeros and told you nothing about your "
+        "antibody or your epitope. "
+        "<strong>Second, look at the contact grid below the "
+        "table.</strong> That is the part worth the most and the part with "
+        "no number attached. Its columns are your nine requested "
+        "positions, and three of them, <strong>63, 64 and 66</strong>, "
+        "are empty for every single design. They are not rarely hit, they "
+        "are never hit. Meanwhile position 73 is contacted by seventeen "
+        "of the forty, and is the <em>only</em> contact five of them "
+        "make. So the run is not sampling your nine-residue patch "
+        "evenly. It is repeatedly finding one reachable sub-patch of 65, "
+        "67, 68, 73, 74 and 75, while three residues sit somewhere a CDR "
+        "loop on this framework does not get to. That is a finding about "
+        "your epitope definition rather than about any design, and no "
+        "ranked column would ever have shown it to you."
     ),
     "what_we_did_next": (
-        "Took the empty columns as the actionable result, which is not where "
-        "you would look if you had gone straight to the top row. The next run "
-        "narrows the epitope request to the residues that proved reachable, "
-        "so the sampling concentrates there instead of spending part of every "
-        "design on positions that never come back. Folding the best design "
-        "independently and taking it to expression is the step after that, "
-        "not before it."
+        "We took the empty columns as the actionable result, which is not "
+        "where you would look if you had gone straight to the top row. The "
+        "next run narrows the epitope request to the residues that proved "
+        "reachable, so the sampling concentrates there instead of spending "
+        "part of every design on positions that never come back. Folding "
+        "the best design independently and taking it to expression is the "
+        "step after that, not before it."
     ),
     "cost_usd": "0.87",
     "runtime": "12 minutes",

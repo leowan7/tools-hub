@@ -277,63 +277,67 @@ PILOT: dict | None = {
 # was a precondition of the design existing rather than a result.
 EXAMPLE: dict | None = {
     "target": (
-        "Human PD-L1, the IgV domain, taken as chain A of "
-        "<strong>PDB 4ZQK</strong> &mdash; the solved PD-1/PD-L1 complex. "
-        "Hotspots Ile54, Tyr56 and Met115."
+        "The target is human PD-L1, the IgV domain, taken as chain A of "
+        "<strong>PDB 4ZQK</strong>, which is the solved PD-1/PD-L1 complex. "
+        "The hotspots are Ile54, Tyr56 and Met115."
     ),
     "why_this_target": (
-        "The same target, chain and hotspots as the RFdiffusion and BoltzGen "
-        "examples on this site, and that is the point &mdash; three different "
-        "generators aimed at one epitope, so the three pages can be read "
-        "against each other. Chain B of the same file is PD-1, the natural "
-        "partner, so the hotspots are residues a real binding protein is "
-        "known to cover rather than a guess."
+        "This is the same target, chain and hotspots as the RFdiffusion and "
+        "BoltzGen examples on this site, and that is the point: three "
+        "different generators aimed at one epitope, so the three pages can "
+        "be read against each other. Chain B of the same file is PD-1, the "
+        "natural partner, so the hotspots are residues a real binding "
+        "protein is known to cover rather than a guess."
     ),
     "inputs_used": [
         (
             "Target PDB",
             "the 4ZQK file, uploaded whole",
-            "Both chains, exactly as it downloads from the PDB. No trimming "
-            "and no renumbering, so chain A keeps its crystal numbering "
-            "18-132 &mdash; which is the numbering the hotspot field "
-            "expects.",
+            "We uploaded the 4ZQK file whole, with both chains, exactly as "
+            "it downloads from the PDB. There was no trimming and no "
+            "renumbering, so chain A keeps its crystal numbering 18-132, "
+            "which is the numbering the hotspot field expects.",
         ),
         (
             "Target chain",
             "A",
-            "This is what restricts the design to PD-L1. Chain B in the same "
-            "file is PD-1, and the run ignores it &mdash; otherwise the model "
-            "would be designing into an already occupied site.",
+            "We set the target chain to A, and that is what restricts the "
+            "design to PD-L1. Chain B in the same file is PD-1, and the run "
+            "ignores it, because otherwise the model would be designing into "
+            "an already occupied site.",
         ),
         (
             "Hotspot residues",
             "54, 56, 115",
-            "Ile54, Tyr56 and Met115 in the file's own numbering. Three is a "
-            "normal number: enough to aim the binder at one patch, few enough "
-            "that you have not drawn the interface yourself.",
+            "We named residues 54, 56 and 115, which are Ile54, Tyr56 and "
+            "Met115 in the file's own numbering. Three is a normal number, "
+            "enough to aim the binder at one patch and few enough that you "
+            "have not drawn the interface yourself.",
         ),
         (
             "Binder length (min)",
             "50",
-            "The bottom of the default window. BindCraft picks a length "
-            "inside the range rather than being told one.",
+            "We left the minimum at 50, the bottom of the default window. "
+            "BindCraft picks a length inside the range rather than being "
+            "told one.",
         ),
         (
             "Binder length (max)",
             "100",
-            "The top of the default window, left alone.",
+            "We left the maximum at 100, the top of the default window.",
         ),
         (
             "Number of designs",
             "2",
-            "Small even for a trial run, and that is this tool rather than "
-            "impatience: BindCraft optimises each design individually instead "
-            "of sampling a batch, so each design takes more GPU time than "
-            "on the diffusion tools.",
+            "We asked for 2 designs, which is small even for a trial run, "
+            "and that is this tool rather than impatience. BindCraft "
+            "optimises each design individually instead of sampling a batch, "
+            "so each design takes more GPU time than on the diffusion "
+            "tools.",
         ),
     ],
     "what_came_back": (
-        "Two designs, landing in almost the same place: ipTM "
+        "Two designs came back, landing in almost the same place: ipTM "
         "<strong>0.75</strong> and <strong>0.76</strong>, pLDDT 81 for both, "
         "shape complementarity 0.64 and 0.60, a refolding RMSD of "
         "3.04 and 2.96 &Aring;, and surface hydrophobicity of 0.29 and 0.30."
@@ -343,36 +347,37 @@ EXAMPLE: dict | None = {
         "both designs sit <em>on</em> that bar rather than above it, and "
         "pLDDT 81 clears its own bar of 80 by about as little. Then read the "
         "two columns that stop you over-reading those. Shape complementarity "
-        "wants 0.65 for an antibody-grade fit and both designs are under it; "
-        "refolding RMSD wants to be inside 1.5 &Aring; and both are close to "
-        "3. Put together: <strong>the interface is plausible, the fit is "
-        "loose, and neither design rebuilds quite the backbone it was drawn "
-        "as</strong>. That is a normal trial run result and it is worth more to "
-        "you than a single headline number would be. "
+        "wants 0.65 for an antibody-grade fit and both designs are under it, "
+        "while refolding RMSD wants to be inside 1.5 &Aring; and both are "
+        "close to 3. Put together, <strong>the interface is plausible, the "
+        "fit is loose, and neither design rebuilds quite the backbone it was "
+        "drawn as</strong>. That is a normal trial run result and it is worth "
+        "more to you than a single headline number would be. "
         "<strong>Do not read the ranking as an ipTM sort.</strong> Design 2 "
         "has the marginally higher ipTM and still ranks second, because "
-        "BindCraft ranks on a composite that includes the fit &mdash; and "
+        "BindCraft ranks on a composite that includes the fit, and "
         "design 1 wins there, 0.64 against 0.60. "
         "<strong>The last column is not a result.</strong> Surface "
-        "hydrophobicity 0.29 and 0.30 were always going to be under 0.35: "
-        "BindCraft throws out anything above that line before a design "
-        "reaches you, so clearing it is a precondition of being on this "
-        "page rather than something these two achieved. Do not read them as "
-        "<em>low</em> &mdash; on the 101 accepted designs FreeBindCraft "
-        "publishes for this same target the median is 0.26 and the maximum "
-        "0.34, so roughly three-quarters of accepted designs sit below "
-        "these two, nearer that line than most designs that pass. It is a "
-        "property of the shortlist, and a poor way to choose between "
+        "hydrophobicity 0.29 and 0.30 were always going to be under 0.35, "
+        "because BindCraft throws out anything above that line before a "
+        "design reaches you, so clearing it is a precondition of being on "
+        "this page rather than something these two achieved. Do not read "
+        "them as <em>low</em> either, because on the 101 accepted designs "
+        "FreeBindCraft publishes for this same target the median is 0.26 and "
+        "the maximum 0.34, so roughly three-quarters of accepted designs sit "
+        "below these two, nearer that line than most designs that pass. It "
+        "is a property of the shortlist, and a poor way to choose between "
         "designs inside it."
     ),
     "what_we_did_next": (
-        "Treated this as a screen that came back amber rather than green. Two "
-        "designs sitting exactly on the bar with a sub-par fit is a reason to "
-        "run more of them, not a reason to order peptides. The next step is "
-        "the same target and the same hotspots at a higher design count, then "
-        "an independent re-fold on whatever clears the bar properly, and SPR "
-        "or BLI only after that. A two-design trial run can tell you the target "
-        "and hotspots are workable; it cannot tell you which binder to make."
+        "We treated this as a screen that came back amber rather than green. "
+        "Two designs sitting exactly on the bar with a sub-par fit is a "
+        "reason to run more of them, not a reason to order peptides. The "
+        "next step is the same target and the same hotspots at a higher "
+        "design count, then an independent re-fold on whatever clears the "
+        "bar properly, and SPR or BLI only after that. A two-design trial "
+        "run can tell you the target and hotspots are workable, but it "
+        "cannot tell you which binder to make."
     ),
     "cost_usd": "2.04",
     "runtime": "20 minutes",
