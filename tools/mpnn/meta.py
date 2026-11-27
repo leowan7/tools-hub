@@ -225,8 +225,8 @@ EXAMPLE: dict | None = {
             "Backbone PDB",
             "1HEW.pdb",
             "We used the crystal structure, which is downloadable below. "
-            "Only the backbone atoms are read, because the sequence in "
-            "the file is discarded before design.",
+            "Only the backbone atoms are read, and the sequence in the "
+            "file is discarded before design.",
         ),
         (
             "Chains to design",

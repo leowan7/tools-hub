@@ -229,14 +229,14 @@ EXAMPLE: dict | None = {
         (
             "Diffusion steps",
             "200",
-            "We left this at the upstream default. More steps trade "
+            "We left this at the upstream default of 200. More steps trade "
             "compute for quality, and nothing about this run suggested it "
             "was step-limited.",
         ),
         (
             "Recycles",
             "10",
-            "We left this at the default as well. It is worth raising on a "
+            "We left this at the default of 10 as well. It is worth raising on a "
             "complex that comes back geometrically incoherent, which this "
             "one did not.",
         ),

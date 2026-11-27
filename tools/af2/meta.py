@@ -220,7 +220,7 @@ EXAMPLE: dict | None = {
         (
             "Use PDB templates",
             "on",
-            "We left PDB templates on, so known structures are allowed as "
+            "We ran with PDB templates on, so known structures are allowed as "
             "scaffolding, and ubiquitin has plenty of them in the PDB.",
         ),
     ],
