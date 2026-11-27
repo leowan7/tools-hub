@@ -1,6 +1,6 @@
 /**
- * Lazy-loads Mol* from CDN and initialises a structure viewer in the
- * target div.  The first call triggers the CDN load; subsequent calls
+ * Lazy-loads Mol* (self-hosted under static/vendor/) and initialises a structure viewer in the
+ * target div.  The first call triggers the script load; subsequent calls
  * fire immediately after the script resolves.
  *
  * Two entry points:
@@ -14,8 +14,8 @@
  *       (Storage-backed or inline-b64 fallback, both transparent here).
  */
 (function () {
-  var MOLSTAR_JS  = 'https://cdn.jsdelivr.net/npm/molstar@4.9.0/build/viewer/molstar.js';
-  var MOLSTAR_CSS = 'https://cdn.jsdelivr.net/npm/molstar@4.9.0/build/viewer/molstar.css';
+  var MOLSTAR_JS  = '/static/vendor/molstar-4.9.0/molstar.js';
+  var MOLSTAR_CSS = '/static/vendor/molstar-4.9.0/molstar.css';
 
   var _state   = 'idle'; // 'idle' | 'loading' | 'ready'
   var _pending = [];
@@ -42,7 +42,7 @@
     script.onerror = function () {
       _state = 'idle';
       _pending = [];
-      console.error('[mol_viewer] Failed to load Mol* from CDN.');
+      console.error('[mol_viewer] Failed to load Mol*.');
     };
     document.head.appendChild(script);
   }
