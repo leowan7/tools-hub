@@ -16,7 +16,8 @@
   </div>
 
   <div style="display: grid; gap: 1.25rem; min-width: 0;">
-    {{ worked_example(adapter, ex) }}
+    {# show_target=false: the hero above already carries ex.target. #}
+    {{ worked_example(adapter, ex, show_target=false) }}
 
     {# Nothing to show when the payload carries its own structure: the
        results partial already renders that viewer, and there is no
@@ -38,12 +39,21 @@
              offer rather than the access. #}
           {% set _own_viewer = not ex.result.get('pdb_b64') %}
           {% if _own_viewer %}
+            {# data-example-first drives the initial load, so the viewer
+               fills even when there is only one structure and therefore no
+               button to click. #}
             <div id="example-viewer-0"
+                 data-example-first="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ structures[0]) }}"
                  style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
             {% if structures|length > 1 %}
+              {# Each button carries the file's OWN name, not its position in
+                 this list. A position reads as a row number of the table
+                 above and is not one: boltzgen's files start at design_002
+                 because rank 1 has no file, and opendde's sort by seed while
+                 its table sorts by rank. #}
               <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                 {% for name in structures %}
-                  <button type="button" class="btn btn-secondary" data-example-view="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) }}">{{ loop.index }}</button>
+                  <button type="button" class="btn btn-secondary" style="font-family: var(--font-mono, monospace); font-size: 0.8rem;" data-example-view="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) }}">{{ name.rsplit('.', 1)[0] }}</button>
                 {% endfor %}
               </div>
             {% endif %}
@@ -74,7 +84,10 @@
         Array.prototype.forEach.call(buttons, function (b) {
           b.addEventListener('click', function () { show(b.getAttribute('data-example-view')); });
         });
-        if (buttons.length) show(buttons[0].getAttribute('data-example-view'));
+        var first = document.getElementById('example-viewer-0');
+        if (first && first.getAttribute('data-example-first')) {
+          show(first.getAttribute('data-example-first'));
+        }
       })();
     </script>
   {% endif %}

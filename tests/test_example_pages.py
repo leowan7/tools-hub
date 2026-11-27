@@ -61,17 +61,58 @@ def test_structures_are_viewable_and_never_downloadable(all_tools_app, monkeypat
     by URL, and no download control may name it. The file itself is still
     served from /static/example/, so this asserts the page makes no
     offer, not that the bytes are unreachable.
+
+    EVERY example page, not a sample. Removing the links from
+    templates/examples/page.html was not enough: esmfold's own results
+    partial rendered a data-URI "Download PDB" and the shared candidate
+    table rendered a per-design .pdb column, and both survived a version
+    of this test that only read /examples/rfd4.
     """
     flask_app, _slugs = all_tools_app
     monkeypatch.setenv("EXAMPLE_PAGES_ENABLED", "1")
-    page = flask_app.test_client().get("/examples/rfd4").get_data(as_text=True)
+    client = flask_app.test_client()
+    slugs = _example_slugs(client)
+    assert len(slugs) >= 14, slugs
+    offers = {}
+    for slug in slugs:
+        page = client.get(f"/examples/{slug}").get_data(as_text=True)
+        # Attribute positions only. The bare word is left alone: it is
+        # ordinary prose on a results partial ("each downloaded structure")
+        # and matching it would fail on copy that offers nothing.
+        hits = re.findall(r"download=|data-example-download|<a[^>]*\sdownload[>\s]", page)
+        if hits:
+            offers[slug] = hits
+    assert not offers, offers
+
+    page = client.get("/examples/rfd4").get_data(as_text=True)
     files = sorted(p.name for p in (ROOT / "static" / "example" / "rfd4").glob("*.cif"))
     assert files
     for name in files:
         assert f'data-example-view="/static/example/rfd4/{name}"' in page
     assert "js/mol_viewer.js" in page
-    assert "data-example-download" not in page
-    assert "download>" not in page and "download " not in page.split("<body")[-1].lower().replace("downloaded", "")
+
+
+def test_viewer_buttons_are_named_by_file_not_by_position(all_tools_app, monkeypatch):
+    """A number on the button reads as a row of the table above it, and on
+    two tools it would be the wrong row: boltzgen's files start at
+    design_002 because rank 1 has no file, and opendde's files sort by seed
+    while its results table sorts by rank. The label is the file's own
+    name, and the first structure loads from the viewer element rather than
+    from the first button, so a single-file example still fills the box.
+    """
+    flask_app, _slugs = all_tools_app
+    monkeypatch.setenv("EXAMPLE_PAGES_ENABLED", "1")
+    client = flask_app.test_client()
+    for slug in ("boltzgen", "opendde"):
+        page = client.get(f"/examples/{slug}").get_data(as_text=True)
+        files = sorted(
+            p.name for p in (ROOT / "static" / "example" / slug).iterdir()
+            if p.suffix in (".pdb", ".cif")
+        )
+        assert len(files) > 1, slug
+        buttons = re.findall(r"<button[^>]*data-example-view[^>]*>([^<]*)</button>", page)
+        assert buttons == [f.rsplit(".", 1)[0] for f in files], (slug, buttons)
+        assert f'data-example-first="/static/example/{slug}/{files[0]}"' in page
 
 
 def test_every_example_structure_names_a_design_in_its_payload():

@@ -23,7 +23,9 @@ rather than shipped.
 
 Deliberately NOT reproduced here: the 3D viewer from job_detail.html.
 It pulls artifacts from Supabase storage, which an example has none of.
-A plain download of the input structure from static/example/ instead.
+templates/examples/page.html renders a Mol* viewer over the committed
+copies in static/example/ instead. No download of them anywhere: the
+example pages make no such offer (Leo, 2026-11-27).
 
 Numbers in the narration are recorded facts from one specific past run,
 and the closing line labels them that way. The run's recorded cost and
@@ -35,7 +37,10 @@ Usage:
     {{ worked_example(adapter, ex) }}
 #}
 
-{% macro worked_example(adapter, ex) %}
+{# ``show_target``: the examples page prints ex.target in its own hero, so
+   it passes false and this macro skips the panel that would repeat it. The
+   About panel on a tool page has no such hero and keeps it. #}
+{% macro worked_example(adapter, ex, show_target=true) %}
   {% if ex and adapter.results_partial %}
     {# id is the deep-link target for the tool chooser on /tools, which
        links to <tool route>#worked-example. shared/tool_chooser.py only
@@ -44,14 +49,16 @@ Usage:
        macro gates on, so the fragment is only emitted for a page where
        this macro renders. Pinned by
        tests/test_tool_chooser.py::test_has_example_agrees_with_the_renderer_for_every_tool. #}
-    <aside class="panel about-panel" id="worked-example">
-      <div class="panel-header">
-        <span class="panel-title">A past run we actually did</span>
-      </div>
-      <div class="panel-body">
-        <p>{{ ex.target|safe }}</p>
-      </div>
-    </aside>
+    {% if show_target %}
+      <aside class="panel about-panel" id="worked-example">
+        <div class="panel-header">
+          <span class="panel-title">A past run we actually did</span>
+        </div>
+        <div class="panel-body">
+          <p>{{ ex.target|safe }}</p>
+        </div>
+      </aside>
+    {% endif %}
 
     {# The tool's real results component, outside the panel body so it
        keeps its own chrome — exactly as it renders on /jobs/<id>. #}
@@ -88,7 +95,7 @@ Usage:
           <tbody>
             {% for field, value, _why in ex.inputs_used %}
               <tr style="border-bottom: 1px solid var(--border);">
-                <th scope="row" style="text-align: left; padding: 0.45rem 1rem 0.45rem 0; font-weight: 600; vertical-align: top; white-space: nowrap;">{{ field }}</th>
+                <th scope="row" style="text-align: left; padding: 0.45rem 1rem 0.45rem 0; font-weight: 600; vertical-align: top;">{{ field }}</th>
                 <td style="padding: 0.45rem 0; color: var(--text-secondary); overflow-wrap: anywhere;"><code>{{ value }}</code></td>
               </tr>
             {% endfor %}

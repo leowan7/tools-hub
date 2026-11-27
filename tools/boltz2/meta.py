@@ -245,9 +245,8 @@ EXAMPLE: dict | None = {
         "each design contacts 13 or 14 of the 14 cleft residues."
     ),
     "how_to_read_it": (
-        "ipTM from 0.874 to 0.952 sits inside the band published MDM2 "
-        "binders reach through this same path, so these complexes are "
-        "confidently predicted. ipTM does not rank affinity: PMI is the "
+        "ipTM from 0.874 to 0.952 means every complex here is confidently "
+        "predicted. ipTM does not rank affinity: PMI is the "
         "tightest of those binders and scored the lowest of them. Treat a "
         "good score as a reason to make the molecule."
     ),

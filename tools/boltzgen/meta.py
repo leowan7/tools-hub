@@ -398,10 +398,10 @@ EXAMPLE: dict | None = {
     ),
     "how_to_read_it": (
         "<strong>pLDDT is the column that fails here.</strong> Above 80 is "
-        "confidently folded and none of these five reaches it. Refolding "
-        "RMSD under 1.5 &Aring; means the design wants that shape with no "
-        "target present. The ipTM of 0.538 to 0.653 is the generator's own "
-        "score, not on a cofold scale."
+        "confidently folded and none of these five reaches it, though a "
+        "refolding RMSD under 1.5 &Aring; says each design wants its own "
+        "shape with no target present. The ipTM of 0.538 to 0.653 is the "
+        "generator's own score, not on a cofold scale."
     ),
     "cost_usd": "6.00",
     "runtime": "82 minutes",

@@ -3004,7 +3004,9 @@ class TestNarrationQuotesTheTable:
         # readings used to walk through: boltz2's three reference folds,
         # bindcraft's FreeBindCraft distribution, boltzgen's 0.51 and 1.77,
         # pxdesign's 0.50 and 3.0, proteina's rank-55 row, and the opendde
-        # and esmfold2_design score walks. Measured after the cut: 60.
+        # and esmfold2_design score walks. The count after the cut is
+        # whatever the failure message below prints; it is not restated
+        # here, because a number in a comment drifts and this one did.
         assert len(checked) >= 55, (
             f"only {len(checked)} narration numerals resolve to a row "
             "value; the sweep above is close to testing nothing. If this is "
