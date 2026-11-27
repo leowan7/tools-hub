@@ -554,11 +554,11 @@ EXAMPLE: dict | None = {
         "literal copies of a stretch of the chain it was asked to bind."
     ),
     "how_to_read_it": (
-        "<strong>Read <code>binder_scrmsd</code> before you trust "
-        "<code>af2_plddt</code>.</strong> The twelve target copies score "
-        "pLDDT 70.79 to 75.65, which looks like nothing broken, while their "
-        "re-fold lands 32 to 44 &Aring; from where they were drawn. "
-        "<strong>The scores shortlist; they do not diagnose.</strong>"
+        "<li>The twelve target copies score <code>af2_plddt</code> "
+        "70.79 to 75.65, which looks like nothing broken.</li>"
+        "<li>Their <code>binder_scrmsd</code> is 32 to 44 &Aring;, so "
+        "the re-fold lands far from where they were drawn.</li>"
+        "<li>The scores shortlist; they do not diagnose.</li>"
     ),
     "cost_usd": "6.02",
     "runtime": "57 minutes",

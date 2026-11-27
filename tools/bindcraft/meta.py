@@ -335,11 +335,12 @@ EXAMPLE: dict | None = {
         "3.04 and 2.96 &Aring;, and surface hydrophobicity of 0.29 and 0.30."
     ),
     "how_to_read_it": (
-        "Read ipTM first: 0.75 is this tool's bar, so both designs sit "
-        "<em>on</em> that bar rather than above it. Shape complementarity "
-        "under 0.65 and a refolding RMSD near 3 &Aring; mean the fit is "
-        "loose. Surface hydrophobicity is filtered out before you see it, so "
-        "it cannot rank these designs."
+        "<li>Both designs have an ipTM of 0.75, which is this tool's "
+        "bar.</li>"
+        "<li>Shape complementarity is under 0.65 and refolding RMSD is "
+        "near 3 &Aring;, so the fit is loose.</li>"
+        "<li>Surface hydrophobicity is filtered out before you see it, "
+        "so it cannot rank these designs.</li>"
     ),
     "cost_usd": "2.04",
     "runtime": "20 minutes",

@@ -283,10 +283,11 @@ EXAMPLE: dict | None = {
         "0.82. The other six fall away from 0.46 to 0.19."
     ),
     "how_to_read_it": (
-        "Sort by ipTM, where 0.65 or more is a credible binder and 0.75 or "
-        "more is strong, then read i_pAE beside it. The two passing designs "
-        "sit under 4.3 &Aring; while everything below ipTM 0.5 is above 13 "
-        "&Aring;. That gap is the real separation in this table."
+        "<li>An ipTM of 0.65 or more is a credible binder and 0.75 or "
+        "more is strong.</li>"
+        "<li>The two passing designs sit under 4.3 &Aring; on i_pAE, "
+        "while everything below ipTM 0.5 is above 13 &Aring;.</li>"
+        "<li>That gap is the separation in this table.</li>"
     ),
     "cost_usd": "2.69",
     "runtime": "37 minutes",

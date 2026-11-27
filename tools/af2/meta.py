@@ -225,11 +225,10 @@ EXAMPLE: dict | None = {
         "the last five, at the C-terminal end."
     ),
     "how_to_read_it": (
-        "A mean pLDDT of <strong>95.4</strong> says the compact core is "
-        "placed almost exactly. The 53.1 at the bottom of the range is the "
-        "final residue of a short tail that is flexible in the real protein, "
-        "not a flaw in that core. Ask where the low residues sit before you "
-        "call a fold poor."
+        "<li>Mean pLDDT is 95.4 across the 76 residues.</li>"
+        "<li>The per-residue values run 53.1 to 98.5, and the 53.1 is "
+        "the final residue of a short tail.</li>"
+        "<li>The low values sit at the chain end, not in the core.</li>"
     ),
     "cost_usd": "0.13",
     "runtime": "73 seconds",

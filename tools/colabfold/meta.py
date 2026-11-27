@@ -191,10 +191,11 @@ EXAMPLE: dict | None = {
         "hanging off the front.</strong>"
     ),
     "how_to_read_it": (
-        "A mean of 61.05 averages the parts the model is sure of with the "
-        "parts it is not. Here the first 22 residues are low and the rest "
-        "holds up, which calls for a 22-residue edit rather than a redesign. "
-        "<strong>The mean cannot tell those apart; the strip can.</strong>"
+        "<li>Mean pLDDT is 61.05 across the 101 residues.</li>"
+        "<li>The first 22 residues score low and the rest holds "
+        "up.</li>"
+        "<li>The mean cannot tell those apart; the per-residue strip "
+        "does.</li>"
     ),
     "cost_usd": "0.07",
     "runtime": "55 seconds",

@@ -158,11 +158,10 @@ EXAMPLE: dict | None = {
         "that even reaches 50 is 10 residues."
     ),
     "how_to_read_it": (
-        "A mean pLDDT of <strong>39.00</strong> with a flat, low "
-        "per-residue strip is the correct answer rather than a failed "
-        "run, because this protein has no single shape to report. The "
-        "mean alone cannot tell that from a folded middle with floppy "
-        "ends, so open the strip."
+        "<li>Mean pLDDT is 39.00 and the per-residue strip is flat and "
+        "low.</li>"
+        "<li>This protein has no single shape to report, so a flat low "
+        "strip is the correct answer rather than a failed run.</li>"
     ),
     "cost_usd": "0.05",
     "runtime": "32 seconds",

@@ -289,10 +289,10 @@ EXAMPLE: dict | None = {
         "not because it met a threshold."
     ),
     "how_to_read_it": (
-        "pLDDT is the model's confidence in the shape of the binder alone, "
-        "while ipTM is its confidence that the binder and the target form "
-        "the complex you asked for. Here 21 of the 25 designs fold "
-        "beautifully and bind nothing. Sort by ipTM, never by pLDDT."
+        "<li>pLDDT is confidence in the shape of the binder alone, and "
+        "ipTM is confidence in the complex.</li>"
+        "<li>21 of the 25 designs fold well and bind nothing.</li>"
+        "<li>Sort by ipTM, never by pLDDT.</li>"
     ),
     "cost_usd": "2.41",
     "runtime": "23 minutes",

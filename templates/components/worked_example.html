@@ -110,7 +110,10 @@ Usage:
           <span class="panel-title">How to read it</span>
         </div>
         <div class="panel-body">
-          <p>{{ ex.how_to_read_it|safe }}</p>
+          {# The field holds <li> items only, so the list markup lives
+             here and every tool gets the same one (Leo, 2026-11-27:
+             "Just give sentence bullet points"). #}
+          <ul style="margin: 0 0 0.75rem; padding-left: 1.15rem; list-style: disc;">{{ ex.how_to_read_it|safe }}</ul>
           <p style="color: var(--text-tertiary); font-size: 0.8rem; margin-bottom: 0;">
             Recorded from one past run, not a prediction for yours.
           </p>

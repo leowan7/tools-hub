@@ -238,11 +238,12 @@ EXAMPLE: dict | None = {
         "to 0.689, pTM 0.433 to 0.625, and pLDDT 42.8 to 52.9."
     ),
     "how_to_read_it": (
-        "All four columns put the same two predictions on top, at ipTM "
-        "0.689 and 0.670 against 0.493 and 0.471. Read that as a ranking "
-        "among these four only, because every pLDDT sits in the 40s or "
-        "low 50s. The form&rsquo;s default single seed is the bottom row "
-        "here."
+        "<li>All four columns put the same two predictions on top, at "
+        "ipTM 0.689 and 0.670 against 0.493 and 0.471.</li>"
+        "<li>Every pLDDT sits in the 40s or low 50s, so the ranking "
+        "holds among these four only.</li>"
+        "<li>The form&rsquo;s default single seed is the bottom row "
+        "here.</li>"
     ),
     "cost_usd": "0.86",
     "runtime": "3.5 minutes",

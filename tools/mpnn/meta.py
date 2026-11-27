@@ -247,11 +247,10 @@ EXAMPLE: dict | None = {
         "returned."
     ),
     "how_to_read_it": (
-        "Recovery is the fraction of positions where the model picked the "
-        "residue nature uses, so 53% and 50% on a real backbone is "
-        "healthy and 0.95 would be suspicious. Score runs the other way, "
-        "because it is negative log-likelihood per residue, so the 0.758 "
-        "and 0.756 are confident."
+        "<li>Sequence recovery is 53% and 50%, which is healthy on a "
+        "real backbone; 0.95 would be suspicious.</li>"
+        "<li>Score is negative log-likelihood per residue, so the 0.758 "
+        "and 0.756 are confident.</li>"
     ),
     "structure_file": "1HEW.pdb",
 }

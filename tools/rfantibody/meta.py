@@ -242,11 +242,10 @@ EXAMPLE: dict | None = {
         "87 to 91."
     ),
     "how_to_read_it": (
-        "<strong>The column that separates is ipAE.</strong> Five "
-        "candidates sit between 3.72 and 7.69 &Aring;, then nothing until "
-        "12.56, and a gap that wide marks a different outcome rather than "
-        "the top of a continuum. pLDDT is 87 to 91 across all twenty, so "
-        "it separates nothing."
+        "<li>ipAE is 3.72 to 7.69 &Aring; for five candidates, then "
+        "nothing until 12.56 &Aring;.</li>"
+        "<li>pLDDT is 87 to 91 across all twenty, so it separates "
+        "nothing.</li>"
     ),
     "cost_usd": "1.01",
     "runtime": "14 minutes",

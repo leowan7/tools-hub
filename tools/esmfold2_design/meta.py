@@ -312,11 +312,11 @@ EXAMPLE: dict | None = {
         "<strong>11.95</strong>."
     ),
     "how_to_read_it": (
-        "<code>pI</code> is a hard gate checked first, so seed 0 was "
-        "disqualified at pI <strong>11.95</strong> before its ipTM 0.956 "
-        "counted. Seed 1 passed at pI 5.67. Read <code>pI</code> first "
-        "and treat the score column as a tie-breaker, because sorting by "
-        "ipTM puts the worst design on top."
+        "<li>Seed 0 was disqualified at pI 11.95, before its ipTM of "
+        "0.956 counted.</li>"
+        "<li>Seed 1 passed at pI 5.67.</li>"
+        "<li><code>pI</code> is a hard gate checked first, so sorting "
+        "by ipTM puts the worst design on top.</li>"
     ),
     "cost_usd": "1.26",
     "runtime": "5 minutes",

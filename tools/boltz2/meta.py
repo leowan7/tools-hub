@@ -245,9 +245,9 @@ EXAMPLE: dict | None = {
         "each design contacts 13 or 14 of the 14 cleft residues."
     ),
     "how_to_read_it": (
-        "ipTM from 0.874 to 0.952 means every complex here is confidently "
-        "predicted. ipTM does not rank affinity: PMI is the "
-        "tightest of those binders and scored the lowest of them. Treat a "
-        "good score as a reason to make the molecule."
+        "<li>ipTM runs 0.874 to 0.952, so every complex here is "
+        "confidently predicted.</li>"
+        "<li>ipTM does not rank affinity: PMI is the tightest of these "
+        "binders and scored the lowest of them.</li>"
     ),
 }

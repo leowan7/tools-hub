@@ -262,11 +262,11 @@ EXAMPLE: dict | None = {
         "touching five, and the best design touching six of nine."
     ),
     "how_to_read_it": (
-        "The score counts how many of the nine requested epitope residues "
-        "a design contacts, and nineteen of the forty reach none. The "
-        "real finding is in the contact grid, where <strong>63, 64 and "
-        "66</strong> are empty for every design while 73 is hit by "
-        "seventeen."
+        "<li>The score counts how many of the nine requested epitope "
+        "residues a design contacts.</li>"
+        "<li>Nineteen of the forty designs contact no requested residue.</li>"
+        "<li>Residues 63, 64 and 66 are empty for every design, while "
+        "73 is hit by seventeen.</li>"
     ),
     "cost_usd": "0.87",
     "runtime": "12 minutes",

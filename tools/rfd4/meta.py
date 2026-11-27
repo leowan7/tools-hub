@@ -343,10 +343,11 @@ EXAMPLE: dict | None = {
         "nothing more."
     ),
     "how_to_read_it": (
-        "The reading is structural. Open each file, find the chain that is "
-        "not A, and check that it sits against residue 56 rather than "
-        "somewhere else on the surface. Eight samples at one setting will "
-        "not all do that."
+        "<li>Each structure holds two chains, and the chain that is not "
+        "A is the designed binder.</li>"
+        "<li>A working design puts that chain against residue 56 rather "
+        "than elsewhere on the surface.</li>"
+        "<li>Eight samples at one setting will not all land there.</li>"
     ),
     # 217 GPU-seconds on A100-80GB, the gpu_class in
     # shared/wallet_estimates.py TOOL_SPECS["rfd4"], is what
