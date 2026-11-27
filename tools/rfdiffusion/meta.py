@@ -283,27 +283,10 @@ EXAMPLE: dict | None = {
         "0.82. The other six fall away from 0.46 to 0.19."
     ),
     "how_to_read_it": (
-        "Sort by ipTM, where 0.65 or more is a credible binder and 0.75 "
-        "or more is strong. Then read i_pAE beside it, because the two "
-        "agreeing is what makes either believable: here the two passing "
-        "designs sit under 4.3 &Aring; while everything below ipTM 0.5 "
-        "is above 13 &Aring;, and that gap is the real separation in "
-        "this table. <strong>Look at the spread, not only the top "
-        "row.</strong> A run whose eight designs all score within a "
-        "whisker of each other is usually telling you something went "
-        "wrong upstream rather than that you have eight equally good "
-        "binders, while a run that fans out from 0.88 to 0.19 is one "
-        "where the scoring actually discriminated."
-    ),
-    "what_we_did_next": (
-        "We kept the two passing designs and dropped the other six. For "
-        "those two the next step is an independent re-fold against the "
-        "same target, using a different model so that it is a real "
-        "second opinion rather than the same one twice, and then SPR or "
-        "BLI if they survive it. One trial run is a screen, not a "
-        "result: two hits out of eight is roughly the yield this tool "
-        "is scoped for, and the point of the trial run is to earn the "
-        "bigger run."
+        "Sort by ipTM, where 0.65 or more is a credible binder and 0.75 or "
+        "more is strong, then read i_pAE beside it. The two passing designs "
+        "sit under 4.3 &Aring; while everything below ipTM 0.5 is above 13 "
+        "&Aring;. That gap is the real separation in this table."
     ),
     "cost_usd": "2.69",
     "runtime": "37 minutes",

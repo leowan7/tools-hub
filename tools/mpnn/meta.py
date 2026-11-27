@@ -248,20 +248,10 @@ EXAMPLE: dict | None = {
     ),
     "how_to_read_it": (
         "Recovery is the fraction of positions where the model picked the "
-        "residue nature actually uses. The score legend on this page puts "
-        "the usable line at 0.4 and excellent at 0.6, so about 0.5 on a "
-        "real backbone is healthy, and you would be suspicious of 0.95, "
-        "which usually means the native sequence leaked into the run. "
-        "Score runs the other way, because it is the model's negative "
-        "log-likelihood per residue, so lower is more confident and below "
-        "1.0 is excellent."
-    ),
-    "what_we_did_next": (
-        "We did nothing further, because this run existed to prove the "
-        "pipeline. On a real backbone the next step is to raise the "
-        "sequence count to 50 or more, then fold the best few with "
-        "ESMFold or ColabFold to see which of them actually adopt the "
-        "shape you designed them for."
+        "residue nature uses, so 53% and 50% on a real backbone is "
+        "healthy and 0.95 would be suspicious. Score runs the other way, "
+        "because it is negative log-likelihood per residue, so the 0.758 "
+        "and 0.756 are confident."
     ),
     "structure_file": "1HEW.pdb",
 }

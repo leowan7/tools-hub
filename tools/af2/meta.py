@@ -225,27 +225,11 @@ EXAMPLE: dict | None = {
         "the last five, at the C-terminal end."
     ),
     "how_to_read_it": (
-        "<strong>The mean and the minimum are both right.</strong> A mean of "
-        "95.4 says the fold is predicted with very high confidence, and it "
-        "is: the compact core of the protein is placed almost exactly. The "
-        "53.1 at the bottom of the range is not a flaw in that core. It is "
-        "the final residue of a short tail that sticks out from the folded "
-        "body, and the viewer shows it as the one stretch that fades from "
-        "blue toward red. That tail is known to be flexible in the real "
-        "protein, so a lower score there is the model being accurate about "
-        "what it cannot pin down, not the model failing. "
-        "Read a wide pLDDT range by asking WHERE the low residues are, "
-        "because a few at a chain end is normal while a low patch in the "
-        "middle of a domain is worth worrying about. Compare the ESMFold "
-        "example on this site, where the whole chain is low end to end."
-    ),
-    "what_we_did_next": (
-        "We did nothing further, because the run was a check that the tool "
-        "returns a known answer, and it did. On a protein of your own the "
-        "useful next step depends on where any low residues fall: trim a "
-        "floppy end before you use the structure as a design target, or fold "
-        "it again with the partner it binds if the low region is an "
-        "interface."
+        "A mean pLDDT of <strong>95.4</strong> says the compact core is "
+        "placed almost exactly. The 53.1 at the bottom of the range is the "
+        "final residue of a short tail that is flexible in the real protein, "
+        "not a flaw in that core. Ask where the low residues sit before you "
+        "call a fold poor."
     ),
     "cost_usd": "0.13",
     "runtime": "73 seconds",

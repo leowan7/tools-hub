@@ -245,27 +245,10 @@ EXAMPLE: dict | None = {
         "each design contacts 13 or 14 of the 14 cleft residues."
     ),
     "how_to_read_it": (
-        "Read the numbers against the scale, not against zero. Folded "
-        "through the identical path, three published MDM2 binders scored as "
-        "follows: the native p53 peptide reached 0.933 to 0.941, PDI reached "
-        "0.930 to 0.935, and PMI reached 0.905 to 0.912, each across three "
-        "seeds. The designs sit inside that band and the better half sit "
-        "above it, which is the useful reading of 0.94 rather than the "
-        "thought that &ldquo;0.94 sounds high&rdquo;. "
-        "Now the part worth carrying away: PMI is the tightest of the "
-        "three at roughly 3 nM, an order of magnitude better than the "
-        "native peptide, and it scored the LOWEST of the three. ipTM "
-        "tells you the model is confident these two things form the "
-        "complex you asked about. It does not rank affinity, and nothing "
-        "on this page does. Treat a good score as a reason to make the "
-        "molecule, never as a predicted K&#8321;."
-    ),
-    "what_we_did_next": (
-        "We took the panel into a developability screen, where several of "
-        "the twelve were rejected on protease liability, which the "
-        "interface score says nothing about, and we carried what survived "
-        "toward synthesis. On your own candidates the same shape works: "
-        "fold the batch, keep what clears the bar, and let the next filter "
-        "be the one this score cannot see."
+        "ipTM from 0.874 to 0.952 sits inside the band published MDM2 "
+        "binders reach through this same path, so these complexes are "
+        "confidently predicted. ipTM does not rank affinity: PMI is the "
+        "tightest of those binders and scored the lowest of them. Treat a "
+        "good score as a reason to make the molecule."
     ),
 }

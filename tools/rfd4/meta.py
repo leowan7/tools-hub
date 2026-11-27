@@ -343,19 +343,10 @@ EXAMPLE: dict | None = {
         "nothing more."
     ),
     "how_to_read_it": (
-        "The reading is structural. Open each file, find the chain that "
-        "is not A, and check that it actually sits against residue 56 "
-        "rather than somewhere else on the surface. Eight samples at "
-        "one setting will not all do that."
-    ),
-    "what_we_did_next": (
-        "For this run we did nothing further, because it existed to "
-        "prove the container and it did that. On a target of your own "
-        "the next step is the one this page cannot do for you: fold "
-        "each complex through a predictor, let that give you the "
-        "confidence number, and only then decide which handful is worth "
-        "a larger sweep or a bench. Eight unscored structures are a "
-        "starting point, not a shortlist."
+        "The reading is structural. Open each file, find the chain that is "
+        "not A, and check that it sits against residue 56 rather than "
+        "somewhere else on the surface. Eight samples at one setting will "
+        "not all do that."
     ),
     # 217 GPU-seconds on A100-80GB, the gpu_class in
     # shared/wallet_estimates.py TOOL_SPECS["rfd4"], is what

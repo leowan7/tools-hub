@@ -158,30 +158,11 @@ EXAMPLE: dict | None = {
         "that even reaches 50 is 10 residues."
     ),
     "how_to_read_it": (
-        "<strong>That is the correct answer, not a failed run.</strong> The "
-        "model is not confused about this protein; it is reporting that the "
-        "protein has no one shape to report, which is what the disorder "
-        "literature says about it too. A run that genuinely breaks returns "
-        "an error rather than a structure. "
-        "What separates the two readings is the <em>shape</em> of the "
-        "per-residue strip rather than the mean. Here the strip is flat and "
-        "low from end to end, with no folded region anywhere. A low mean "
-        "with a high plateau in the middle and red only at the edges would "
-        "be the opposite finding, a real folded region with floppy ends, "
-        "where the middle is trustworthy and only the termini are not. The "
-        "mean would look much the same in both cases and cannot tell them "
-        "apart, so open the strip."
-    ),
-    "what_we_did_next": (
-        "We did nothing, because there is nothing here to fix. No setting "
-        "on this form would raise that number, and running it again "
-        "returns the same structure. When a chain comes back like this, the "
-        "useful move is to change the question rather than the parameters, "
-        "so either fold the fragment that is known to fold, or fold it "
-        "together with the partner it binds, since many disordered "
-        "proteins take a definite shape only in complex. If instead you "
-        "are looking at a <em>designed</em> sequence scoring like this, "
-        "that is a real failure and the design needs redoing."
+        "A mean pLDDT of <strong>39.00</strong> with a flat, low "
+        "per-residue strip is the correct answer rather than a failed "
+        "run, because this protein has no single shape to report. The "
+        "mean alone cannot tell that from a folded middle with floppy "
+        "ends, so open the strip."
     ),
     "cost_usd": "0.05",
     "runtime": "32 seconds",

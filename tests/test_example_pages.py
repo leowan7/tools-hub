@@ -53,15 +53,25 @@ def test_unknown_tool_404s(all_tools_app, monkeypatch):
     assert flask_app.test_client().get("/examples/not-a-tool").status_code == 404
 
 
-def test_structures_are_listed_viewed_and_downloadable(all_tools_app, monkeypatch):
+def test_structures_are_viewable_and_never_downloadable(all_tools_app, monkeypatch):
+    """The viewer stays, the download goes.
+
+    Leo, 2026-11-27: "we don't let people download the structure". Each
+    committed file must still be reachable by the viewer, which loads it
+    by URL, and no download control may name it. The file itself is still
+    served from /static/example/, so this asserts the page makes no
+    offer, not that the bytes are unreachable.
+    """
     flask_app, _slugs = all_tools_app
     monkeypatch.setenv("EXAMPLE_PAGES_ENABLED", "1")
     page = flask_app.test_client().get("/examples/rfd4").get_data(as_text=True)
     files = sorted(p.name for p in (ROOT / "static" / "example" / "rfd4").glob("*.cif"))
     assert files
     for name in files:
-        assert f'data-example-download="{name}"' in page
+        assert f'data-example-view="/static/example/rfd4/{name}"' in page
     assert "js/mol_viewer.js" in page
+    assert "data-example-download" not in page
+    assert "download>" not in page and "download " not in page.split("<body")[-1].lower().replace("downloaded", "")
 
 
 def test_every_example_structure_names_a_design_in_its_payload():
@@ -84,15 +94,18 @@ def test_new_event_types_are_registered():
     from shared.events import USER_EVENT_TYPES  # noqa: PLC0415
 
     js = (ROOT / "static" / "js" / "track.js").read_text(encoding="utf-8")
-    for event in ("example_view", "example_download"):
+    for event in ("example_view",):
         assert event in USER_EVENT_TYPES
         assert f'"{event}"' in js
 
 
-def test_inline_structure_example_gets_one_viewer_and_a_download(all_tools_app, monkeypatch):
+def test_inline_structure_example_gets_one_viewer_and_no_download(all_tools_app, monkeypatch):
+    """AF2's payload carries its own structure, so its partial renders the
+    only viewer and the structures panel does not render at all."""
     flask_app, _slugs = all_tools_app
     monkeypatch.setenv("EXAMPLE_PAGES_ENABLED", "1")
     page = flask_app.test_client().get("/examples/af2").get_data(as_text=True)
     assert page.count('id="af2-ngl-viewer"') == 1
     assert 'id="example-viewer-0"' not in page
-    assert 'data-example-download="ubiquitin_human_unrelaxed_rank_001_alphafold2_ptm_model_1_seed_000.pdb"' in page
+    assert "ubiquitin_human_unrelaxed_rank_001_alphafold2_ptm_model_1_seed_000.pdb" not in page
+    assert "data-example-download" not in page

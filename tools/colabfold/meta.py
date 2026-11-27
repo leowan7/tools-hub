@@ -191,27 +191,10 @@ EXAMPLE: dict | None = {
         "hanging off the front.</strong>"
     ),
     "how_to_read_it": (
-        "One number for a whole chain averages together the parts the model "
-        "is sure of and the parts it is not, and the two failures that hides "
-        "need opposite responses. Uniformly low across the whole strip means "
-        "the sequence does not fold and the design is dead. Low at one end "
-        "and high through the middle, which is what this run shows, means "
-        "most of the design is fine and a specific, locatable piece of it is "
-        "not. <strong>The mean cannot tell those apart; the strip can.</strong> "
-        "Read the trace before deciding the fate of a design, because the "
-        "difference between them is a redesign versus a 22-residue edit. "
-        "It is still a fail as submitted, since a floppy 22-residue terminus "
-        "is a protease target and it will not behave in an assay. But you "
-        "now know which 22 residues, which is a different morning's work."
-    ),
-    "what_we_did_next": (
-        "The move a result like this points to is to trim the tail and re-fold. "
-        "If the remaining 79 residues hold up alone, the core was real and the "
-        "terminus was the whole problem. If the core collapses without it, the "
-        "fold depended on that tail after all and it is the backbone that "
-        "needs revisiting, not the sequence. Either way it is one more cheap "
-        "fold before anything gets ordered, which is the reason this step is "
-        "in the loop at all."
+        "A mean of 61.05 averages the parts the model is sure of with the "
+        "parts it is not. Here the first 22 residues are low and the rest "
+        "holds up, which calls for a 22-residue edit rather than a redesign. "
+        "<strong>The mean cannot tell those apart; the strip can.</strong>"
     ),
     "cost_usd": "0.07",
     "runtime": "55 seconds",

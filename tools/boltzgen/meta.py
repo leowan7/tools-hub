@@ -397,34 +397,11 @@ EXAMPLE: dict | None = {
         "for the GPU time your run uses."
     ),
     "how_to_read_it": (
-        "<strong>Refolding RMSD is the column with a real bar on it.</strong> "
-        "BoltzGen re-folds each design on its own, with no target present, "
-        "and measures the drift from the pose it was generated in. Under "
-        "1.5 &Aring; the table calls it self-consistent, meaning the design "
-        "wants to be that shape whether or not the target is there. Four of "
-        "these five clear it, and rank 2, at 1.77 &Aring;, does not. "
-        "<strong>pLDDT is the one that fails here.</strong> Above 80 is "
-        "confidently folded and 0 of 5 make it. A design can sit on the "
-        "right epitope and still not be a protein worth synthesising, and "
-        "that is exactly this run. "
-        "<strong>Do not judge the ipTM against 0.7.</strong> That bar comes "
-        "from cofolding, where a model is handed both partners and asked "
-        "whether they dock. BoltzGen's is its generator's own score, not on "
-        "that scale, which is why this site shows it with no pass bar. The "
-        "0.538 to 0.653 here is not &ldquo;nearly good&rdquo;, and it is a "
-        "reading you can rank designs by and cannot compare against a "
-        "cofold number, including the 0.98 quoted further down this page "
-        "from a different measurement."
-    ),
-    "what_we_did_next": (
-        "We treated all five as failed, because they are, and kept the "
-        "epitope. What 200 designs bought is the knowledge "
-        "that the site is reachable, since the generator put binders on "
-        "the residues we named, and it also showed that a 50-70 residue "
-        "budget produced nothing foldable enough to order. The next run is a "
-        "larger budget on the same hotspots, then an independent cofold of "
-        "whatever clears pLDDT 80, and only then SPR or BLI. Nothing on "
-        "this page is evidence of binding."
+        "<strong>pLDDT is the column that fails here.</strong> Above 80 is "
+        "confidently folded and none of these five reaches it. Refolding "
+        "RMSD under 1.5 &Aring; means the design wants that shape with no "
+        "target present. The ipTM of 0.538 to 0.653 is the generator's own "
+        "score, not on a cofold scale."
     ),
     "cost_usd": "6.00",
     "runtime": "82 minutes",

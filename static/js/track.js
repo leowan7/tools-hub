@@ -14,7 +14,6 @@
  *   - result_download   on a click of an export / structure download link
  *   - outbound_click    on a click of a ranomics.com link
  *   - example_view      when path matches /examples/<slug>
- *   - example_download  on a click of a structure download on that page
  *
  * Also exposes window.track(eventType, props) for ad-hoc events.
  *
@@ -102,11 +101,6 @@
     }
     if (!el || el.tagName !== "A") return;
     var href = el.getAttribute("href") || "";
-    var exampleFile = el.getAttribute("data-example-download");
-    if (exampleFile) {
-      track("example_download", { tool: parseExample(location.pathname), file: exampleFile.slice(0, 200) });
-      return;
-    }
     if (DOWNLOAD_RE.test(href) || href.indexOf("data:chemical/") === 0) {
       track("result_download", { href: href.slice(0, 200), path: location.pathname });
       return;

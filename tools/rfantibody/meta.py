@@ -242,34 +242,11 @@ EXAMPLE: dict | None = {
         "87 to 91."
     ),
     "how_to_read_it": (
-        "Start with the column that does <em>not</em> help. pLDDT is 87 "
-        "to 91 across all twenty, every failing candidate included, so "
-        "all twenty clear the 80 bar and the column separates nothing "
-        "at all. That is the normal case for an antibody run rather "
-        "than a fault: the framework is a real nanobody scaffold, so of "
-        "course it folds. Confidently folded is not bound. <strong>The "
-        "column that separates is ipAE</strong>, and it splits cleanly "
-        "instead of tailing off, with five candidates between 3.72 and "
-        "7.69 &Aring;, then nothing whatsoever until 12.56, then "
-        "fifteen more out to 17.48. A gap that wide is the real signal "
-        "here. It says the five are a different outcome from the "
-        "fifteen, not merely the top of a continuum, which is a much "
-        "safer thing to act on than a ranking. Global pAE agrees "
-        "exactly, at under 5 &Aring; for all five and above 7 for every "
-        "other one. The <em>vs. quality bar</em> column spells it out "
-        "per row, where every rejection names ipAE and pAE and not one "
-        "of them names pLDDT."
-    ),
-    "what_we_did_next": (
-        "We treated the five as the only rows carrying information, and "
-        "the size of the ipAE gap as the reason to trust that split "
-        "rather than hedging down the list. On a real target the next "
-        "run is more backbones at these same settings, remembering the "
-        "five-to-one again, so the bill climbs faster than the number "
-        "you type. After that comes an independent re-fold of the few "
-        "that clear the bar, then yeast display, and SPR or BLI only "
-        "after that. Twenty candidates off four backbones is a screen, "
-        "not a shortlist."
+        "<strong>The column that separates is ipAE.</strong> Five "
+        "candidates sit between 3.72 and 7.69 &Aring;, then nothing until "
+        "12.56, and a gap that wide marks a different outcome rather than "
+        "the top of a continuum. pLDDT is 87 to 91 across all twenty, so "
+        "it separates nothing."
     ),
     "cost_usd": "1.01",
     "runtime": "14 minutes",

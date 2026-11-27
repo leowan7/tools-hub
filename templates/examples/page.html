@@ -6,7 +6,7 @@
 
 {% block content %}
   <div class="hero">
-    <h1>{{ adapter.label }}: a real result</h1>
+    <h1>{{ adapter.label }}: an example result</h1>
     <p class="subtitle">{{ ex.teaser }}</p>
     <p style="margin: 0.9rem 0 0; position: relative; font-size: 0.9rem;">
       <a href="{{ url_for('tools.tool_form', tool=adapter.slug) }}">Run {{ short_name or adapter.label }} on your own target &rarr;</a>
@@ -18,32 +18,36 @@
   <div style="display: grid; gap: 1.25rem; min-width: 0;">
     {{ worked_example(adapter, ex) }}
 
-    {% if structures %}
+    {# Nothing to show when the payload carries its own structure: the
+       results partial already renders that viewer, and there is no
+       download beside it any more. #}
+    {% if structures and not ex.result.get('pdb_b64') %}
       <section class="panel" id="example-structures">
         <div class="panel-header">
           <span class="panel-title">Structures from this run</span>
         </div>
         <div class="panel-body">
           {# A payload with an inline structure (pdb_b64) already gets a
-             viewer from its own results partial; this panel then lists the
-             download only. #}
+             viewer from its own results partial, so this panel adds one
+             only when it does not.
+
+             No download link, and no download of the structure anywhere on
+             this page (Leo, 2026-11-27: "we don't let people download the
+             structure"). The viewer still fetches the file from
+             /static/example/..., which is a public URL, so this stops the
+             offer rather than the access. #}
           {% set _own_viewer = not ex.result.get('pdb_b64') %}
           {% if _own_viewer %}
             <div id="example-viewer-0"
                  style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+            {% if structures|length > 1 %}
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                {% for name in structures %}
+                  <button type="button" class="btn btn-secondary" data-example-view="{{ url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) }}">{{ loop.index }}</button>
+                {% endfor %}
+              </div>
+            {% endif %}
           {% endif %}
-          <ul style="list-style: none; padding: 0; margin: 0;">
-            {% for name in structures %}
-              {% set _url = url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) %}
-              <li style="display: flex; gap: 1rem; align-items: center; padding: 0.35rem 0; flex-wrap: wrap;">
-                <code style="flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere;">{{ name }}</code>
-                {% if _own_viewer %}
-                  <button type="button" class="btn btn-secondary" data-example-view="{{ _url }}">View in 3D</button>
-                {% endif %}
-                <a href="{{ _url }}" download data-example-download="{{ name }}">Download</a>
-              </li>
-            {% endfor %}
-          </ul>
         </div>
       </section>
     {% endif %}

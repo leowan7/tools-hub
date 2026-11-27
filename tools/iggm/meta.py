@@ -262,37 +262,11 @@ EXAMPLE: dict | None = {
         "touching five, and the best design touching six of nine."
     ),
     "how_to_read_it": (
-        "There is one score column here, and reading it as a leaderboard "
-        "throws away most of what this run told you. Two other things "
-        "matter more. "
-        "<strong>First, look at the shape.</strong> Nearly half the "
-        "designs miss the epitope completely. That is an ordinary IgGM "
-        "result, and it is why forty samples is the right order of "
-        "magnitude rather than four, because a run of four could easily "
-        "have come back four zeros and told you nothing about your "
-        "antibody or your epitope. "
-        "<strong>Second, look at the contact grid below the "
-        "table.</strong> That is the part worth the most and the part with "
-        "no number attached. Its columns are your nine requested "
-        "positions, and three of them, <strong>63, 64 and 66</strong>, "
-        "are empty for every single design. They are not rarely hit, they "
-        "are never hit. Meanwhile position 73 is contacted by seventeen "
-        "of the forty, and is the <em>only</em> contact five of them "
-        "make. So the run is not sampling your nine-residue patch "
-        "evenly. It is repeatedly finding one reachable sub-patch of 65, "
-        "67, 68, 73, 74 and 75, while three residues sit somewhere a CDR "
-        "loop on this framework does not get to. That is a finding about "
-        "your epitope definition rather than about any design, and no "
-        "ranked column would ever have shown it to you."
-    ),
-    "what_we_did_next": (
-        "We took the empty columns as the actionable result, which is not "
-        "where you would look if you had gone straight to the top row. The "
-        "next run narrows the epitope request to the residues that proved "
-        "reachable, so the sampling concentrates there instead of spending "
-        "part of every design on positions that never come back. Folding "
-        "the best design independently and taking it to expression is the "
-        "step after that, not before it."
+        "The score counts how many of the nine requested epitope residues "
+        "a design contacts, and nineteen of the forty reach none. The "
+        "real finding is in the contact grid, where <strong>63, 64 and "
+        "66</strong> are empty for every design while 73 is hit by "
+        "seventeen."
     ),
     "cost_usd": "0.87",
     "runtime": "12 minutes",
