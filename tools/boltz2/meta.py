@@ -188,9 +188,12 @@ PILOT: dict | None = {
 # THE REFERENCE PEPTIDES ARE NOT ROWS IN THE PAYLOAD, deliberately. They
 # carry no contact count, so the hotspot grid would have rendered them
 # "0 / 14" — claiming the native p53 ligand touches none of the cleft it
-# is defined by. Their numbers live in the narration instead, where they
-# can be labelled. The band quoted below is the full min-to-max across
-# all three seeds of each.
+# is defined by. Their numbers used to live in the narration, where they
+# could be labelled; the 2026-11-27 cut took the band out of it, so the
+# only place the three are now described is this comment. What the page
+# still says of them is that PMI binds tightest and scored lowest, which
+# the band below is the record for: it is the full min-to-max across all
+# three seeds of each.
 #
 # NO DESIGNED SEQUENCES. The peptides are Ranomics campaign output; the
 # page teaches the reader to read the scores without handing over the
@@ -247,7 +250,8 @@ EXAMPLE: dict | None = {
     "how_to_read_it": (
         "<li>ipTM runs 0.874 to 0.952, so every complex here is "
         "confidently predicted.</li>"
-        "<li>ipTM does not rank affinity: PMI is the tightest of these "
-        "binders and scored the lowest of them.</li>"
+        "<li>ipTM does not rank affinity: of the three published MDM2 "
+        "binders folded through this same path, PMI binds tightest and "
+        "scored the lowest.</li>"
     ),
 }

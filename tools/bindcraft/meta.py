@@ -147,8 +147,8 @@ about: dict = {
     # excellent 0.85. Stated INCLUSIVELY, which that legend's own
     # ``explanation`` ("Above 0.75") is not, and on THIS page that is not
     # a nicety: EXAMPLE below carries ipTM 0.75 exactly
-    # (example/result.json:13) and its ``how_to_read_it`` reads both
-    # designs as sitting ON the bar rather than above it, so "above 0.75"
+    # (example/result.json:13) and its ``how_to_read_it`` puts both
+    # designs AT that bar, so "above 0.75"
     # had one paragraph of this page disqualifying what another one
     # counts. judge gates on ``seen >= good`` (shared/score_legends.py::judge).
     # The nearest this guide had to bindcraft's OWN bar was "above the
@@ -335,8 +335,8 @@ EXAMPLE: dict | None = {
         "3.04 and 2.96 &Aring;, and surface hydrophobicity of 0.29 and 0.30."
     ),
     "how_to_read_it": (
-        "<li>Both designs have an ipTM of 0.75, which is this tool's "
-        "bar.</li>"
+        "<li>The two designs have ipTM 0.75 and 0.76, at this tool's "
+        "0.75 bar.</li>"
         "<li>Shape complementarity is under 0.65 and refolding RMSD is "
         "near 3 &Aring;, so the fit is loose.</li>"
         "<li>Surface hydrophobicity is filtered out before you see it, "
