@@ -103,10 +103,29 @@ about: dict = {
         },
     ],
     "output_summary": (
-        "Per design: the predicted antibody-antigen complex PDB, the designed "
-        "sequence, and an epitope-contact count (how many of your chosen "
-        "epitope residues the designed antibody engages). Sequence statistics "
-        "and amino-acid distribution plots are attached as artifacts. "
+        "Every design comes back as the predicted antibody-antigen complex "
+        "PDB, the designed sequence as a FASTA artifact, and an "
+        "epitope-contact count, which is how many of your chosen epitope "
+        "residues the designed antibody engages. "
+        # WHAT THIS PARAGRAPH USED TO PROMISE AND WHY IT NO LONGER DOES:
+        # "Sequence statistics and amino-acid distribution plots are attached
+        # as artifacts." No run has produced either. collect_artifacts globs
+        # *.fasta, *.csv and *.png, but upstream's AbDesigner.infer_pdb writes
+        # one FASTA and one PDB per design and nothing else
+        # (IgGM/deploy/ab_design.py at the IGGM_SHA pinned in
+        # tools/iggm/Dockerfile.modal), and the 40-design run in
+        # tools/iggm/example/result.json attached 40 FASTAs and no CSV or PNG.
+        #
+        # The second sentence below is the same finding said to the customer.
+        # IgGM's design model does compute a pLDDT (its PLDDT head is returned
+        # as outputs['3d']['plddt']), but AbDesigner.forward keeps only the
+        # coordinates, so it is discarded before any file is written. Giving
+        # this tool a quality column means reaching into upstream for that
+        # tensor, which no change here has done.
+        "There is no confidence score or pLDDT for a design, because IgGM "
+        "does not report one, so the contact count is the only number on the "
+        "results page and it tells you where a design docks rather than how "
+        "good it is. "
         # A third distinct reason, and the only one that is about the science
         # rather than the bookkeeping: the patch figure describes ONE chain's
         # surface, and shared/design_quality.py::designed_chains returns

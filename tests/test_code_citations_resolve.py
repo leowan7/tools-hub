@@ -172,6 +172,17 @@ _OUTSIDE_THIS_REPO = frozenset(
         "binder_design.py",
         "configuration_esmfold2.py",
         "modeling_esmfold2_common.py",
+        # Upstream IgGM, which exists only inside the built iggm image:
+        # tools/iggm/Dockerfile.modal git-clones TencentAI4S/IgGM at a pinned
+        # IGGM_SHA, so nothing under IgGM/ is tracked here.
+        # templates/tools/iggm_results.html cites infer_pdb because the
+        # reason that page can show no quality score is that this function
+        # writes one FASTA and one PDB per design and nothing else, and a
+        # reader who cannot find the function cannot check that. The SHA is
+        # pinned, so the symbol cannot move under us silently; exempting the
+        # path leaves it unchecked here, which is unavoidable for a file this
+        # repo does not track.
+        "IgGM/deploy/ab_design.py",
     }
 )
 

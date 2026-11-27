@@ -1,9 +1,28 @@
 {# IgGM results partial — included by job_detail.html on status=succeeded or a cancelled run that kept designs.
 
    Reshapes the IgGM ``smoke_result`` schema into the candidate_table
-   contract: each design becomes one row scored by how many of the
+   contract: each design becomes one row carrying how many of the
    requested epitope residues the designed antibody contacts. Sorted by
-   epitope contacts descending. #}
+   that count, descending.
+
+   THAT COUNT IS THE ONLY PER-DESIGN NUMBER THERE IS, AND IT IS NOT A
+   QUALITY SCORE. It is a geometric fact about the predicted complex
+   (``epitope_contacts`` in tools/iggm/run_pipeline.py), not a confidence.
+   IgGM returns no per-design confidence at all: ``design.py`` calls
+   ``AbDesigner.infer_pdb``, which writes one FASTA and one PDB per design
+   and nothing else (IgGM/deploy/ab_design.py::infer_pdb at the IGGM_SHA
+   pinned in tools/iggm/Dockerfile.modal). The model does have a pLDDT head
+   and ``DesignModel`` returns ``outputs['3d']['plddt']``, but
+   ``AbDesigner.forward`` keeps only the coordinates, so the pLDDT is
+   discarded before anything is written and there is no file to parse. The
+   40-design run in tools/iggm/example/result.json bears this out: its
+   ``artifact_keys`` are 40 FASTAs and nothing else.
+
+   So the copy below states what the order is by and that it is not a
+   quality ranking, and it names what the ``Top`` badge that
+   components/candidate_table.html puts on row one actually marks. The copy
+   is split by shape and the ``ranked`` argument is no longer keyed on
+   ``backfilled``; both are explained where they are written, further down. #}
 
 {% from "components/results_shell.html" import results_panel %}
 
@@ -82,16 +101,79 @@
         </div>
       {% endif %}
     </div>
-    <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
-      Each design's epitope-contact count is how many of your requested epitope
-      residues the designed antibody engages in the predicted complex (heavy
-      atom within 5&nbsp;&Aring;). A design that engages the epitope is docking
-      where you asked.
-    </div>
+    {# TWO SHAPES REACH THIS PANEL AND THEY SHOW DIFFERENT THINGS, so the
+       copy is split rather than written once for the common case. On the
+       native ``designs`` path the rows are sorted by contact count and the
+       grid renders. On the rebuilt path -- ``recovered`` above, which is a
+       cancelled run kept by shared/jobs.py::_keep_streamed_designs or a run
+       rebuilt by shared/job_recovery.py::reconstruct -- the rows are in
+       arrival order, no contact count survives (``n_epitope_contacts`` is
+       not in webhooks/modal.py::_sanitize_candidate's allowlist, so a
+       streamed row carries ``scores: {}`` and recovered_columns returns an
+       empty column list) and ``epitope_positions`` is absent so the grid
+       does not render. One wording for both told a cancelled run's reader
+       that row one has the most epitope contacts, when nothing on that page
+       counts contacts at all.
+
+       Gated on ``candidates`` as well: with no designs the panel below says
+       so and there is no table, badge or grid for any of this to describe. #}
+    {% if candidates %}
+      <ul style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch; margin: 0; padding-left: 1.1rem;">
+        {% if recovered %}
+          {# NOT "this run did not finish normally": shared/job_recovery.py
+             writes this shape for a run that DID complete and only lost its
+             result callback, as well as for a cancelled or stopped one. What
+             every one of them has in common is that the rows were rebuilt
+             from the stream, which is also why they carry no count. #}
+          <li>These designs were rebuilt from what the run streamed, so they
+            are listed in the order they came back and not in any
+            ranking.</li>
+          <li>The epitope-contact count did not survive the rebuild, so the
+            table below carries no number for a design.</li>
+          <li>IgGM reports no confidence score or pLDDT for a design either,
+            so nothing on this page tells you how good a design is.</li>
+          <li>Fold a design you care about independently before you trust
+            it.</li>
+        {% else %}
+          <li>Each design's epitope-contact count is how many of your
+            requested epitope residues the designed antibody engages in the
+            predicted complex, counting any heavy atom within
+            5&nbsp;&Aring;.</li>
+          <li>The table below is ordered by that count, highest first, and
+            the Top badge on the first row marks the design with the most
+            epitope contacts in this run.</li>
+          <li>That is not a quality ranking. IgGM reports no confidence score
+            or pLDDT for a design, so nothing on this page tells you how good
+            a design is, only where it docks.</li>
+          <li>Fold a design you care about independently before you trust
+            it.</li>
+          {% if epitope_positions %}
+            <li>The contact grid below shows which of your epitope positions
+              each of the designs it lists reaches, which is worth more than
+              the order of the table.</li>
+          {% endif %}
+        {% endif %}
+      </ul>
+    {% endif %}
   </div>
 </div>
 
-{# Per-design candidate table — NGL viewer + .pdb download per row. #}
+{# Per-design candidate table — NGL viewer + .pdb download per row.
+
+   ``ranked`` below is ``not recovered``, NOT the ``not
+   output.get('backfilled')`` the other twelve partials pass. That flag is
+   written by shared/job_recovery.py::reconstruct and NOT by
+   shared/jobs.py::_keep_streamed_designs, so a cancelled run that kept its
+   streamed designs came through here with ranked=true: candidate_table's
+   ``is_top = loop.first and ranked`` then badged whichever design arrived
+   first as "Top-ranked design in this run", and the table's own "the #
+   column is the order the designs came back in" note was suppressed on the
+   one page that needed it.
+
+   ``recovered`` is non-empty for exactly the shapes this partial does not
+   sort (``candidates = recovered or candidates`` above swaps them in after
+   the sort), and empty on the native ``designs`` path, so this is the same
+   value as before on a normally finished run and on a backfilled one. #}
 {% call results_panel(
     candidates=candidates,
     columns=columns,
@@ -101,7 +183,7 @@
     tier=tier,
     gpu_seconds=runtime_seconds,
     send_target_tools=send_target_tools,
-    ranked=(not output.get('backfilled')),
+    ranked=(not recovered),
     requested=designs_total,
     returned=designs_completed) %}
   <p class="subtitle">
@@ -185,10 +267,20 @@
   </div>
 {% endif %}
 
-{# Attached artifacts (designed FASTA, sequence-stat CSVs, AA-distribution plots).
-   The per-design complex PDBs are in the table above; these are the run-level
-   extras IgGM writes. Download wiring for non-PDB artifacts is confirmed at
-   build; names are listed so the run is self-documenting either way. #}
+{# Attached artifacts. The per-design complex PDBs are in the table above;
+   these are whatever else the run left in the output directory, which
+   tools/iggm/run_pipeline.py::collect_artifacts globs for *.fasta, *.csv
+   and *.png.
+
+   In practice that is the designed FASTAs and nothing more: upstream's
+   ``infer_pdb`` writes one FASTA and one PDB per design and no CSV or plot
+   anywhere (see the header comment at the top of this file), and the
+   40-design run in tools/iggm/example/result.json attached 40 FASTAs and
+   nothing else. An earlier version of this comment promised sequence-stat
+   CSVs and amino-acid distribution plots; no run has produced either.
+
+   Download wiring for non-PDB artifacts is confirmed at build; names are
+   listed so the run is self-documenting either way. #}
 {% if artifact_keys %}
   <div class="panel" style="margin-top:1rem;">
     <div class="panel-header"><span class="panel-title">Artifacts</span></div>
