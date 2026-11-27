@@ -287,3 +287,80 @@ def test_abandoned_cart_sends_counted_in_window_without_internal(monkeypatch):
     auth = [stamped(AUTH_USERS[0], RECENT), stamped(AUTH_USERS[2], RECENT),
             stamped(AUTH_USERS[3], OLD), AUTH_USERS[4]]
     assert _payload(monkeypatch, auth=auth).abandoned_cart_sent == 1
+
+
+def _cart_tables():
+    sent = (NOW - timedelta(hours=3)).isoformat()
+    before = (NOW - timedelta(hours=4)).isoformat()
+    after = (NOW - timedelta(hours=2)).isoformat()
+
+    def ev(i, email_id, type_, uid, at=sent, kind="abandoned_cart"):
+        return {"svix_id": f"m{i}", "resend_email_id": email_id, "event_type": type_,
+                "user_id": uid, "event_at": at, "email_kind": kind}
+
+    t = _tables()
+    t["email_events"] = [
+        ev(1, "e-b", "sent", "u-b"), ev(2, "e-b", "delivered", "u-b"),
+        ev(3, "e-b", "opened", "u-b", after), ev(4, "e-b", "opened", "u-b", after),
+        ev(5, "e-b", "clicked", "u-b", after),
+        ev(6, "e-c", "sent", "u-c"), ev(7, "e-c", "bounced", "u-c"),
+        ev(8, "e-int", "sent", "u-int"),              # internal: left out
+        ev(9, "e-old", "delivered", "u-c"),           # its send is not in the window
+        ev(10, "e-w", "sent", "u-a", kind="welcome"),  # another kind
+        ev(11, "e-x", "sent", "u-a", at=OLD),          # sent before the window
+    ]
+    t["wallet_transactions"] = [
+        {"id": 1, "user_id": "u-b", "kind": "topup", "amount_usd": "10", "created_at": after},
+        {"id": 2, "user_id": "u-c", "kind": "topup", "amount_usd": "10", "created_at": before},
+        {"id": 3, "user_id": "u-int", "kind": "topup", "amount_usd": "10", "created_at": after},
+    ]
+    t["tool_jobs"] = [
+        {"user_id": "u-b", "tool": "boltz2", "status": "succeeded", "created_at": after},
+        {"user_id": "u-c", "tool": "boltz2", "status": "succeeded", "created_at": after},
+        {"user_id": "u-a", "tool": "boltz2", "status": "succeeded", "created_at": after},
+    ]
+    return t
+
+
+def test_abandoned_cart_delivery_block(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables())
+    assert p.cart_events_ok is True
+    # Cohort: e-b and e-c. The second "opened" on e-b counts once.
+    assert p.cart_events == {"sent": 2, "delivered": 1, "delivery_delayed": 0,
+                             "bounced": 1, "opened": 1, "clicked": 1}
+    # u-b topped up after the send; u-c's top-up came before it.
+    assert p.cart_topped_up == 1
+    # u-b and u-c ran after their sends; u-a got no cart email in the window.
+    assert p.cart_ran_job == 2
+
+
+def test_abandoned_cart_block_unreadable(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("email_events",))
+    assert p.cart_events_ok is False
+    assert p.cart_events == {}
+    assert p.payments_count == 2
+
+
+def test_abandoned_cart_unreadable_ledger_is_unknown_not_zero(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("wallet_transactions",))
+    assert p.cart_topped_up is None
+    assert p.cart_ran_job == 2
+    p = _payload(monkeypatch, tables=_cart_tables(), broken=("tool_jobs",))
+    assert p.cart_ran_job is None
+    assert p.cart_topped_up == 1
+
+
+def test_abandoned_cart_events_are_paged(monkeypatch):
+    monkeypatch.setattr(daily_digest, "_LEDGER_PAGE", 2)
+    p = _payload(monkeypatch, tables=_cart_tables())
+    assert p.cart_events["sent"] == 2
+    assert p.cart_events["clicked"] == 1
+
+
+def test_template_renders_cart_block(monkeypatch):
+    p = _payload(monkeypatch, tables=_cart_tables())
+    app = Flask(__name__, template_folder=str(Path(__file__).resolve().parents[1] / "templates"))
+    with app.app_context():
+        html = daily_digest.render_digest_html(p)
+    assert "2 sent, 1 delivered" in " ".join(html.split())
+    assert "then so far 1 topped up, 2 ran a job" in " ".join(html.split())

@@ -124,6 +124,15 @@ class DigestPayload:
     # Users whose abandoned-cart stamp (cron/abandoned_cart.py) is in the window;
     # a refused address keeps its stamp, so this can exceed emails delivered.
     abandoned_cart_sent: int = 0
+    # Abandoned-cart emails Resend reported as sent in the window
+    # (public.email_events): distinct emails per event type, then how many of
+    # their users topped up / started a run after that email was sent, up to
+    # when this digest ran. Events after the digest are counted in no digest.
+    # None = the ledger / tool_jobs read failed.
+    cart_events_ok: bool = True
+    cart_events: Dict[str, int] = field(default_factory=dict)
+    cart_topped_up: Optional[int] = 0
+    cart_ran_job: Optional[int] = 0
     # False when auth.users could not be listed: internal_ids stays empty,
     # so runs, events and money include internal accounts.
     internal_filter_ok: bool = True
@@ -337,6 +346,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
 
     # --- 3. Tool runs in window -------------------------------------------
     run_rows: List[dict] = []
+    runs_ok = True
     try:
         run_rows = (
             client.table("tool_jobs")
@@ -347,6 +357,7 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
             or []
         )
     except Exception:
+        runs_ok = False
         logger.warning("digest: tool_jobs query failed", exc_info=True)
     run_rows = [r for r in run_rows if r.get("user_id") not in internal_ids]
 
@@ -591,7 +602,66 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
         reverse=True,
     )
 
+    # --- 8. Abandoned-cart delivery (public.email_events) -------------------
+    _fold_cart_events(payload, client, window_start_iso, internal_ids,
+                      payment_rows if payload.money_ok else None,
+                      run_rows if runs_ok else None)
+
     return payload
+
+
+def _fold_cart_events(payload, client, since_iso, internal_ids,
+                      payment_rows, run_rows) -> None:
+    """Cohort = abandoned-cart emails with an ``sent`` event since ``since_iso``."""
+    rows: List[dict] = []
+    try:
+        while True:
+            page = (
+                client.table("email_events")
+                .select("svix_id,resend_email_id,event_type,user_id,event_at")
+                .eq("email_kind", "abandoned_cart")
+                .gte("event_at", since_iso)
+                .order("svix_id")
+                .range(len(rows), len(rows) + _LEDGER_PAGE - 1)
+                .execute()
+                .data
+                or []
+            )
+            rows.extend(page)
+            if len(page) < _LEDGER_PAGE:
+                break
+    except Exception:
+        payload.cart_events_ok = False
+        logger.warning("digest: email_events query failed", exc_info=True)
+        return
+    sent_at: dict = {}  # resend_email_id -> (user_id, sent time)
+    for r in rows:
+        if r.get("event_type") == "sent" and r.get("user_id") not in internal_ids:
+            sent_at[r["resend_email_id"]] = (r.get("user_id"), str(r.get("event_at") or ""))
+    seen: dict = defaultdict(set)
+    for r in rows:
+        if r.get("resend_email_id") in sent_at:
+            seen[r.get("event_type")].add(r["resend_email_id"])
+    payload.cart_events = {
+        t: len(seen.get(t, ()))
+        for t in ("sent", "delivered", "delivery_delayed", "bounced", "opened", "clicked")
+    }
+    first_send: dict = {}
+    for uid, ts in sent_at.values():
+        if uid and (uid not in first_send or ts < first_send[uid]):
+            first_send[uid] = ts
+
+    def _after(rows_):
+        if rows_ is None:
+            return None
+        return len({
+            r.get("user_id") for r in rows_
+            if r.get("user_id") in first_send
+            and str(r.get("created_at") or "") > first_send[r.get("user_id")]
+        })
+
+    payload.cart_topped_up = _after(payment_rows)
+    payload.cart_ran_job = _after(run_rows)
 
 
 # ---------------------------------------------------------------------------

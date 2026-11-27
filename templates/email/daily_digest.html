@@ -67,6 +67,19 @@
       <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.abandoned_cart_sent }}</td>
     </tr>
     <tr>
+      <td style="padding:6px 0;color:#666;">Abandoned-cart delivery (Resend)</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">
+        {%- if p.cart_events_ok -%}
+        {%- set e = p.cart_events -%}
+        {{ e.get('sent', 0) }} sent, {{ e.get('delivered', 0) }} delivered,
+        {{ e.get('delivery_delayed', 0) }} delayed, {{ e.get('bounced', 0) }} bounced,
+        {{ e.get('opened', 0) }} opened, {{ e.get('clicked', 0) }} clicked;
+        then so far {{ 'unknown' if p.cart_topped_up is none else p.cart_topped_up }} topped up,
+        {{ 'unknown' if p.cart_ran_job is none else p.cart_ran_job }} ran a job
+        {%- else -%}unreadable{%- endif -%}
+      </td>
+    </tr>
+    <tr>
       <td style="padding:6px 0;color:#666;">Signups that read commercial</td>
       <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.commercial_signups }}</td>
     </tr>
