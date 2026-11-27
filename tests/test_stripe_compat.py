@@ -164,7 +164,7 @@ def test_decimal_fields_come_back_json_serialisable():
     # stripe 15 coerces decimal_string fields (checkout session
     # currency_conversion.fx_rate) to Decimal. The webhook stores the whole
     # event as JSON in stripe_events.payload, and a Decimal there fails the
-    # insert, which _insert_event_once logs as a replay.
+    # insert, and the webhook answers 503.
     event = _wrap({
         "id": "evt_1",
         "data": {"object": {"currency_conversion": {"fx_rate": Decimal("0.92")}}},

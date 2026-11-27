@@ -811,3 +811,105 @@ def test_dispute_charge_retrieve_accepts_a_non_dict_stripe_object(
 
     assert resp.status_code == 200
     assert wallet_calls["freeze_wallet_on_dispute"][0]["user_id"] == USER_A
+
+# ---------------------------------------------------------------------------
+# Failure handling: a handler error must leave the event retryable
+# ---------------------------------------------------------------------------
+
+
+def _event_row(store: _Store, event_id: str) -> dict:
+    rows = [r for r in store.tables["stripe_events"] if r["event_id"] == event_id]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_credit_failure_returns_500_and_leaves_event_unprocessed(
+    client, store, email_log
+):
+    evt = _checkout_session_event(event_id="evt_credit_fail")
+    with patch.object(stripe_webhook, "_verify_signature", return_value=evt),             patch.object(stripe_webhook, "top_up_wallet", return_value=None):
+        resp = _post_event(client, evt)
+    assert resp.status_code == 500
+    assert resp.get_json()["reason"] == "credit_wallet_failed"
+    assert not _event_row(store, "evt_credit_fail").get("processed_at")
+    alerts = [kw for name, kw in email_log if name == "alert_ops_slack"]
+    assert alerts and alerts[0]["stripe_event_id"] == "evt_credit_fail"
+    assert alerts[0]["user_id"] == USER_A
+    assert not [n for n, _ in email_log if n == "send_topup_confirmation_email"]
+
+
+def test_handler_exception_returns_500_and_leaves_event_unprocessed(
+    client, store, email_log
+):
+    evt = _payment_intent_succeeded_event(event_id="evt_raise")
+    with patch.object(stripe_webhook, "_verify_signature", return_value=evt),             patch.object(stripe_webhook, "top_up_wallet", side_effect=RuntimeError("db")):
+        resp = _post_event(client, evt)
+    assert resp.status_code == 500
+    assert not _event_row(store, "evt_raise").get("processed_at")
+
+
+def test_event_store_unavailable_returns_503_without_crediting(wallet_calls):
+    app = Flask(__name__)
+    stripe_webhook.register_stripe_webhook(app)
+    evt = _checkout_session_event(event_id="evt_no_store")
+    with patch.object(stripe_webhook, "get_service_client", return_value=None),             patch.object(stripe_webhook, "_verify_signature", return_value=evt):
+        resp = _post_event(app.test_client(), evt)
+    assert resp.status_code == 503
+    assert wallet_calls["top_up_wallet"] == []
+
+
+def test_retry_after_partial_credit_credits_exactly_once(client, store, email_log):
+    """First delivery: the credit RPC commits but the wallet read-back fails,
+    so top_up_wallet returns None and the webhook answers 500. Stripe's retry
+    must succeed without a second ledger row, and a later duplicate delivery
+    must not credit again. Runs the real shared.wallet.top_up_wallet."""
+    from shared import wallet
+    from tests.test_wallet import _FakeClient as _WalletClient
+
+    wallet_db = _WalletClient()
+    wallet_db.store.tables["user_wallets"].append(
+        {"user_id": USER_A, "balance_usd": 0.0}
+    )
+    real_read = wallet._wallet
+    reads = {"n": 0}
+
+    def flaky_read(user_id):
+        reads["n"] += 1
+        return None if reads["n"] == 1 else real_read(user_id)
+
+    evt = _checkout_session_event(event_id="evt_partial", amount_usd="20.00")
+    with patch.object(stripe_webhook, "_verify_signature", return_value=evt),             patch.object(stripe_webhook, "top_up_wallet", wallet.top_up_wallet),             patch("shared.wallet.get_service_client", return_value=wallet_db),             patch.object(wallet, "_wallet", side_effect=flaky_read):
+        first = _post_event(client, evt)
+        second = _post_event(client, evt)
+        third = _post_event(client, evt)
+
+    assert first.status_code == 500
+    assert second.status_code == 200 and second.get_json()["status"] == "ok"
+    assert third.status_code == 200
+    assert third.get_json()["status"] == "already_processed"
+    credits = [
+        tx for tx in wallet_db.store.tables["wallet_transactions"]
+        if tx["stripe_event_id"] == "evt_partial"
+    ]
+    assert len(credits) == 1
+    assert wallet_db.store.tables["user_wallets"][0]["balance_usd"] == 20.0
+    assert _event_row(store, "evt_partial").get("processed_at")
+    confirmations = [n for n, _ in email_log if n == "send_topup_confirmation_email"]
+    assert len(confirmations) == 1
+
+
+@pytest.mark.parametrize("evt", [
+    _checkout_session_event(event_id="evt_ign_kind", kind="workspace"),
+    _checkout_session_event(event_id="evt_ign_unpaid", payment_status="unpaid"),
+    _payment_intent_succeeded_event(event_id="evt_ign_card", kind="topup"),
+    _checkout_session_event(event_id="evt_ign_nouser", user_id=""),
+])
+def test_ignored_and_skipped_events_still_200_and_processed(
+    client, store, wallet_calls, evt
+):
+    with patch.object(stripe_webhook, "_verify_signature", return_value=evt):
+        resp = _post_event(client, evt)
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] in {"ignored", "skipped"}
+    assert _event_row(store, evt["id"]).get("processed_at")
+    assert wallet_calls["top_up_wallet"] == []
