@@ -234,7 +234,13 @@
               + (1 if show_name else 0)
               + (1 if show_length else 0)
               + (1 if show_refold else 0)
-              - (0 if has_structures else 2) %}
+              - (0 if has_structures else 2)
+              - (1 if (has_structures and is_example) else 0) %}
+{# The last term: a worked example keeps the 3D column but drops the
+   Structure one, whose cell is a download. boltzgen is the example that
+   reaches it, its payload carrying inline bytes, so has_structures stays
+   true under the sentinel. Without the term the viewer and group rows
+   colspan one wider than the header row. #}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
