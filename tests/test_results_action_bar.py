@@ -259,9 +259,16 @@ def test_the_wet_lab_panel_carries_no_primary_button():
         assert f"openCampaignModal('job-1', '{service}')" in tag, (label, tag)
 
 
-def test_the_worked_example_keeps_the_lab_links():
-    """The example renders no lab modal, so the panel keeps its two links to
-    ranomics.com rather than buttons that would open nothing."""
+def test_the_worked_example_keeps_one_lab_link():
+    """The example renders no lab modal, so nothing there may be a button
+    that would open one.
+
+    It used to carry the same two links the real panel carries as buttons.
+    On 2026-11-27 the example pages were cut back and that panel became one
+    sentence with the pilot link in it (Leo: the pages are too wordy), so
+    the sprint link is gone on purpose. The modal assertions are the point
+    of the test and are unchanged.
+    """
     tmpl = _env().from_string(
         '{% from "components/results_shell.html" import results_panel %}'
         '{{ results_panel(candidates, ["ipTM"], "bindcraft", "example") }}'
@@ -269,9 +276,9 @@ def test_the_worked_example_keeps_the_lab_links():
     html = tmpl.render(candidates=[_row()])
     assert "campaign-modal-" not in html
     assert "openCampaignModal(" not in html
-    for href in ("https://www.ranomics.com/binder-pilot",
-                 "https://www.ranomics.com/ai-binder-sprint"):
-        assert f'<a href="{href}"' in html, href
+    assert '<a href="https://www.ranomics.com/binder-pilot"' in html
+    assert "ai-binder-sprint" not in html
+    assert "Ranomics tests designs like these in the lab" in html
 
 
 def test_the_blast_radius_this_file_claims_is_real():

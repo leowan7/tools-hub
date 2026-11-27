@@ -223,17 +223,23 @@ class TestTheEsmfoldDownloadAgreesWithItsPage:
                 os.environ[key] = val
         return html
 
-    def test_the_download_link_carries_a_0_100_structure(self, page):
-        match = re.search(
-            r"data:chemical/x-pdb;base64,([A-Za-z0-9+/=]+)", page,
-        )
-        assert match, "esmfold's PDB download link did not render"
+    # The structure this page hands the reader used to be a data-URI
+    # download button; the example pages and the About panel they share
+    # offer no download as of 2026-11-27 (Leo). The same bytes still
+    # reach the NGL viewer through the same pdb_b64_on_100 call
+    # (templates/tools/esmfold_results.html:130), which is what these
+    # two read now.
+    _VIEWER_B64 = r'data-pdb-b64="([A-Za-z0-9+/=]+)"'
+
+    def test_the_viewer_structure_is_on_the_0_100_scale(self, page):
+        match = re.search(self._VIEWER_B64, page)
+        assert match, "esmfold's NGL viewer did not render"
         values = _bfactors(
             base64.b64decode(match.group(1)).decode("utf-8", "replace")
         )
-        assert values, "the downloaded file has no ATOM records"
+        assert values, "the viewer's file has no ATOM records"
         assert max(values) > 1.0, (
-            f"the downloaded structure is still fractional "
+            f"the structure is still fractional "
             f"({min(values)}..{max(values)}) while the page reads 0-100"
         )
         assert 1.0 < max(values) <= 100.0
@@ -242,9 +248,8 @@ class TestTheEsmfoldDownloadAgreesWithItsPage:
         """The contradiction that started this: tooltips on one scale,
         the file the button hands you on another."""
         tooltips = [float(v) for v in re.findall(r"pLDDT=([\d.]+)", page)]
-        match = re.search(
-            r"data:chemical/x-pdb;base64,([A-Za-z0-9+/=]+)", page,
-        )
+        match = re.search(self._VIEWER_B64, page)
+        assert match, "esmfold's NGL viewer did not render"
         values = _bfactors(
             base64.b64decode(match.group(1)).decode("utf-8", "replace")
         )
