@@ -1079,8 +1079,8 @@ def _funnel(signups: dict, run_rows: list, event_rows: list, topup_rows: list,
 
 
 def _reminder_days(reengaged: list[str], reminded: list[str], expired: list[str],
-                   now) -> dict:  # noqa: ANN001
-    """Per-day counts for the two marketing crons over the last 30 days.
+                   now, abandoned: tuple = ()) -> dict:  # noqa: ANN001
+    """Per-day counts for the marketing crons over the last 30 days.
 
     Each source keeps one timestamp per user, and the re-engagement stamp
     is overwritten on each send, so an earlier send to the same user
@@ -1090,25 +1090,17 @@ def _reminder_days(reengaged: list[str], reminded: list[str], expired: list[str]
 
     start = (now - timedelta(days=30)).isoformat()
     days: dict = {}
-    for key, stamps in (("reengagement", reengaged), ("credit_reminder", reminded),
-                        ("credit_expired", expired)):
+    sources = (("reengagement", reengaged), ("credit_reminder", reminded),
+               ("credit_expired", expired), ("abandoned_cart", list(abandoned)))
+    for key, stamps in sources:
         for ts in stamps:
             if ts and ts >= start:
-                day = days.setdefault(ts[:10], {"reengagement": 0, "credit_reminder": 0,
-                                                "credit_expired": 0})
+                day = days.setdefault(ts[:10], {k: 0 for k, _ in sources})
                 day[key] += 1
     return {
         "days": sorted(days.items(), reverse=True),
-        "last": {
-            "reengagement": max(reengaged, default=""),
-            "credit_reminder": max(reminded, default=""),
-            "credit_expired": max(expired, default=""),
-        },
-        "total": {
-            "reengagement": len(reengaged),
-            "credit_reminder": len(reminded),
-            "credit_expired": len(expired),
-        },
+        "last": {k: max(stamps, default="") for k, stamps in sources},
+        "total": {k: len(stamps) for k, stamps in sources},
     }
 
 
@@ -1205,6 +1197,7 @@ def admin_users_list():
 
             signups: dict = {}
             reengaged: list[str] = []
+            abandoned: list[str] = []
             for u in auth_users:
                 uid = _user_field(u, "id")
                 if not uid:
@@ -1214,6 +1207,8 @@ def admin_users_list():
                 meta = _user_field(u, "user_metadata")
                 if isinstance(meta, dict) and meta.get("reengagement_email_sent_at"):
                     reengaged.append(str(meta["reengagement_email_sent_at"]))
+                if isinstance(meta, dict) and meta.get("abandoned_cart_email_sent_at"):
+                    abandoned.append(str(meta["abandoned_cart_email_sent_at"]))
                 profile = profiles_by_id.get(uid, {})
                 last_activity = max(
                     last_event.get(uid, ""),
@@ -1241,6 +1236,7 @@ def admin_users_list():
                 [r["signup_credit_expired_at"] for r in wallet_rows
                  if r.get("signup_credit_expired_at")],
                 now,
+                abandoned,
             )
         except Exception:
             logger.warning("admin_users_list query failed", exc_info=True)

@@ -1,0 +1,42 @@
+{# Abandoned-cart email. Sender: shared.email.send_abandoned_cart_email,
+   sweep: cron.abandoned_cart. English only.
+   Variables:
+     unsubscribe_url  signed opt-out link (shared.email.unsubscribe_url)
+     base_url         tools.ranomics.com prefix, no trailing slash
+     tool_label       tool name, "" when the sweep found no live tool
+     tool_url         that tool's form (or /tools), with UTM tags
+     topup_url        /account/wallet/topup, with UTM tags
+     wechat_pay       true when shared.feature_flags.wechat_pay_enabled()
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">
+    {% if tool_label %}Your {{ tool_label }} run is waiting{% else %}Your run is waiting{% endif %}
+  </h2>
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    You were setting up {% if tool_label %}a {{ tool_label }} run{% else %}a run{% endif %}
+    on Ranomics Tools. Your form is one click away.
+  </p>
+  <p style="margin:0 0 1rem 0;">
+    <a href="{{ tool_url }}"
+       style="display:inline-block;padding:10px 18px;background:#2B9E7E;color:#ffffff;
+              text-decoration:none;border-radius:6px;font-weight:600;font-size:14px;">
+      {% if tool_label %}Back to {{ tool_label }}{% else %}Back to the tools{% endif %}
+    </a>
+  </p>
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Runs are paid from your wallet.
+    <a href="{{ topup_url }}" style="color:#2B9E7E;">Top up your wallet</a>
+    by card{% if wechat_pay %} or WeChat Pay{% endif %} when you are ready.
+    If a run fails on our side (a crash or a tool error), it is not charged.
+  </p>
+
+  <p style="margin:1.5rem 0 0 0;line-height:1.55;font-size:13px;color:#666;">
+    The Ranomics team
+  </p>
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:12px;color:#999;margin:0;">
+    Ranomics Tools. <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+  {% include "_unsubscribe_footer.html" %}
+</div>

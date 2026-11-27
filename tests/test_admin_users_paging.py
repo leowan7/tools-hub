@@ -110,7 +110,7 @@ def test_counts_span_pages(app, monkeypatch):
 def test_funnel_and_reminders(app, monkeypatch):
     users = [
         _user("new", 3, {"reengagement_email_sent_at": _ago(days=2)}),
-        _user("old", 20),
+        _user("old", 20, {"abandoned_cart_email_sent_at": _ago(days=4)}),
         _user("ancient", 90),
     ]
     runs = [
@@ -133,9 +133,11 @@ def test_funnel_and_reminders(app, monkeypatch):
     assert (f30["signups"], f30["ran_1"], f30["ran_2"]) == (2, 2, 1)
     assert (f30["topups"], f30["topup_users"], f30["topup_usd"]) == (1, 1, 25.0)
     r = ctx["reminders"]
-    assert r["total"] == {"reengagement": 1, "credit_reminder": 1, "credit_expired": 0}
+    assert r["total"] == {"reengagement": 1, "credit_reminder": 1, "credit_expired": 0,
+                          "abandoned_cart": 1}
     assert r["last"]["credit_expired"] == ""
     assert sum(d["reengagement"] + d["credit_reminder"] for _, d in r["days"]) == 2
+    assert sum(d["abandoned_cart"] for _, d in r["days"]) == 1
 
 
 def test_pages_render(app, monkeypatch):

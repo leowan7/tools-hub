@@ -74,7 +74,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for key, label in [('reengagement', 'Re-engagement'), ('credit_reminder', 'Credit expiring soon'), ('credit_expired', 'Credit expired (no email)')] %}
+          {% for key, label in [('reengagement', 'Re-engagement'), ('credit_reminder', 'Credit expiring soon'), ('credit_expired', 'Credit expired (no email)'), ('abandoned_cart', 'Abandoned cart')] %}
             <tr style="border-bottom:1px solid var(--border);">
               <td>{{ label }}</td>
               <td class="num">{{ reminders.total[key] }}</td>
@@ -89,6 +89,7 @@
             <tr style="border-bottom:1px solid var(--border);">
               <th>Day (UTC)</th><th class="num">Re-engagement</th>
               <th class="num">Credit reminder</th><th class="num">Credit expired</th>
+              <th class="num">Abandoned cart</th>
             </tr>
           </thead>
           <tbody>
@@ -98,13 +99,14 @@
                 <td class="num">{{ c.reengagement }}</td>
                 <td class="num">{{ c.credit_reminder }}</td>
                 <td class="num">{{ c.credit_expired }}</td>
+                <td class="num">{{ c.abandoned_cart }}</td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       {% endif %}
       <p class="subtitle" style="margin:0;padding:.5rem .75rem;font-size:.78rem;">
-        One stamp per user: a later re-engagement email overwrites the earlier one.
+        One stamp per user per email: a later re-engagement or abandoned-cart email overwrites that email's earlier stamp.
       </p>
     </div>
   </div>

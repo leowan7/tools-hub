@@ -121,6 +121,9 @@ class DigestPayload:
     # Distinct people: user_id when signed in, else session_id.
     pricing_viewers: int = 0
     commercial_signups: int = 0
+    # Users whose abandoned-cart stamp (cron/abandoned_cart.py) is in the window;
+    # a refused address keeps its stamp, so this can exceed emails delivered.
+    abandoned_cart_sent: int = 0
     # False when auth.users could not be listed: internal_ids stays empty,
     # so runs, events and money include internal accounts.
     internal_filter_ok: bool = True
@@ -218,6 +221,12 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
             if not uid:
                 continue
             email_lookup[uid] = email
+            meta = getattr(u, "user_metadata", None)
+            if meta is None and isinstance(u, dict):
+                meta = u.get("user_metadata")
+            if (isinstance(meta, dict) and not _is_internal(email)
+                    and str(meta.get("abandoned_cart_email_sent_at") or "") >= window_start_iso):
+                payload.abandoned_cart_sent += 1
             if _is_internal(email):
                 internal_ids.add(uid)
             elif created and str(created) >= window_start_iso:

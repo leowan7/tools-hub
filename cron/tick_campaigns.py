@@ -148,6 +148,19 @@ def tick_campaigns() -> dict:
         logger.warning("tick_campaigns: live meter failed", exc_info=True)
         summary["errors"].append("live meter failed")
 
+    # Returns at once unless ABANDONED_CART_EMAIL_ENABLED is on.
+    try:
+        from cron.abandoned_cart import send_abandoned_cart  # noqa: PLC0415
+
+        summary["abandoned_cart"] = send_abandoned_cart()
+        if summary["abandoned_cart"]["errors"]:
+            summary["errors"].append(
+                f"abandoned cart: {summary['abandoned_cart']['errors']} errors"
+            )
+    except Exception:
+        logger.warning("tick_campaigns: abandoned cart failed", exc_info=True)
+        summary["errors"].append("abandoned cart failed")
+
     try:
         rows = (
             client.table("compute_campaigns")

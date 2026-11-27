@@ -1,0 +1,13 @@
+{# Plain-text version of abandoned_cart.html. Same variables. #}
+{% if tool_label %}Your {{ tool_label }} run is waiting{% else %}Your run is waiting{% endif %}
+
+You were setting up {% if tool_label %}a {{ tool_label }} run{% else %}a run{% endif %} on Ranomics Tools. Your form is one click away:
+{{ tool_url }}
+
+Runs are paid from your wallet. Top up by card{% if wechat_pay %} or WeChat Pay{% endif %} when you are ready:
+{{ topup_url }}
+If a run fails on our side (a crash or a tool error), it is not charged.
+
+The Ranomics team
+
+Ranomics Tools. {{ base_url }}
