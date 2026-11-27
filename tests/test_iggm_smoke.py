@@ -679,3 +679,122 @@ def test_recovered_run_panel_shows_antigen_chain_and_epitope_from_inputs():
     assert "chain C" in flat
     assert "7, 8, 108" in flat
     assert "chain ?" not in flat
+
+
+def test_results_page_says_the_order_is_not_a_quality_ranking():
+    """The page ranks designs by epitope-contact count and shows no other
+    number per design, because IgGM reports no per-design confidence: its
+    ``AbDesigner.infer_pdb`` writes one FASTA and one PDB per design and
+    nothing else, and ``AbDesigner.forward`` discards the pLDDT its own head
+    returns. Leo read the table on 2026-11-27 as a quality ranking, which it
+    has never been. Pin the three things the copy has to keep saying, and pin
+    that neither the page nor the tool blurb promises the sequence-stat CSVs
+    and distribution plots no run has ever attached."""
+    import re
+    import types
+
+    from app import create_app
+    from tools.iggm.meta import about
+
+    app = create_app()
+    job = types.SimpleNamespace(
+        id="job-1", status="succeeded", preset="design", inputs={},
+        result={
+            "antigen_chain": "A",
+            "antigen_length": 129,
+            "epitope_positions": [63, 73],
+            "epitope_pdb_resnums": [63, 73],
+            "designs": [
+                {"rank": 0, "name": "000_d0", "pdb_key": "000_d0.pdb",
+                 "n_epitope_contacts": 2, "n_epitope": 2,
+                 "contacted_positions": [63, 73], "antigen_chain": "A"},
+            ],
+            "designs_total": 1,
+            "designs_completed": 1,
+            "artifact_keys": ["artifacts/design_0.fasta"],
+        },
+    )
+    with app.test_request_context("/"):
+        html = app.jinja_env.get_template("tools/iggm_results.html").render(job=job)
+    flat = re.sub(r"\s+", " ", html)
+
+    # What the order is, said on the page rather than only in a Jinja comment.
+    assert "ordered by that count, highest first" in flat
+    # That the order is not a quality ranking, and why there is no other number.
+    assert "not a quality ranking" in flat
+    assert "no confidence score or pLDDT" in flat
+    # The Top badge the shared table puts on row one, named for what it marks.
+    assert "Top badge on the first row marks the design with the most epitope" in flat
+
+    # The artifact promise that was never kept, in both places it was made.
+    assert "distribution plots" not in flat
+    assert "distribution plots" not in about["output_summary"]
+    assert "no confidence score or pLDDT" in about["output_summary"]
+
+
+def test_a_cancelled_run_is_not_told_its_first_row_has_the_most_contacts():
+    """A run cancelled with designs kept is stored as ``candidates`` by
+    shared/jobs.py::_keep_streamed_designs, which does NOT set ``backfilled``.
+    Those rows are in arrival order and carry no contact count at all:
+    ``n_epitope_contacts`` is absent from webhooks/modal.py::_sanitize_candidate's
+    allowlist, so a streamed row arrives with ``scores: {}``. Two things were
+    wrong on that page. The partial passed ``ranked=(not backfilled)``, which is
+    true here, so candidate_table badged the first-arrived design "Top-ranked
+    design in this run" and suppressed its own arrival-order note. And the
+    panel copy said the first row has the most epitope contacts, on a page that
+    counts none. Both are keyed on ``recovered`` now."""
+    import re
+    import types
+
+    from app import create_app
+
+    app = create_app()
+    job = types.SimpleNamespace(
+        id="job-1", status="cancelled", preset="design",
+        inputs={"antigen_chain": "A", "epitope_pdb_resnums": [63, 73]},
+        result={
+            "candidates": [
+                {"rank": 0, "pdb_key": "000_d0.pdb", "scores": {}},
+                {"rank": 1, "pdb_key": "001_d1.pdb", "scores": {}},
+            ],
+            "candidate_count": 2,
+            "partial": True,
+        },
+    )
+    with app.test_request_context("/"):
+        html = app.jinja_env.get_template("tools/iggm_results.html").render(job=job)
+    flat = re.sub(r"\s+", " ", html)
+
+    # No claim about an order or a count this page does not have.
+    assert "ordered by that count, highest first" not in flat
+    assert "most epitope contacts" not in flat
+    # What it says instead.
+    assert "listed in the order they came back and not in any ranking" in flat
+    assert "did not survive the rebuild" in flat
+    # The honest part survives on this path too.
+    assert "no confidence score or pLDDT" in flat
+    # No Top badge, and the shared table's own arrival-order note is restored.
+    assert ">Top<" not in flat
+    assert "the order the designs came back in" in flat
+
+
+def test_a_run_with_no_designs_describes_no_table():
+    """The four bullets describe a table, a badge and a contact grid. With no
+    designs the panel below says IgGM returned none and there is no table for
+    them to describe, so the whole list is gated on ``candidates``."""
+    import re
+    import types
+
+    from app import create_app
+
+    app = create_app()
+    job = types.SimpleNamespace(
+        id="job-1", status="succeeded", preset="design", inputs={},
+        result={"designs": [], "designs_total": 4, "designs_completed": 0},
+    )
+    with app.test_request_context("/"):
+        html = app.jinja_env.get_template("tools/iggm_results.html").render(job=job)
+    flat = re.sub(r"\s+", " ", html)
+    assert "IgGM returned no designs" in flat
+    assert "epitope-contact count is how many" not in flat
+    assert "ordered by that count" not in flat
