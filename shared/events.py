@@ -86,6 +86,9 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     # the drop-off; before these there was no event on this path at all.
     "scout_handoff_created",
     "scout_handoff_opened",
+    # static/js/track.js, on the public /examples/<slug> pages.
+    "example_view",
+    "example_download",
 })
 
 

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "components/worked_example.html" import worked_example %}
+
+{% block title %}{{ short_name or adapter.label }} example run: Ranomics Tools{% endblock %}
+{% block description %}{{ ex.teaser }}{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>{{ adapter.label }}: a real result</h1>
+    <p class="subtitle">{{ ex.teaser }}</p>
+    <p style="margin: 0.9rem 0 0; position: relative; font-size: 0.9rem;">
+      <a href="{{ url_for('tools.tool_form', tool=adapter.slug) }}">Run {{ short_name or adapter.label }} on your own target &rarr;</a>
+      &nbsp;&middot;&nbsp;
+      <a href="{{ url_for('tools.examples_index') }}">All example runs</a>
+    </p>
+  </div>
+
+  <div style="display: grid; gap: 1.25rem; min-width: 0;">
+    {{ worked_example(adapter, ex) }}
+
+    {% if structures %}
+      <section class="panel" id="example-structures">
+        <div class="panel-header">
+          <span class="panel-title">Structures from this run</span>
+        </div>
+        <div class="panel-body">
+          <div id="example-viewer-0"
+               style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+          <ul style="list-style: none; padding: 0; margin: 0;">
+            {% for name in structures %}
+              {% set _url = url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) %}
+              <li style="display: flex; gap: 1rem; align-items: center; padding: 0.35rem 0; flex-wrap: wrap;">
+                <code style="flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere;">{{ name }}</code>
+                <button type="button" class="btn btn-secondary" data-example-view="{{ _url }}">View in 3D</button>
+                <a href="{{ _url }}" download data-example-download="{{ name }}">Download</a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </section>
+    {% endif %}
+  </div>
+
+  {% if structures %}
+    <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
+    <script>
+      (function () {
+        // mol_viewer.js initialises a container once, so each structure
+        // gets a fresh container that replaces the previous one.
+        var n = 0;
+        function show(url) {
+          var old = document.getElementById('example-viewer-' + n);
+          if (!old || !window.initMolViewerFromUrl) return;
+          var el = old.cloneNode(false);
+          n += 1;
+          el.id = 'example-viewer-' + n;
+          el.removeAttribute('data-initialized');
+          old.parentNode.replaceChild(el, old);
+          window.initMolViewerFromUrl(el.id, url);
+        }
+        var buttons = document.querySelectorAll('[data-example-view]');
+        Array.prototype.forEach.call(buttons, function (b) {
+          b.addEventListener('click', function () { show(b.getAttribute('data-example-view')); });
+        });
+        if (buttons.length) show(buttons[0].getAttribute('data-example-view'));
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

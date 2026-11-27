@@ -13,6 +13,8 @@
  *   - tool_form_submit when a <form> inside /tools/<slug> submits
  *   - result_download   on a click of an export / structure download link
  *   - outbound_click    on a click of a ranomics.com link
+ *   - example_view      when path matches /examples/<slug>
+ *   - example_download  on a click of a structure download on that page
  *
  * Also exposes window.track(eventType, props) for ad-hoc events.
  *
@@ -77,6 +79,11 @@
     return m ? m[1] : null;
   }
 
+  function parseExample(path) {
+    var m = path.match(/^\/examples\/([a-z0-9_-]+)\/?$/i);
+    return m ? m[1] : null;
+  }
+
   // Result-page exits we had no numbers for: which downloads people take,
   // and how many leave through a ranomics.com link instead of running
   // another job. Both are plain anchors in half a dozen templates, so this
@@ -95,6 +102,11 @@
     }
     if (!el || el.tagName !== "A") return;
     var href = el.getAttribute("href") || "";
+    var exampleFile = el.getAttribute("data-example-download");
+    if (exampleFile) {
+      track("example_download", { tool: parseExample(location.pathname), file: exampleFile.slice(0, 200) });
+      return;
+    }
     if (DOWNLOAD_RE.test(href) || href.indexOf("data:chemical/") === 0) {
       track("result_download", { href: href.slice(0, 200), path: location.pathname });
       return;
@@ -111,6 +123,11 @@
 
     if (path === "/pricing" || path.indexOf("/pricing") === 0) {
       track("pricing_view");
+    }
+
+    var exampleTool = parseExample(path);
+    if (exampleTool) {
+      track("example_view", { tool: exampleTool });
     }
 
     var tool = parseTool(path);

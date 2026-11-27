@@ -50,6 +50,12 @@ def abandoned_cart_email_enabled() -> bool:
     return value in {"1", "true"}
 
 
+def example_pages_enabled() -> bool:
+    """Return True only when ``EXAMPLE_PAGES_ENABLED`` is ``1`` or ``true``."""
+    value = os.environ.get("EXAMPLE_PAGES_ENABLED", "").strip().lower()
+    return value in {"1", "true"}
+
+
 def tool_enabled(tool: str) -> bool:
     """Return True if the tool's flag env var is set to an "on" value."""
     value = os.environ.get(flag_name(tool), "").strip().lower()
