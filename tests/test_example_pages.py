@@ -87,3 +87,12 @@ def test_new_event_types_are_registered():
     for event in ("example_view", "example_download"):
         assert event in USER_EVENT_TYPES
         assert f'"{event}"' in js
+
+
+def test_inline_structure_example_gets_one_viewer_and_a_download(all_tools_app, monkeypatch):
+    flask_app, _slugs = all_tools_app
+    monkeypatch.setenv("EXAMPLE_PAGES_ENABLED", "1")
+    page = flask_app.test_client().get("/examples/af2").get_data(as_text=True)
+    assert page.count('id="af2-ngl-viewer"') == 1
+    assert 'id="example-viewer-0"' not in page
+    assert 'data-example-download="ubiquitin_human_unrelaxed_rank_001_alphafold2_ptm_model_1_seed_000.pdb"' in page

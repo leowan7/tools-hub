@@ -24,14 +24,22 @@
           <span class="panel-title">Structures from this run</span>
         </div>
         <div class="panel-body">
-          <div id="example-viewer-0"
-               style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+          {# A payload with an inline structure (pdb_b64) already gets a
+             viewer from its own results partial; this panel then lists the
+             download only. #}
+          {% set _own_viewer = not ex.result.get('pdb_b64') %}
+          {% if _own_viewer %}
+            <div id="example-viewer-0"
+                 style="width: 100%; height: 460px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+          {% endif %}
           <ul style="list-style: none; padding: 0; margin: 0;">
             {% for name in structures %}
               {% set _url = url_for('static', filename='example/' ~ adapter.slug ~ '/' ~ name) %}
               <li style="display: flex; gap: 1rem; align-items: center; padding: 0.35rem 0; flex-wrap: wrap;">
                 <code style="flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere;">{{ name }}</code>
-                <button type="button" class="btn btn-secondary" data-example-view="{{ _url }}">View in 3D</button>
+                {% if _own_viewer %}
+                  <button type="button" class="btn btn-secondary" data-example-view="{{ _url }}">View in 3D</button>
+                {% endif %}
                 <a href="{{ _url }}" download data-example-download="{{ name }}">Download</a>
               </li>
             {% endfor %}
@@ -41,7 +49,7 @@
     {% endif %}
   </div>
 
-  {% if structures %}
+  {% if structures and not ex.result.get('pdb_b64') %}
     <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
     <script>
       (function () {
